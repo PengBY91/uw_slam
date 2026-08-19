@@ -1,0 +1,95 @@
+syntax = "proto3";
+
+package uw.domain;
+
+import "uw/domain/ids.proto";
+import "uw/domain/calibration.proto";
+
+// Typed measurement payloads, per platform architecture section 7.4: these
+// preserve physical semantics (visual track, stereo depth, sonar
+// range-bearing, sonar registration, pressure depth, IMU preintegration)
+// rather than being generic "feature vectors".
+
+message SonarRangeBearing {
+  double range_m = 1;
+  double bearing_rad = 2;
+  double range_sigma_m = 3;
+  double bearing_sigma_rad = 4;
+  FrameId sonar_frame = 5;
+  // Elevation is intentionally ABSENT here. It is not observable from a 2D
+  // FLS ping and must never be fabricated into a fixed value (architecture
+  // invariant, section 6/21) — see algorithms/frontends/sonar_cfar_frontend.
+}
+
+message RelativePoseMeasurement {
+  KeyframeId from_keyframe = 1;
+  KeyframeId to_keyframe = 2;
+  Transform3D relative_pose = 3;                  // from_T_to
+  repeated double covariance_6x6_row_major = 4;   // order [tx,ty,tz,rx,ry,rz], 36 entries
+}
+
+message PressureDepthMeasurement {
+  double depth_m = 1;
+  double sigma_m = 2;
+}
+
+// Placeholder payloads for frontends not yet implemented in this first
+// vertical slice (visual tracking, dense stereo, sonar-to-submap
+// registration, IMU preintegration). Defined now so the wire contract is
+// stable and new frontends only add a oneof case, never restructure
+// MeasurementEvidence.
+message VisualTrackMeasurement {
+  repeated double pixel_u = 1;
+  repeated double pixel_v = 2;
+  repeated uint64 track_ids = 3;
+}
+
+message StereoDepthMeasurement {
+  repeated double x_m = 1;
+  repeated double y_m = 2;
+  repeated double z_m = 3;
+  repeated double sigma_m = 4;
+}
+
+message SonarRegistrationMeasurement {
+  Transform3D relative_pose = 1;
+  repeated double information_6x6_row_major = 2;
+  double fitness = 3;
+  double inlier_ratio = 4;
+}
+
+message ImuPreintegrationMeasurement {
+  Transform3D delta_pose = 1;
+  repeated double delta_velocity_mps = 2;   // 3 entries
+  double delta_time_s = 3;
+  repeated double covariance_15x15_row_major = 4;
+  repeated double bias_gyro = 5;            // 3 entries
+  repeated double bias_accel = 6;           // 3 entries
+}
+
+// Generic evidence envelope, per platform architecture section 7.4.
+// `estimated_noise_scale` is a frontend SUGGESTION, never the backend's
+// final information matrix (that is FactorBuilder's job, section 7.6).
+// The C++ side wraps this in a thin templated accessor
+// (core/measurement_api/include/uw/measurement_api/measurement_evidence.hpp)
+// so call sites are still type-safe despite the wire-level oneof.
+message MeasurementEvidence {
+  EvidenceId evidence_id = 1;
+  repeated ObservationId source_observations = 2;
+  double estimated_noise_scale = 3;
+  map<string, double> quality_features = 4;
+  repeated uint32 observable_subspace = 5;
+  string valid_domain = 6;
+  string algorithm_version = 7;
+  ModelVersion model_version = 8;
+
+  oneof payload {
+    SonarRangeBearing sonar_range_bearing = 9;
+    RelativePoseMeasurement relative_pose = 10;
+    PressureDepthMeasurement pressure_depth = 11;
+    VisualTrackMeasurement visual_track = 12;
+    StereoDepthMeasurement stereo_depth = 13;
+    SonarRegistrationMeasurement sonar_registration = 14;
+    ImuPreintegrationMeasurement imu_preintegration = 15;
+  }
+}

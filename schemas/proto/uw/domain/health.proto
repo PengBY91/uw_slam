@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package uw.domain;
+
+import "uw/domain/time.proto";
+
+// Per platform architecture section 7.9: every module publishes this
+// uniform health report; "is there a topic output" is never sufficient.
+message HealthReport {
+  string component_id = 1;
+
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    STATUS_HEALTHY = 1;
+    STATUS_SUSPECT = 2;
+    STATUS_UNAVAILABLE = 3;
+    STATUS_RECOVERING = 4;
+  }
+  Status status = 2;
+  string reason_code = 3;
+
+  double input_valid_rate = 4;
+  uint32 queue_depth = 5;
+  double latency_p50_ms = 6;
+  double latency_p95_ms = 7;
+  double latency_p99_ms = 8;
+  double residual_mean = 9;
+  double residual_stddev = 10;
+  uint64 dropped_frame_count = 11;
+  double valid_domain_rate = 12;
+  double out_of_distribution_rate = 13;
+  Stamp last_recovery_time = 14;
+}

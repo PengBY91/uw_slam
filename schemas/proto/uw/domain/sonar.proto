@@ -1,0 +1,65 @@
+syntax = "proto3";
+
+package uw.domain;
+
+import "uw/domain/observation.proto";
+
+// 2D imaging/FLS sonar frame, per platform architecture section 7.3.
+// Field provenance (section 22.4): sound_speed_assumption/gain_metadata are
+// modeled on OculusPing's OculusFire sub-message (fire_msg.speed_of_sound,
+// fire_msg.salinity, fire_msg.range, fire_msg.gain) as read from
+// sonar_camera_reconstruction/sonar_oculus/msg/OculusPing.msg. This is a
+// platform-native type: adapters/third_party translates to/from OculusPing,
+// core code never depends on the vendor message.
+//
+// Future 3D sonar gets its own SonarPointFrame message rather than growing
+// optional fields on this one (architecture invariant, section 7.3).
+message SonarFrame {
+  ObservationHeader header = 1;
+
+  // Row-major intensity_tensor, shape [num_ranges, num_beams], one byte per
+  // cell (matches the uint8 grayscale convention audited in
+  // sonar_camera_reconstruction's imaging_sonar.py get_sonar_scanline).
+  bytes intensity_tensor = 2;
+  uint32 num_ranges = 3;
+  uint32 num_beams = 4;
+
+  enum Encoding {
+    ENCODING_UNSPECIFIED = 0;
+    ENCODING_UINT8_GRAY = 1;
+  }
+  Encoding encoding = 5;
+
+  // Bin edges, meters. range_bins.size() == num_ranges (+1 if inclusive of
+  // the outer edge; adapters document which convention they emit).
+  repeated float range_bins = 6;
+
+  // Bearing per beam column, radians, MUST be strictly ascending — this is
+  // an explicit, validated invariant (unlike sonar_camera_reconstruction's
+  // imaging_sonar.py, which assumes ascending order via
+  // interp1d(assume_sorted=True) without checking; see platform
+  // architecture section 22.4). Adapters that receive descending beam order
+  // must flip both azimuth_angles and the beam dimension of
+  // intensity_tensor together, never just re-sort the angles.
+  repeated float azimuth_angles = 7;
+
+  float min_range = 8;
+  float max_range = 9;
+  float range_resolution = 10;    // meters per range bin
+  float horizontal_fov = 11;      // radians
+  float elevation_aperture = 12;  // radians; NEVER collapsed to a point estimate downstream
+
+  message GainMetadata {
+    float gain = 1;
+    uint32 mode = 2;
+    uint32 flags = 3;
+  }
+  GainMetadata gain_metadata = 13;
+
+  message SoundSpeedAssumption {
+    float speed_of_sound_mps = 1;
+    float salinity_ppt = 2;
+    bool is_measured = 3;   // false => nominal/assumed value, carries higher uncertainty
+  }
+  SoundSpeedAssumption sound_speed_assumption = 14;
+}

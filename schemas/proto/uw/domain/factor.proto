@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package uw.domain;
+
+import "uw/domain/ids.proto";
+import "uw/domain/time.proto";
+
+// Per platform architecture section 7.6: frontends propose FactorCandidate,
+// but the actual factor/residual is built by a typed FactorBuilder inside
+// estimation. Frontends may never inject arbitrary weights directly into
+// the graph.
+enum RobustPolicyHint {
+  ROBUST_POLICY_UNSPECIFIED = 0;
+  ROBUST_POLICY_NONE = 1;
+  ROBUST_POLICY_HUBER = 2;
+  ROBUST_POLICY_CAUCHY = 3;
+}
+
+message FactorCandidate {
+  repeated StateId associated_state_ids = 1;
+  string measurement_type = 2;    // matches a MeasurementEvidence.payload oneof case name
+  string residual_model = 3;      // identifies which FactorBuilder should consume this
+  double proposed_noise = 4;
+  repeated uint32 observable_subspace = 5;
+  RobustPolicyHint robust_policy_hint = 6;
+  repeated EvidenceId evidence_ids = 7;
+  Stamp valid_from = 8;
+  Stamp valid_to = 9;
+}

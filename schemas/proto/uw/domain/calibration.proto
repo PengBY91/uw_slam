@@ -1,0 +1,81 @@
+syntax = "proto3";
+
+package uw.domain;
+
+import "uw/domain/ids.proto";
+
+// Rig calibration is an immutable snapshot per platform architecture
+// section 7.1: the single source of truth for frame tree, extrinsics,
+// time offsets, sonar beam model and sound-speed assumptions. ROS static TF
+// and per-tool YAML must be DERIVED from this, never maintained separately.
+//
+// Field provenance (section 22.4): T_SC/T_SSo/IMU noise field names mirror
+// what was found in SVIn's config yaml (cameras[].T_SC, sonar_params.T_SSo,
+// imu_params.{sigma_g_c,sigma_a_c,sigma_bg,sigma_ba,sigma_gw_c,sigma_aw_c}).
+// SVIn's own yaml is a per-run MUTABLE file — this snapshot is the opposite:
+// adapters/third_party/svin_bridge generates a throwaway SVIn yaml FROM this
+// snapshot, one-way, never the reverse.
+message Transform3D {
+  // Row-major 4x4 homogeneous transform, 16 entries, matching the flattened
+  // layout used by both T_SC and T_SSo in the audited SVIn config yaml.
+  repeated double matrix_row_major = 1 [packed = true];
+}
+
+message FrameEdge {
+  FrameId parent_frame = 1;
+  FrameId child_frame = 2;
+  Transform3D transform = 3;   // parent_T_child
+  // Per-entry uncertainty is intentionally omitted in v1 (extrinsics are
+  // treated as fixed unless the observability manager unfreezes them at
+  // runtime — see platform architecture section 8.3).
+}
+
+message ImuNoiseModel {
+  double sigma_gyro_c = 1;       // continuous-time gyro noise density
+  double sigma_accel_c = 2;      // continuous-time accel noise density
+  double sigma_gyro_bias = 3;
+  double sigma_accel_bias = 4;
+  double sigma_gyro_bias_walk_c = 5;
+  double sigma_accel_bias_walk_c = 6;
+  double rate_hz = 7;
+  double gravity_mps2 = 8;
+}
+
+message CameraIntrinsics {
+  SensorId sensor_id = 1;
+  uint32 width = 2;
+  uint32 height = 3;
+  repeated double k_matrix_row_major = 4;   // 3x3, 9 entries
+  repeated double distortion = 5;           // model-dependent length
+  string distortion_model = 6;
+}
+
+message SonarBeamModel {
+  SensorId sensor_id = 1;
+  double horizontal_fov_rad = 2;
+  double elevation_aperture_rad = 3;
+  double range_resolution_m = 4;
+  double nominal_speed_of_sound_mps = 5;
+  bool sonar_enabled = 6;    // mirrors SVIn's isSonarUsed switch
+}
+
+message DepthSensorModel {
+  SensorId sensor_id = 1;
+  double noise_sigma_m = 2;
+  bool depth_enabled = 3;   // mirrors SVIn's isDepthUsed switch
+}
+
+message RigCalibrationSnapshot {
+  CalibrationVersion calibration_version = 1;
+  repeated FrameEdge frame_tree = 2;
+  repeated CameraIntrinsics cameras = 3;
+  ImuNoiseModel imu_noise = 4;
+  repeated SonarBeamModel sonar_beam_models = 5;
+  repeated DepthSensorModel depth_models = 6;
+
+  // Estimated fixed offset between each sensor's clock domain and the
+  // reference clock domain, seconds. Key = SensorId.value.
+  map<string, double> time_offset_seconds = 7;
+
+  string notes = 8;
+}

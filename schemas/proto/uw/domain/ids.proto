@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package uw.domain;
+
+// Strong-typed identifiers per acoustic-optic-slam-platform-architecture
+// section 7.1. Each is wrapped in its own message (rather than a bare
+// uint64/string) so the C++/Python bindings generate distinct types and
+// callers cannot accidentally pass a SensorId where a StateId is expected.
+
+message SensorId { string value = 1; }
+message FrameId { string value = 1; }          // coordinate frame name, e.g. "sonar_link"
+message SequenceId { uint64 value = 1; }
+message ObservationId { string value = 1; }
+message EvidenceId { string value = 1; }
+message KeyframeId { string value = 1; }
+message StateId { string value = 1; }
+message SubmapId { string value = 1; }
+
+message CalibrationVersion { string value = 1; }
+message ModelVersion { string value = 1; }
+message StateVersion { uint64 value = 1; }      // monotonically increasing per StateStore

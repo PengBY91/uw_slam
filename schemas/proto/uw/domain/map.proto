@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+package uw.domain;
+
+import "uw/domain/ids.proto";
+
+// Per platform architecture section 7.8 / section 9: MapEvidence keeps local
+// coordinates and a reference to the source observations, rather than being
+// permanently baked into a stale global pose. This is the deliberate
+// counter-pattern to sonar_camera_reconstruction's merge.py, which bakes
+// points directly into the `map` frame using roll+yaw only (see NOTICE and
+// platform architecture section 22.1) — this repo's mapping layer instead
+// keeps `local_frame` + `state_version` and lets the submap manager reapply
+// the transform when StateStore corrects a pose.
+enum MapRepresentationType {
+  MAP_REPRESENTATION_UNSPECIFIED = 0;
+  MAP_REPRESENTATION_POINT_CLOUD = 1;
+  MAP_REPRESENTATION_OCCUPANCY = 2;
+  MAP_REPRESENTATION_TSDF = 3;
+  MAP_REPRESENTATION_SURFEL = 4;
+  MAP_REPRESENTATION_SEMANTIC_MASK = 5;
+}
+
+message MapEvidence {
+  EvidenceId evidence_id = 1;
+  KeyframeId keyframe_id = 2;
+  StateVersion state_version = 3;
+  FrameId local_frame = 4;
+  MapRepresentationType representation_type = 5;
+
+  // Representation-specific payload. For MAP_REPRESENTATION_POINT_CLOUD:
+  // packed little-endian float32 triples (x0,y0,z0,x1,y1,z1,...).
+  bytes geometry_or_occupancy = 6;
+  repeated double uncertainty = 7;
+  repeated ObservationId source_observations = 8;
+
+  enum ReintegrationPolicy {
+    REINTEGRATION_POLICY_UNSPECIFIED = 0;
+    REINTEGRATION_POLICY_TRANSFORM_ONLY = 1;   // just move the submap pose
+    REINTEGRATION_POLICY_FULL_REFUSE = 2;      // must regenerate from source_observations
+  }
+  ReintegrationPolicy reintegration_policy = 9;
+}

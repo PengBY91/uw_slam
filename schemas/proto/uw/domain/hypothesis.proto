@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package uw.domain;
+
+import "uw/domain/measurement.proto";
+
+// Per platform architecture section 7.5: FLS elevation ambiguity, repeated
+// structure, multipath and cross-modal misassociation must not be collapsed
+// into a single 6DoF pose too early. v1 algorithms may only consume the
+// top-1 candidate, but the wire contract keeps room for multi-hypothesis
+// consumers without a breaking change.
+message HypothesisSet {
+  repeated MeasurementEvidence candidates = 1;
+  repeated double calibrated_likelihoods = 2;   // same length/order as candidates
+  repeated MeasurementEvidence rejected_candidates = 3;
+  string ambiguity_reason = 4;
+  bool out_of_distribution = 5;
+}

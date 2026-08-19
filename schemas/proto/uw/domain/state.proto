@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+package uw.domain;
+
+import "uw/domain/ids.proto";
+import "uw/domain/time.proto";
+import "uw/domain/calibration.proto";
+
+// Per platform architecture section 7.7: the system has exactly one
+// authoritative StateStore, single-writer/multi-reader, versioned. Mapping,
+// TF, evaluation and visualization all consume this; none maintain their
+// own "final pose". Ground truth never enters this message — it only flows
+// through the evidence/evaluation plane.
+message StateSnapshot {
+  StateId state_id = 1;
+  StateVersion state_version = 2;
+  Stamp capture_timestamp = 3;
+  Transform3D pose_wb = 4;
+  repeated double velocity_w_mps = 5;         // 3 entries
+  repeated double imu_bias = 6;                // 6 entries: gyro(3) + accel(3)
+  repeated double marginal_uncertainty_row_major = 7;   // square, dimension documented by producer
+
+  enum TrackingStatus {
+    TRACKING_STATUS_UNSPECIFIED = 0;
+    TRACKING_STATUS_TRACKING = 1;
+    TRACKING_STATUS_DEGRADED = 2;
+    TRACKING_STATUS_LOST = 3;
+    TRACKING_STATUS_RELOCALIZING = 4;
+    TRACKING_STATUS_RECOVERING = 5;
+  }
+  TrackingStatus tracking_status = 8;
+  CalibrationVersion calibration_version = 9;
+  repeated EvidenceId contributing_measurements = 10;
+}

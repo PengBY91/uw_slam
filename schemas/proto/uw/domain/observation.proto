@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package uw.domain;
+
+import "uw/domain/ids.proto";
+import "uw/domain/time.proto";
+
+// Per platform architecture section 7.2. Every raw/measurement/evidence
+// message in the system carries one of these, produced once at the sensor
+// gateway / adapter boundary and never re-derived downstream.
+message ObservationHeader {
+  ObservationId observation_id = 1;
+  SensorId sensor_id = 2;
+  SequenceId sequence_id = 3;
+  Stamp capture_time = 4;
+  Stamp receive_time = 5;
+  ClockDomain clock_domain = 6;
+  FrameId sensor_frame = 7;
+  CalibrationVersion calibration_version = 8;
+
+  enum Validity {
+    VALIDITY_UNSPECIFIED = 0;
+    VALIDITY_OK = 1;
+    VALIDITY_DEGRADED = 2;     // usable but flagged (e.g. partial frame)
+    VALIDITY_REJECTED = 3;     // failed boundary validation, must not enter typed pipelines
+  }
+  Validity validity = 9;
+
+  // Free-form provenance breadcrumb: adapter name/version, source file/topic,
+  // run id. Not parsed by core, only carried through for evidence-plane audit.
+  string provenance = 10;
+}
