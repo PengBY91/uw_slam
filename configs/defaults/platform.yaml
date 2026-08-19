@@ -1,0 +1,29 @@
+# 平台级默认值。不包含任何具体机体/场景信息（架构文档第 14.2 节）。
+# 通过 --experiment 被 apps/tools/synth_bag_gen 和 apps/replay_demo 消费；
+# 具体消费到什么程度见 configs/README.md。
+
+estimation:
+  solver: gauss_newton_v1        # 第一版图优化库未定，见架构文档第 20 节延后决策
+  max_iterations: 30
+  initial_lambda: 1.0e-3
+  # 丢弃开局前 N 秒的证据再开始融合（0 = 不启用）。取的是一个同类 ROS2 SVIn+
+  # HoloOcean 部署（workfiles_02 的 merge_node）里"IMU 偏置还没收敛前丢弃早期帧"
+  # 的经验；我们没有在线 IMU 滤波器，落地方式是：warmup 窗口内的 keyframe 整体
+  # 不进图，第一个存活下来的 keyframe 变成新的 fixed anchor（实现见
+  # apps/replay_demo/src/main.cpp）。
+  warmup_seconds: 0.0
+
+reliability:
+  # 架构文档第 8.4 节：final_information = min(learned, physical, calibration, cross_modal)
+  # v1 只实现了固定常数上限，真正的多路 cap 是后续工作。
+  default_sqrt_information:
+    relative_pose: 20.0
+    sonar_range: 15.0
+    depth: 20.0
+
+runtime:
+  lanes:
+    localization: { priority: highest, queue_capacity: 64, overflow_policy: reject }
+    correction:   { priority: high,    queue_capacity: 32, overflow_policy: drop_oldest }
+    mapping:      { priority: medium,  queue_capacity: 16, overflow_policy: drop_oldest }
+    evidence:     { priority: low,     queue_capacity: 256, overflow_policy: drop_oldest }

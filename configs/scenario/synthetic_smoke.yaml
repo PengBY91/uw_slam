@@ -1,0 +1,20 @@
+# "跑什么数据"：加载进 apps/tools/synth_bag_gen 的 ScenarioOptions（通过
+# --experiment，见 runtime/include/uw/runtime/config.hpp 的 LoadScenarioConfig）。
+# 字段名与 ScenarioOptions 一一对应；显式传入的同名 CLI 参数（--seed 等）会
+# 覆盖这里的值。
+
+seed: 42
+num_keyframes: 12
+radius_m: 8.0
+arc_radians: 1.4
+depth_m: 12.0
+
+noise:
+  relative_pose_noise_m: 0.02
+  sonar_range_noise_m: 0.03
+  sonar_bearing_noise_rad: 0.01
+
+sonar_targets_world:
+  - [2.0, 3.0, -13.0]
+  - [6.0, 6.0, -11.5]
+  - [-1.0, 8.0, -12.5]

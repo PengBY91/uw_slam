@@ -1,0 +1,35 @@
+# RigCalibrationSnapshot 的人可读来源（唯一标定事实源，架构文档第 7.1 节）。
+# v1 尚未被 apps/ 消费；字段名对应 schemas/proto/uw/domain/calibration.proto。
+
+calibration_version: "example_auv_v1"
+
+frame_tree:
+  - parent_frame: base_link
+    child_frame: imu_link
+    transform_row_major:  # 4x4，单位矩阵示例
+      [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]
+  - parent_frame: base_link
+    child_frame: sonar_link
+    transform_row_major:
+      [1,0,0,0.1, 0,1,0,0, 0,0,1,-0.05, 0,0,0,1]
+
+imu_noise:
+  sigma_gyro_c: 1.6968e-4
+  sigma_accel_c: 2.0e-3
+  sigma_gyro_bias: 1.9393e-5
+  sigma_accel_bias: 3.0e-3
+  rate_hz: 200
+  gravity_mps2: 9.80665
+
+sonar_beam_models:
+  - sensor_id: sonar0
+    horizontal_fov_rad: 2.09
+    elevation_aperture_rad: 0.19
+    range_resolution_m: 0.02
+    nominal_speed_of_sound_mps: 1500.0
+    sonar_enabled: true
+
+depth_models:
+  - sensor_id: depth0
+    noise_sigma_m: 0.05
+    depth_enabled: true
