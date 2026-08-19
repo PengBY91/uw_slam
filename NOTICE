@@ -1,0 +1,80 @@
+uw_slam platform — third-party provenance notice
+==================================================
+
+This repository is licensed as a whole under the GNU General Public License
+v3.0 (see LICENSE). Some source files are ports/adaptations of code from
+other projects; those files carry their original copyright header in
+addition to being distributed as part of this GPLv3 work, as permitted by
+those projects' own licenses. This file is the top-level index of that
+provenance; do not remove the in-file headers even if this NOTICE is edited.
+
+--------------------------------------------------------------------------
+1. algorithms/factor_builders/sonar_range_factor/
+--------------------------------------------------------------------------
+Ported from:
+  SVIn (AutonomousFieldRoboticsLab/SVIn), repository license: GPLv3.
+  okvis_ros/okvis/okvis_ceres/include/okvis/ceres/SonarError.hpp
+  okvis_ros/okvis/okvis_ceres/src/SonarError.cpp
+
+Upstream file-level copyright (retained verbatim in the ported files):
+  Copyright (c) 2015, Autonomous Systems Lab / ETH Zurich (OKVIS base,
+  BSD-3-Clause file header) — SonarError itself authored by Sharmin Rahman
+  for SVIn (combined work distributed under SVIn's repository-level GPLv3).
+
+What was ported: the 1-D sonar range residual formulation — given a pose
+T_WS and a subset of nearby landmarks, residual = sqrt(information) *
+(measured_range - ||T_WS.translation() - mean(landmarkSubset)||) — and its
+analytic Jacobian with respect to the pose translation. This is the "sonar
+constrains distance to a landmark cluster, never fabricates elevation"
+pattern referenced in acoustic-optic-slam-platform-architecture-2026-08-17.md
+sections 6/21.
+
+What was NOT ported: SVIn's Ceres SizedCostFunction wiring, its VIO/OKVIS
+internal state representation, or any other SVIn source file. The residual
+math was re-expressed against this repository's own backend-agnostic
+ResidualBlock interface (see core/measurement_api), not against Ceres.
+
+--------------------------------------------------------------------------
+2. algorithms/frontends/sonar_cfar_frontend/
+--------------------------------------------------------------------------
+Ported from:
+  sonar_camera_reconstruction (ivanacollg/sonar_camera_reconstruction),
+  repository license: MIT, Copyright (c) 2025 Ivana Collado.
+  sonar_camera_reconstruction_pkg/scripts/CFAR.py
+  sonar_camera_reconstruction_pkg/scripts/imaging_sonar.py
+
+What was ported: the CFAR detector (CA/SOCA/GOCA/OS threshold-factor
+derivations and cell-averaging test), the polar-to-Cartesian remap table
+construction (generate_map_xy), first-contact line-scan extraction
+(extract_line_scan), and DBSCAN-based scanline clustering
+(cluster_scanline).
+
+What was deliberately NOT ported: merge.py's rotate_cloud/merge_data
+world-frame baking, which discards pitch (uses roll+yaw only) and bakes
+points directly into the `map` frame. This repository's frontend instead
+stops at sonar-local-frame range-bearing evidence
+(MeasurementEvidence<SonarRangeBearing>) per the platform architecture's
+contract that frontends own measurement evidence, not global pose/map
+state (acoustic-optic-slam-platform-architecture-2026-08-17.md section 21,
+item 1; and section 22.1's audit finding on the pitch-discard issue).
+
+--------------------------------------------------------------------------
+3. Everything else
+--------------------------------------------------------------------------
+All other source in this repository is original to this project.
+`external_repos/ocean_t/`, `external_repos/SVIn/`,
+`external_repos/sonar_camera_reconstruction/`, `external_repos/holoocean-ros/`,
+and `external_repos/holoocean_bridge/` remain unmodified, independently
+licensed reference repositories consulted for reference/porting; they are not
+part of this repository's build or version history (see .gitignore).
+
+`adapters/third_party/holoocean_ros_bridge/`'s field-mapping (which fields of
+`holoocean_interfaces/msg/ImagingSonar` to use, and the mirror-flip
+correction) was worked out by reading `external_repos/holoocean_bridge/
+holoocean_bridge/sonar_adapter_node.py` (a separate, not-vendored ROS2
+package targeting `sonar_oculus/OculusPing`, MIT-compatible per its own
+package.xml) — this is a "read for reference" case like the rest of this
+section, not a code port: the implementation here is original, targets a
+different message type (`uw::domain::SonarFrame`), and is written in C++
+against this platform's own conventions. See that adapter's own README.md
+for the specifics of what was learned from the reference and why.
