@@ -1,12 +1,12 @@
 # uw_slam — 水下声光融合 SLAM 平台
 
 `uw_slam` 是水下自主平台声呐 + 光学融合 SLAM 的长期代码框架。它是
-[`acoustic-optic-slam-platform-architecture-2026-08-17.md`](./acoustic-optic-slam-platform-architecture-2026-08-17.md)
+[`acoustic-optic-slam-platform-architecture-2026-08-17.md`](./docs/acoustic-optic-slam-platform-architecture-2026-08-17.md)
 （长期架构设计，下称"架构文档"）的第一次真实代码落地：不是在 `ocean_t`/`SVIn`/
 `sonar_camera_reconstruction` 三个既有代码库上小修小补，而是按架构文档第 5-7 节的
 依赖不变量、领域契约、仓库边界重新搭建的独立仓库，允许把三者中有价值的具体实现
 （声呐 range 因子、CFAR 前端）移植/参考进来。配套的第一阶段工程方案见
-[`holoocean-to-acoustic-optic-slam-pipeline-2026-08-05.md`](./holoocean-to-acoustic-optic-slam-pipeline-2026-08-05.md)。
+[`holoocean-to-acoustic-optic-slam-pipeline-2026-08-05.md`](./docs/holoocean-to-acoustic-optic-slam-pipeline-2026-08-05.md)。
 
 **当前状态**：骨架 + 每一层至少一条可编译、可运行、有测试覆盖的真实垂直切片（不是
 接口占位）。13/13 C++ 测试、9/9 Python 测试通过；有一条端到端可跑的合成数据 demo。
@@ -241,14 +241,14 @@ tools/lint/check_no_ros_in_core.sh            # 依赖不变量：core/algorithm
 
 ## 延伸阅读
 
-- [`uw-slam-codebase-reference-2026-08-18.md`](./uw-slam-codebase-reference-2026-08-18.md) ——
+- [`uw-slam-codebase-reference-2026-08-18.md`](./docs/uw-slam-codebase-reference-2026-08-18.md) ——
   代码级参考文档：逐层记录当前代码库里实际存在的类型/函数签名/算法参数，以及
   它们如何连成 `synth_bag_gen`→`replay_demo` 这条端到端管线，含若干处「文档说
   X、代码实际是 Y」的出入标注；和下面两份「应该长成什么样」的设计文档不同，只
   记录读一遍代码能确认的事实。
-- [`acoustic-optic-slam-platform-architecture-2026-08-17.md`](./acoustic-optic-slam-platform-architecture-2026-08-17.md) ——
+- [`acoustic-optic-slam-platform-architecture-2026-08-17.md`](./docs/acoustic-optic-slam-platform-architecture-2026-08-17.md) ——
   长期架构设计：模块依赖 DAG、领域契约、状态机与调度、可靠性策略、Gate 划分。
-- [`holoocean-to-acoustic-optic-slam-pipeline-2026-08-05.md`](./holoocean-to-acoustic-optic-slam-pipeline-2026-08-05.md) ——
+- [`holoocean-to-acoustic-optic-slam-pipeline-2026-08-05.md`](./docs/holoocean-to-acoustic-optic-slam-pipeline-2026-08-05.md) ——
   第一阶段工程方案，含对 `ocean_t`/`SVIn`/`sonar_camera_reconstruction` 三份代码的
   逐文件审计发现。
 - [`configs/README.md`](./configs/README.md) —— 分层配置每个字段的详细说明。

@@ -16,7 +16,7 @@ updated: 2026-08-18
 
 | 文档 | 性质 | 回答的问题 |
 |---|---|---|
-| [`README.md`](./README.md) | 项目门面 | 这是什么、怎么编译、怎么跑 demo |
+| [`README.md`](../README.md) | 项目门面 | 这是什么、怎么编译、怎么跑 demo |
 | [`acoustic-optic-slam-platform-architecture-2026-08-17.md`](./acoustic-optic-slam-platform-architecture-2026-08-17.md) | 长期架构设计（已批准） | 系统**应该**长成什么样、为什么这么设计 |
 | [`holoocean-to-acoustic-optic-slam-pipeline-2026-08-05.md`](./holoocean-to-acoustic-optic-slam-pipeline-2026-08-05.md) | 第一阶段工程方案（草稿） | 怎么把三份外部代码接起来跑通第一版 |
 | **本文** | 代码参考 | 代码**现在**长什么样：真实类型、真实函数、真实数据怎么流动 |

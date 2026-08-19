@@ -6,7 +6,7 @@
 ## 这个仓库是什么
 
 水下声光融合 SLAM 平台的长期代码框架，是架构文档
-(`acoustic-optic-slam-platform-architecture-2026-08-17.md`) 的代码落地。**不是**在
+(`docs/acoustic-optic-slam-platform-architecture-2026-08-17.md`) 的代码落地。**不是**在
 `ocean_t`/`SVIn`/`sonar_camera_reconstruction` 上小修小补，是独立重建的新仓库，
 允许把后两者的具体实现移植进来（已经移植了两处，见下）。当前是"骨架 + 每层至少
 一条真实可跑的垂直切片"阶段，不是生产系统。
