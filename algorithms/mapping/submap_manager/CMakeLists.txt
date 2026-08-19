@@ -1,0 +1,10 @@
+add_library(uw_submap_manager STATIC src/submap_manager.cpp)
+target_include_directories(uw_submap_manager PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(uw_submap_manager PUBLIC uw_domain uw_sensor_models)
+target_compile_options(uw_submap_manager PRIVATE -Wall -Wextra)
+
+if(UW_BUILD_TESTS)
+  add_executable(uw_submap_manager_test test/submap_manager_test.cpp)
+  target_link_libraries(uw_submap_manager_test PRIVATE uw_submap_manager GTest::gtest GTest::gtest_main)
+  add_test(NAME uw_submap_manager_test COMMAND uw_submap_manager_test)
+endif()
