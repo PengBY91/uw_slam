@@ -1,0 +1,11 @@
+add_library(uw_holoocean_ros_bridge STATIC src/holoocean_ros_bridge_sonar_frame_provider.cpp)
+target_include_directories(uw_holoocean_ros_bridge PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(uw_holoocean_ros_bridge PUBLIC uw_measurement_api)
+target_compile_options(uw_holoocean_ros_bridge PRIVATE -Wall -Wextra)
+
+if(UW_BUILD_TESTS)
+  find_package(Threads REQUIRED)
+  add_executable(uw_holoocean_ros_bridge_test test/holoocean_ros_bridge_sonar_frame_provider_test.cpp)
+  target_link_libraries(uw_holoocean_ros_bridge_test PRIVATE uw_holoocean_ros_bridge GTest::gtest GTest::gtest_main Threads::Threads)
+  add_test(NAME uw_holoocean_ros_bridge_test COMMAND uw_holoocean_ros_bridge_test)
+endif()

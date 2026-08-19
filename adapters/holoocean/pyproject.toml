@@ -1,0 +1,26 @@
+[project]
+name = "uw-holoocean-adapter"
+version = "0.1.0"
+description = "HoloOcean sensor gateway adapter — replaces the legacy ocean_t scripts (see README/NOTICE)."
+requires-python = ">=3.10"
+dependencies = [
+    "protobuf>=4.21",
+    "mcap>=1.0",
+    "numpy>=1.24",
+]
+# 'holoocean' is intentionally NOT listed here: it is only needed by
+# holoocean_driver.py's HoloOceanSession, imported lazily and guarded (see
+# that module's docstring). Making it a hard dependency would break
+# installing/testing the rest of this package on a machine without
+# HoloOcean, which is exactly this repo's current development machine.
+
+[project.optional-dependencies]
+holoocean = ["holoocean"]
+dev = ["pytest>=7.0"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["uw_holoocean_adapter*"]
