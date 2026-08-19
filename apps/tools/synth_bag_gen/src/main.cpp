@@ -1,0 +1,329 @@
+// Generates a synthetic MCAP bag with a known ground-truth trajectory and
+// fabricated measurements (relative pose "VIO" evidence, sonar range-
+// bearing to a few fixed targets, and depth). This exists because the
+// current development machine has neither HoloOcean nor ROS2 installed
+// (see the platform architecture's environment notes) — it lets
+// apps/replay_demo exercise the full FactorBuilder -> PoseGraphProblem ->
+// GaussNewtonSolver -> StateStore -> SubmapManager chain end-to-end without
+// either of those.
+//
+// Topics written (all protobuf-encoded, see uw::runtime::McapProtobufWriter):
+//   /gt/state                    uw.domain.StateSnapshot   (ground truth per keyframe)
+//   /evidence/relative_pose      uw.domain.MeasurementEvidence (RelativePoseMeasurement)
+//   /raw/sonar_frame             uw.domain.SonarFrame      (synthetic imaging-sonar ping; see
+//                                 BuildSyntheticSonarFrame below — apps/replay_demo runs this
+//                                 through the real algorithms/frontends/sonar_cfar_frontend, it is
+//                                 NOT pre-computed range-bearing evidence)
+//   /evidence/depth              uw.domain.MeasurementEvidence (PressureDepthMeasurement)
+//   /scenario/sonar_targets      uw.domain.MapEvidence     (known target positions, world frame,
+//                                 packed float32 xyz — reused as a point-cloud payload; see
+//                                 apps/replay_demo for how this stands in for a real
+//                                 landmark/submap query that v1 does not yet have)
+#include <cmath>
+#include <cstdio>
+#include <iostream>
+#include <random>
+#include <string>
+#include <vector>
+
+#include "uw/domain/domain.hpp"
+#include "uw/runtime/config.hpp"
+#include "uw/runtime/mcap_io.hpp"
+#include "uw/sensor_models/geometry.hpp"
+#include "uw/sensor_models/sonar_beam_model.hpp"
+
+using uw::sensor_models::Pose3;
+
+namespace {
+
+struct ScenarioOptions {
+  std::string out_path = "/tmp/synthetic.mcap";
+  int num_keyframes = 12;
+  double radius_m = 8.0;
+  double arc_radians = 1.4;
+  double depth_m = 12.0;
+  double relative_pose_noise_m = 0.02;
+  double sonar_range_noise_m = 0.03;
+  double sonar_bearing_noise_rad = 0.01;
+  uint64_t seed = 42;
+  // Empty => BuildSonarTargets() falls back to its built-in defaults (kept
+  // for standalone use without --experiment, and so the existing
+  // determinism/demo commands in README.md keep working unchanged).
+  std::vector<Eigen::Vector3d> sonar_targets_world;
+};
+
+// Layers configs/scenario/*.yaml (via an --experiment configs/experiment/*.yaml
+// file, section 14.2's defaults->rig->scenario->experiment stack) onto
+// ScenarioOptions's built-in defaults. Explicit CLI flags parsed AFTER this
+// call (see main()) still win — this is the "scenario" layer, CLI flags are
+// an even-more-specific ad hoc override on top.
+void ApplyScenarioConfig(const uw::runtime::ScenarioConfig& scenario, ScenarioOptions& opt) {
+  opt.num_keyframes = scenario.num_keyframes;
+  opt.radius_m = scenario.radius_m;
+  opt.arc_radians = scenario.arc_radians;
+  opt.depth_m = scenario.depth_m;
+  opt.relative_pose_noise_m = scenario.noise.relative_pose_noise_m;
+  opt.sonar_range_noise_m = scenario.noise.sonar_range_noise_m;
+  opt.sonar_bearing_noise_rad = scenario.noise.sonar_bearing_noise_rad;
+  opt.seed = scenario.seed;
+  if (!scenario.sonar_targets_world.empty()) {
+    opt.sonar_targets_world = scenario.sonar_targets_world;
+  }
+}
+
+std::vector<Pose3> BuildGroundTruthTrajectory(const ScenarioOptions& opt) {
+  std::vector<Pose3> trajectory;
+  trajectory.reserve(opt.num_keyframes);
+  for (int i = 0; i < opt.num_keyframes; ++i) {
+    const double t = opt.num_keyframes > 1
+                          ? static_cast<double>(i) / (opt.num_keyframes - 1)
+                          : 0.0;
+    const double theta = t * opt.arc_radians;
+    Pose3 pose;
+    pose.translation =
+        Eigen::Vector3d(opt.radius_m * std::sin(theta), opt.radius_m * (1.0 - std::cos(theta)),
+                        -opt.depth_m);
+    pose.rotation = Eigen::Quaterniond(Eigen::AngleAxisd(theta, Eigen::Vector3d::UnitZ()));
+    trajectory.push_back(pose);
+  }
+  return trajectory;
+}
+
+std::vector<Eigen::Vector3d> BuildSonarTargets(const ScenarioOptions& opt) {
+  if (!opt.sonar_targets_world.empty()) return opt.sonar_targets_world;
+  // Fallback for standalone use without --experiment: a handful of fixed
+  // seabed-like features near the path, close enough that most keyframes
+  // see at least one within a plausible sonar range.
+  return {
+      Eigen::Vector3d(2.0, 3.0, -opt.depth_m - 1.0),
+      Eigen::Vector3d(6.0, 6.0, -opt.depth_m + 0.5),
+      Eigen::Vector3d(-1.0, 8.0, -opt.depth_m - 0.5),
+  };
+}
+
+std::string KeyframeId(int i) { return "kf" + std::to_string(i); }
+
+// Fixed synthetic imaging-sonar geometry — generous enough to keep every
+// target in this scenario's range/bearing well inside the frame (see
+// BuildSyntheticSonarFrame's out-of-frame guard for what happens if a
+// future scenario doesn't fit). Not scenario-configurable: this is a
+// stand-in sensor model for exercising sonar_cfar_frontend end-to-end, not
+// a calibrated device.
+constexpr uint32_t kSonarNumRanges = 600;
+constexpr uint32_t kSonarNumBeams = 300;
+constexpr double kSonarMinRangeM = 0.0;
+constexpr double kSonarMaxRangeM = 15.0;
+// Wide enough to comfortably cover this scenario's full bearing range
+// (observed up to ~2.3 rad at the default radius/arc — trajectory heading
+// tracks the arc while targets stay roughly fixed, so bearing sweeps much
+// further than the arc_radians itself). Not a realistic narrow-FOV FLS
+// model; see the struct-level comment.
+constexpr double kSonarHorizontalFovRad = 6.0;
+constexpr int kBackgroundIntensity = 5;   // matches sonar_cfar_frontend_test's synthetic fixture
+constexpr int kTargetIntensity = 200;     // matches sonar_cfar_frontend_test's synthetic fixture
+
+// Renders one target reflection into an otherwise-empty synthetic SonarFrame
+// — a small 3-column-wide blob, not a single pixel, because DBSCAN
+// (min_samples=2 in sonar_cfar_frontend's defaults) can never cluster a
+// lone point and would report it as noise, not a detection (see
+// sonar_cfar_frontend_test.cpp's MakeSyntheticFrame, which this mirrors).
+// noisy_range_m/noisy_bearing_rad already have sensor noise applied by the
+// caller; quantizing them onto this frame's finite range/bearing bins adds
+// a further (physically realistic) discretization error on top.
+uw::domain::SonarFrame BuildSyntheticSonarFrame(const std::string& kf_id, uint64_t t_ns,
+                                                 double noisy_range_m, double noisy_bearing_rad) {
+  uw::domain::SonarFrame frame;
+  auto& header = *frame.mutable_header();
+  header.mutable_observation_id()->set_value(kf_id);
+  header.mutable_sensor_frame()->set_value("sonar_link");
+  header.mutable_capture_time()->set_seconds(static_cast<int64_t>(t_ns / 1'000'000'000ULL));
+  header.mutable_capture_time()->set_nanos(static_cast<int32_t>(t_ns % 1'000'000'000ULL));
+  header.set_clock_domain(uw::domain::CLOCK_DOMAIN_SIMULATION);
+  header.set_validity(uw::domain::ObservationHeader::VALIDITY_OK);
+  header.set_provenance("synth_bag_gen_v1");
+
+  frame.set_num_ranges(kSonarNumRanges);
+  frame.set_num_beams(kSonarNumBeams);
+  frame.set_min_range(static_cast<float>(kSonarMinRangeM));
+  frame.set_max_range(static_cast<float>(kSonarMaxRangeM));
+  const double range_resolution = (kSonarMaxRangeM - kSonarMinRangeM) / kSonarNumRanges;
+  frame.set_range_resolution(static_cast<float>(range_resolution));
+  frame.set_horizontal_fov(static_cast<float>(kSonarHorizontalFovRad));
+
+  for (uint32_t r = 0; r <= kSonarNumRanges; ++r) {
+    frame.add_range_bins(static_cast<float>(kSonarMinRangeM + r * range_resolution));
+  }
+  const double half_fov = kSonarHorizontalFovRad / 2.0;
+  for (uint32_t c = 0; c < kSonarNumBeams; ++c) {
+    const double t = kSonarNumBeams > 1 ? static_cast<double>(c) / (kSonarNumBeams - 1) : 0.0;
+    frame.add_azimuth_angles(static_cast<float>(-half_fov + kSonarHorizontalFovRad * t));
+  }
+
+  std::string bytes(static_cast<std::size_t>(kSonarNumRanges) * kSonarNumBeams,
+                     static_cast<char>(kBackgroundIntensity));
+
+  const int row = static_cast<int>(std::lround((noisy_range_m - kSonarMinRangeM) / range_resolution));
+  const int col = static_cast<int>(
+      std::lround((noisy_bearing_rad + half_fov) / kSonarHorizontalFovRad * (kSonarNumBeams - 1)));
+  if (row < 0 || row >= static_cast<int>(kSonarNumRanges) || col < 0 ||
+      col >= static_cast<int>(kSonarNumBeams)) {
+    std::cerr << "warning: target for " << kf_id
+              << " falls outside the synthetic sonar frame (range=" << noisy_range_m
+              << "m bearing=" << noisy_bearing_rad << "rad) — frame written background-only\n";
+  } else {
+    for (int dc = -1; dc <= 1; ++dc) {
+      const int c = col + dc;
+      if (c < 0 || c >= static_cast<int>(kSonarNumBeams)) continue;
+      bytes[static_cast<std::size_t>(row) * kSonarNumBeams + static_cast<std::size_t>(c)] =
+          static_cast<char>(kTargetIntensity);
+    }
+  }
+  frame.set_intensity_tensor(std::move(bytes));
+  frame.set_encoding(uw::domain::SonarFrame::ENCODING_UINT8_GRAY);
+  return frame;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  ScenarioOptions opt;
+
+  // First pass: find --experiment, if any, and layer its scenario config
+  // onto opt before any explicit CLI override is applied.
+  for (int i = 1; i < argc; ++i) {
+    if (std::string(argv[i]) == "--experiment") {
+      if (i + 1 >= argc) {
+        std::cerr << "missing value for --experiment\n";
+        return 1;
+      }
+      const auto config = uw::runtime::LoadExperimentConfig(argv[++i]);
+      ApplyScenarioConfig(config.scenario, opt);
+    }
+  }
+
+  // Second pass: explicit flags override whatever --experiment set.
+  for (int i = 1; i < argc; ++i) {
+    const std::string arg = argv[i];
+    auto next = [&](const char* flag) -> std::string {
+      if (i + 1 >= argc) {
+        std::cerr << "missing value for " << flag << "\n";
+        std::exit(1);
+      }
+      return argv[++i];
+    };
+    if (arg == "--experiment") {
+      next("--experiment");  // already consumed above; just skip its value here
+    } else if (arg == "--out") {
+      opt.out_path = next("--out");
+    } else if (arg == "--num-keyframes") {
+      opt.num_keyframes = std::stoi(next("--num-keyframes"));
+    } else if (arg == "--seed") {
+      opt.seed = std::stoull(next("--seed"));
+    } else {
+      std::cerr << "unknown argument: " << arg << "\n";
+      return 1;
+    }
+  }
+
+  std::mt19937_64 rng(opt.seed);
+  std::normal_distribution<double> pose_noise(0.0, opt.relative_pose_noise_m);
+  std::normal_distribution<double> range_noise(0.0, opt.sonar_range_noise_m);
+  std::normal_distribution<double> bearing_noise(0.0, opt.sonar_bearing_noise_rad);
+
+  const auto trajectory = BuildGroundTruthTrajectory(opt);
+  const auto targets = BuildSonarTargets(opt);
+
+  uw::runtime::McapProtobufWriter writer;
+  if (!writer.Open(opt.out_path)) {
+    std::cerr << "failed to open " << opt.out_path << " for writing\n";
+    return 1;
+  }
+
+  // Scenario-level target list, once.
+  {
+    uw::domain::MapEvidence targets_evidence;
+    targets_evidence.mutable_keyframe_id()->set_value("scenario");
+    targets_evidence.mutable_local_frame()->set_value("world");
+    targets_evidence.set_representation_type(uw::domain::MAP_REPRESENTATION_POINT_CLOUD);
+    std::string bytes(targets.size() * 3 * sizeof(float), '\0');
+    auto* raw = reinterpret_cast<float*>(bytes.data());
+    for (std::size_t i = 0; i < targets.size(); ++i) {
+      raw[i * 3 + 0] = static_cast<float>(targets[i].x());
+      raw[i * 3 + 1] = static_cast<float>(targets[i].y());
+      raw[i * 3 + 2] = static_cast<float>(targets[i].z());
+    }
+    targets_evidence.set_geometry_or_occupancy(bytes);
+    writer.WriteMessage("/scenario/sonar_targets", 0, targets_evidence);
+  }
+
+  for (int i = 0; i < opt.num_keyframes; ++i) {
+    const uint64_t t_ns = static_cast<uint64_t>(i) * 200'000'000ULL;  // 5 Hz keyframes
+    const std::string kf_id = KeyframeId(i);
+
+    // Ground truth.
+    uw::domain::StateSnapshot gt;
+    gt.mutable_state_id()->set_value(kf_id);
+    gt.mutable_capture_timestamp()->set_seconds(static_cast<int64_t>(t_ns / 1'000'000'000ULL));
+    gt.mutable_capture_timestamp()->set_nanos(static_cast<int32_t>(t_ns % 1'000'000'000ULL));
+    *gt.mutable_pose_wb() = trajectory[i].ToProto();
+    writer.WriteMessage("/gt/state", t_ns, gt);
+
+    // Relative pose evidence (black-box VIO mode, section 8.1) between
+    // consecutive keyframes, with additive translation noise.
+    if (i > 0) {
+      const Pose3 true_relative = trajectory[i - 1].Inverse() * trajectory[i];
+      Pose3 noisy_relative = true_relative;
+      noisy_relative.translation +=
+          Eigen::Vector3d(pose_noise(rng), pose_noise(rng), pose_noise(rng));
+
+      uw::domain::RelativePoseMeasurement measurement;
+      measurement.mutable_from_keyframe()->set_value(KeyframeId(i - 1));
+      measurement.mutable_to_keyframe()->set_value(kf_id);
+      *measurement.mutable_relative_pose() = noisy_relative.ToProto();
+
+      uw::domain::EvidenceId evidence_id;
+      evidence_id.set_value("relpose_" + kf_id);
+      std::vector<uw::domain::ObservationId> sources;
+      auto evidence = uw::domain::MakeEvidence<uw::domain::RelativePoseMeasurement>(
+          evidence_id, sources, measurement, /*noise_scale=*/1.0, "synth_bag_gen_v1");
+      writer.WriteMessage("/evidence/relative_pose", t_ns, evidence);
+    }
+
+    // Sonar: one synthetic ping per target within plausible range, run
+    // through the real sonar_cfar_frontend by apps/replay_demo (not
+    // pre-computed range-bearing evidence — see file header and
+    // BuildSyntheticSonarFrame). One frame per target-in-range, rather than
+    // one frame covering all of them, is a synthetic-demo simplification —
+    // matches apps/replay_demo's documented landmark-association stand-in,
+    // not a general multi-target-per-ping sensor model.
+    for (const auto& target : targets) {
+      const Eigen::Vector3d local = trajectory[i].Inverse().Apply(target);
+      const double range = local.norm();
+      if (range > 12.0) continue;  // out of sonar range for this keyframe
+      const double bearing = std::atan2(local.y(), local.x());
+      const double noisy_range = range + range_noise(rng);
+      const double noisy_bearing = bearing + bearing_noise(rng);
+      const auto frame = BuildSyntheticSonarFrame(kf_id, t_ns, noisy_range, noisy_bearing);
+      writer.WriteMessage("/raw/sonar_frame", t_ns, frame);
+    }
+
+    // Depth.
+    {
+      uw::domain::PressureDepthMeasurement measurement;
+      measurement.set_depth_m(-trajectory[i].translation.z());
+      measurement.set_sigma_m(0.05);
+      uw::domain::EvidenceId evidence_id;
+      evidence_id.set_value("depth_" + kf_id);
+      uw::domain::ObservationId observation_id;
+      observation_id.set_value(kf_id);
+      std::vector<uw::domain::ObservationId> sources{observation_id};
+      auto evidence = uw::domain::MakeEvidence<uw::domain::PressureDepthMeasurement>(
+          evidence_id, sources, measurement, /*noise_scale=*/1.0, "synth_bag_gen_v1");
+      writer.WriteMessage("/evidence/depth", t_ns, evidence);
+    }
+  }
+
+  writer.Close();
+  std::cout << "wrote " << opt.num_keyframes << " keyframes to " << opt.out_path << "\n";
+  return 0;
+}
