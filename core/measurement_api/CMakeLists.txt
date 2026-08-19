@@ -1,0 +1,3 @@
+add_library(uw_measurement_api INTERFACE)
+target_include_directories(uw_measurement_api INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(uw_measurement_api INTERFACE uw_domain uw_sensor_models)
