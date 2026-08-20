@@ -11,17 +11,57 @@ tags:
   - holoocean
   - slam
   - demo
-status: draft
-updated: 2026-08-18
+status: evolving-plan
+updated: 2026-08-19
+verified_against: 919e1f0
 ---
 
 # HoloOcean 到声光融合 SLAM demo pipeline 方案
 
-> 背景：团队已经基于 [[entities/papers/2024-holoocean-full-featured-marine-robotics-simulator|HoloOcean]] 搭建好水下声光仿真环境。现阶段目标是结合 HoloOcean 仿真、`ivanacollg/sonar_camera_reconstruction` 与 `AutonomousFieldRoboticsLab/SVIn`，构建从仿真数据生成到声光融合 SLAM demo 的完整 pipeline，暂不追求完整 ROV/AUV 产品系统。
+> **文档定位**：本文记录第一阶段 HoloOcean baseline 的工程方案，以及它向当前
+> `uw_slam` 架构演进的过程。当前代码事实以
+> [代码库参考](./uw-slam-codebase-reference-2026-08-18.md) 为准；长期模块边界和技术
+> 决策以[平台架构设计](./acoustic-optic-slam-platform-architecture-2026-08-17.md)为准。
+> 本文中的早期时间表和串联方案属于历史工程背景，不代表当前功能已经全部接通。
+
+## 三十秒摘要
+
+最初方案用 SVIn 提供 VIO 位姿，再由 `sonar_camera_reconstruction` 累积声光点云；
+它适合作为对比 baseline，但声呐没有反向约束位姿，地图也缺少可重定位的局部证据。
+目标架构因此升级为 ROS 无关的领域契约、证据/因子边界、pose-graph 状态估计和
+versioned submap。当前仓库已经跑通合成数据垂直切片，但真实仿真、光学/VIO 前端与
+旧版完整 baseline 仍未端到端连接。
+
+## 当前实施状态
+
+| 状态 | 内容 |
+|---|---|
+| 当前垂直切片 | 合成 MCAP → 声呐 CFAR → 相对位姿/深度/声呐因子 → pose graph → 轨迹评测 |
+| 部分实现 | HoloOcean Python 网关的转换与 MCAP 写入；ROS2 ImagingSonar 传输与消息转换 |
+| 尚未接通 | 真实 HoloOcean/UE5 数据流、光学/VIO 前端、旧串联 baseline 的完整端到端运行 |
+| 历史 baseline | SVIn 位姿输入 `sonar_camera_reconstruction`；保留用于比较，不作为平台骨架 |
+
+## 阅读导航
+
+1. [总体目标](#1-总体目标)
+2. [工程分层](#2-工程分层)
+3. [数据接口设计](#3-数据接口设计)
+4. [接口级落地补充](#4-接口级落地补充基于-2026-08-13-代码审阅)
+5. [Pipeline 分阶段计划](#5-pipeline-分阶段计划)
+6. [关键技术风险](#6-关键技术风险)
+7. [给工程师的任务拆分](#7-给工程师的任务拆分)
+8. [最小验收表](#8-最小验收表)
+9. [与现有知识库关联](#9-与现有知识库关联)
+10. [目标架构演进记录](#10-目标架构演进记录2026-08-17-评审与升级方案)
+11. [代码审计修订附录](#11-代码审计修订附录2026-08-18)
+
+---
+
+> 背景：团队已经基于 HoloOcean（外部知识库资料）搭建好水下声光仿真环境。现阶段目标是结合 HoloOcean 仿真、`ivanacollg/sonar_camera_reconstruction` 与 `AutonomousFieldRoboticsLab/SVIn`，构建从仿真数据生成到声光融合 SLAM demo 的完整 pipeline，暂不追求完整 ROV/AUV 产品系统。
 
 > 2026-08-17 架构定位更新：现有“SVIn VIO 位姿 → `sonar_camera_reconstruction` 点云”的串联方案保留为第一阶段 baseline，但不作为最终系统。目标架构升级为“VIO 先验驱动的声光 pose-graph SLAM + 自适应双前端稠密建图”：SVIn 提供连续局部里程计，成像声纳、depth 与回环约束在上层 pose graph 中修正关键帧位姿；双目视觉精细重建与 sonar-grounded 抗退化重建生成局部几何，再由 submap manager 维护全局一致地图。
 
-> 长期平台边界、领域契约、AI 模型生命周期、运行时状态机和分阶段决策门以 [[comparisons/acoustic-optic-slam-platform-architecture-2026-08-17|水下声光融合 SLAM 平台长期架构设计]] 为准。本文继续保留为 HoloOcean 集成与第一阶段 baseline 的工程方案。
+> 长期平台边界、领域契约、AI 模型生命周期、运行时状态机和分阶段决策门以[水下声光融合 SLAM 平台长期架构设计](./acoustic-optic-slam-platform-architecture-2026-08-17.md)为准。本文继续保留为 HoloOcean 集成与第一阶段 baseline 的工程方案。
 
 ## 1. 总体目标
 
@@ -457,15 +497,15 @@ Day 6-7: SVIn main branch 只做 baseline/audit
 
 ## 9. 与现有知识库关联
 
-- [[comparisons/acoustic-optic-fusion-codebase-survey-2026-08-05|水下声光融合感知可扩展 codebase 调研]]
-- [[entities/papers/2025-opti-acoustic-turbid-reconstruction-stevens|Opti-Acoustic Turbid Recon]]
-- [[entities/papers/2026-versatile-opti-acoustic-volumetric-mapping|Versatile Opti-Acoustic Volumetric Mapping]]
-- [[entities/papers/2024-holoocean-full-featured-marine-robotics-simulator|HoloOcean]]
-- [[entities/papers/2025-holoocean-2-preview|HoloOcean 2.0 Preview]]
-- [[concepts/acoustic-optic-fusion|水下声光融合]]
-- [[concepts/datasets-and-simulators|水下数据集与仿真器]]
+- 水下声光融合感知可扩展 codebase 调研（外部知识库资料）
+- Opti-Acoustic Turbid Recon（外部知识库资料）
+- Versatile Opti-Acoustic Volumetric Mapping（外部知识库资料）
+- HoloOcean（外部知识库资料）
+- HoloOcean 2.0 Preview（外部知识库资料）
+- 水下声光融合（外部知识库资料）
+- 水下数据集与仿真器（外部知识库资料）
 
-## 10. 2026-08-17 目标架构评审与升级方案
+## 10. 目标架构演进记录：2026-08-17 评审与升级方案
 
 ### 10.1 结论：原串联方案可作为 baseline，但不足以成为最终声光 SLAM
 
@@ -806,18 +846,18 @@ HoloOcean 可以证明实时 pipeline、可控退化、工程闭环、消融和�
 
 ### 10.11 对现有知识体系的继承
 
-- [[concepts/factor-graph-underwater-acoustic-optic-slam|Factor Graph 在水下声光融合 SLAM 中的阐述框架]]：采用异构因子、可观测性边界、information scheduling。
-- [[comparisons/slam-underwater-slam-knowledge-framework-2026-08-04|SLAM 与水下 SLAM 知识体系]]：把 camera/sonar 看作产生不同物理约束的前端，不做表层图像拼接。
-- [[entities/papers/2025-russo-robust-underwater-slam-sonar|RUSSO]]：采用视觉退化触发的 sonar motion anchor，但把硬阈值逐步升级为双模态质量审计。
-- [[entities/papers/2018-pose-graph-slam-forward-looking-sonar|Pose-Graph FLS SLAM]]：对 elevation 不可观维度膨胀 covariance，跳过信息贫乏关键帧，用局部 registration 结果注入全局图。
-- [[entities/papers/2025-opti-acoustic-turbid-reconstruction-stevens|Opti-Acoustic Turbid Recon]]：复用 CFAR、DBSCAN、beam-region projection 和高浊度声纳地基重建，同时限制其近距离/前景/准平面 claim。
-- [[entities/papers/2025-oasis-real-time-optic-acoustic-sensing|OASIS]]：借鉴增量 voxel/submap 和实时预算，但不接受单一固定体素分辨率作为高质量最终地图。
-- [[entities/papers/2025-sonar-mast3r-real-time-optic-acoustic|Sonar-MASt3R]]：借鉴近期最佳关键帧 recovery、断开子图和声学 metric anchor；不直接继承其固定基、小工作空间和基础模型依赖。
-- [[comparisons/simulation-slam-difficulty-checklist-2026-08-05|仿真 + 声光融合 SLAM 难点清单]]：保留 P0 time/TF/schema 审计、GT 输入隔离、sim-to-real claim 边界和分层失败日志。
+- Factor Graph 在水下声光融合 SLAM 中的阐述框架（外部知识库资料）：采用异构因子、可观测性边界、information scheduling。
+- SLAM 与水下 SLAM 知识体系（外部知识库资料）：把 camera/sonar 看作产生不同物理约束的前端，不做表层图像拼接。
+- RUSSO（外部知识库资料）：采用视觉退化触发的 sonar motion anchor，但把硬阈值逐步升级为双模态质量审计。
+- Pose-Graph FLS SLAM（外部知识库资料）：对 elevation 不可观维度膨胀 covariance，跳过信息贫乏关键帧，用局部 registration 结果注入全局图。
+- Opti-Acoustic Turbid Recon（外部知识库资料）：复用 CFAR、DBSCAN、beam-region projection 和高浊度声纳地基重建，同时限制其近距离/前景/准平面 claim。
+- OASIS（外部知识库资料）：借鉴增量 voxel/submap 和实时预算，但不接受单一固定体素分辨率作为高质量最终地图。
+- Sonar-MASt3R（外部知识库资料）：借鉴近期最佳关键帧 recovery、断开子图和声学 metric anchor；不直接继承其固定基、小工作空间和基础模型依赖。
+- 仿真 + 声光融合 SLAM 难点清单（外部知识库资料）：保留 P0 time/TF/schema 审计、GT 输入隔离、sim-to-real claim 边界和分层失败日志。
 
-## 11. 2026-08-18 代码级审计修订
+## 11. 代码审计修订附录：2026-08-18
 
-> 本节基于对 `SVIn`、`sonar_camera_reconstruction`、`ocean_t` 三个仓库的逐文件代码审计（此前多处判断仅基于 README 或早期抽样审阅）。完整分析见 [[comparisons/acoustic-optic-slam-platform-architecture-2026-08-17#22-2026-08-18-三方代码库审计与架构细化|平台架构设计第 22 节]]，本节只列出对本文 Phase 划分和执行顺序有直接影响的修订。
+> 本节基于对 `SVIn`、`sonar_camera_reconstruction`、`ocean_t` 三个仓库的逐文件代码审计（此前多处判断仅基于 README 或早期抽样审阅）。完整分析见[平台架构设计第 22 节](./acoustic-optic-slam-platform-architecture-2026-08-17.md#22-2026-08-18-三方代码库审计与架构细化)，本节只列出对本文 Phase 划分和执行顺序有直接影响的修订；这些修订优先于正文中的早期事实假设。
 
 ### 11.1 对本文既有判断的修正
 

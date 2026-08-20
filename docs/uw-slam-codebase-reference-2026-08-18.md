@@ -3,27 +3,39 @@ title: uw_slam 代码库参考文档
 type: codebase-reference
 status: current
 scope: "what the code does today, file-by-file/type-by-type — not a design proposal"
-updated: 2026-08-18
+updated: 2026-08-19
+verified_commit: 919e1f0
 ---
 
 # uw_slam 代码库参考文档
 
-本文是 `uw_slam` 的代码级参考文档：逐层、逐目录、逐类型地记录当前代码库里
+本文是 `uw_slam` 的代码级参考文档：基于 commit `919e1f0` 逐层、逐目录、逐类型地记录当前代码库里
 实际存在的东西，真实的类名/函数签名/字段名/算法参数，以及它们如何连接成
-一条可运行的端到端管线。
+一条可运行的端到端管线。它的权威范围是“代码现在做什么”，不是目标架构或未来计划。
 
 这份文档和仓库里已有的三份文档分工不同，互不重复：
 
 | 文档 | 性质 | 回答的问题 |
 |---|---|---|
+| [`docs/README.md`](./README.md) | 文档路由 | 遇到具体任务应该先读哪份文档、冲突时以谁为准 |
 | [`README.md`](../README.md) | 项目门面 | 这是什么、怎么编译、怎么跑 demo |
 | [`acoustic-optic-slam-platform-architecture-2026-08-17.md`](./acoustic-optic-slam-platform-architecture-2026-08-17.md) | 长期架构设计（已批准） | 系统**应该**长成什么样、为什么这么设计 |
-| [`holoocean-to-acoustic-optic-slam-pipeline-2026-08-05.md`](./holoocean-to-acoustic-optic-slam-pipeline-2026-08-05.md) | 第一阶段工程方案（草稿） | 怎么把三份外部代码接起来跑通第一版 |
+| [`holoocean-to-acoustic-optic-slam-pipeline-2026-08-05.md`](./holoocean-to-acoustic-optic-slam-pipeline-2026-08-05.md) | 演进中/历史工程方案 | 第一阶段 baseline 如何设计，以及为什么演变成当前架构 |
 | 本文 | 代码参考 | 代码**现在**长什么样：真实类型、真实函数、真实数据怎么流动 |
 
 架构文档描述的是目标状态，很多设计尚未实现或只实现了一部分；本文只记录"读一遍
 代码之后能确认的事实"，凡是设计与实现有出入的地方，都会明确标出"文档说 X，代码
 实际是 Y"。
+
+## 常用任务入口
+
+- 查 Protobuf 与领域类型：[第 4 节](#4-领域契约层schemasproto)。
+- 查 core 接口和传感器模型：[第 5 节](#5-core-层)。
+- 查前端、因子、求解器和地图：[第 6 节](#6-algorithms-层)。
+- 查完整 Demo 数据流：[第 10 节](#10-端到端运行时序)。
+- 查配置加载与覆盖关系：[第 11 节](#11-配置系统-configs)。
+- 查测试、构建和工具：[第 12–14 节](#12-测试体系-tests)。
+- 查当前实现边界：[第 15 节](#15-已知边界)。
 
 ## 目录
 
@@ -47,9 +59,10 @@ updated: 2026-08-18
 
 ## 1. 现状速览
 
-骨架 + 每层至少一条真实可跑的垂直切片，13/13 C++ 测试、9/9 Python 测试通过，
-有一条端到端可跑的合成数据 demo（`synth_bag_gen` → `replay_demo`，6 次迭代收敛，
-ATE rmse ~3cm）。不是空骨架，也不是生产系统，具体缺什么见第 15 节。
+骨架 + 每层至少一条真实可跑的垂直切片，14/14 CTest、9/9 Python 测试通过，
+有一条端到端可跑的合成数据 demo（`synth_bag_gen` → `replay_demo`，通常 6–7 次迭代
+收敛，ATE RMSE 约 0.15–0.22 m，随 seed 波动且不作为验收阈值）。不是空骨架，也不是
+生产系统，具体缺什么见第 15 节。
 
 ---
 
@@ -956,9 +969,9 @@ CLI：`--bag <path>`（必填）、`--experiment <yaml>`（可选）、
 1. 加载配置：给了 `--experiment` 就 `LoadExperimentConfig` → 拿到
    `PlatformDefaultsConfig`（求解器 max_iterations/initial_lambda、三种因子的
    sqrt-information 常数、`warmup_seconds`、`write_run_manifest`）。
-2. `ReadSonarTargets(bag)`：读 `/scenario/sonar_targets`
-   （`MapEvidence`，`geometry_or_occupancy()` 里的紧凑 float32 xyz），这是对
-   "真实地标/submap 查询"的替代品（v1 限制，文件头注释已标注）。
+2. 建立在线声呐路标存储：实例化 `SubmapManager`，用固定 Identity pose 创建
+   `"landmarks"` bucket。`replay_demo` 不读取 `/scenario/sonar_targets` 做数据关联；
+   路标从实际 CFAR 检测和当前航位推算位姿在线发现。
 3. 预热窗口：`warmup_keyframes = ceil(warmup_seconds / 0.2s)`
    （0.2s 是 `synth_bag_gen` 固定的 5Hz keyframe 间隔）；这些 keyframe 只获得
    相对位姿（航位推算）因子，被排除在声呐 range/深度这类"绝对参考"因子之外，
@@ -982,11 +995,12 @@ CLI：`--bag <path>`（必填）、`--experiment <yaml>`（可选）、
    一致）。读 `/raw/sonar_frame`，跳过图里不存在或在预热窗口内的 keyframe 对应
    的帧，调用 `sonar_frontend.ProcessSonarFrame(frame)`（真实跑一遍
    CFAR+极坐标+DBSCAN，不是预算好的证据）→ `HypothesisSet`，只用
-   `candidates(0)`（top-1，按 `hypothesis.proto` 的 v1 规则）。数据关联：对
-   `targets` 线性搜索，取哪个 scenario 目标从当前位姿估计出发算出的 range
-   离测得的 range 最近（文档明确标注这是合成 demo 的替代做法，不是通用算法）。
-   用 `FactorBuildContext{nearby_points_W = {best_target}}` 构建
-   `SonarRangeFactorBuilder` 残差块。
+   `candidates(0)`（top-1，按 `hypothesis.proto` 的 v1 规则）。数据关联：用当前
+   dead-reckoned pose 把 range/bearing 检测投到世界系，调用
+   `SubmapManager::QueryNearestPoint(predicted_point_W, 1.5m)`；命中则复用稳定路标，
+   未命中则把该预测点作为新 `MapEvidence` 插入 `"landmarks"` bucket。随后用
+   `FactorBuildContext{nearby_points_W = {landmark_W}}` 构建
+   `SonarRangeFactorBuilder` 残差块。这是真实在线查询，但仍没有联合路标优化。
 8. 深度一遍：读 `/evidence/depth`，跳过预热窗口，构建
    `DepthFactorBuilder`（`proposed_noise = depth_sqrt_info`）。
 9. 求解：`GaussNewtonSolver::Solve(problem, {max_iterations,
@@ -1006,7 +1020,8 @@ CLI：`--bag <path>`（必填）、`--experiment <yaml>`（可选）、
     `simulator = "synthetic (apps/tools/synth_bag_gen)"`）。
 
 文件头注释里明确列出的 v1 限制：没有真实的可靠性调度器（sqrt-information
-常数是固定值，不是标定出来的）；没有真实地标/submap 查询；只消费 top-1 声呐假设；
+常数是固定值，不是标定出来的）；路标来自在线 submap 查询但不会作为变量联合优化，
+首次发现时还要用当前 pose 和零 elevation 初始化；只消费 top-1 声呐假设；
 分层配置驱动求解器/噪声参数，但不驱动 frontend/factor_builder/map_backend 的
 *选择*（管线写死为 `relative_pose_v1 + sonar_range_v1 + depth_v1`）。
 
@@ -1060,12 +1075,11 @@ synth_bag_gen --experiment configs/experiment/synthetic_smoke.yaml --out synthet
 replay_demo --bag synthetic.mcap --experiment configs/experiment/synthetic_smoke.yaml --out demo
   │
   ├─ LoadExperimentConfig（同一份 experiment yaml，同一套 defaults/rig/scenario）
-  ├─ ReadSonarTargets(bag)  ← /scenario/sonar_targets
   ├─ kf0 anchor：从 /evidence/depth 找 kf0 自己的深度，种 kf0 的 z
   ├─ PoseGraphProblem：AddKeyframe("kf0", fixed=true)
   ├─ 相对位姿一遍：/evidence/relative_pose → 航位推算初值 → RelativePoseFactorBuilder
   ├─ 声呐一遍：/raw/sonar_frame → SonarCfarFrontend::ProcessSonarFrame（真跑 CFAR+DBSCAN）
-  │              → top-1 假设 → 最近目标数据关联 → SonarRangeFactorBuilder
+  │              → top-1 假设 → SubmapManager 查询/发现路标 → SonarRangeFactorBuilder
   ├─ 深度一遍：/evidence/depth → DepthFactorBuilder
   ├─ GaussNewtonSolver::Solve（LM，稠密 LDLT，≤30 次迭代）
   ├─ 逐 keyframe：StateStore::Commit + submap_manager.UpdateKeyframePose
@@ -1074,7 +1088,9 @@ replay_demo --bag synthetic.mcap --experiment configs/experiment/synthetic_smoke
   └─ 写 demo_trajectory.tum（TUM 格式）+ demo_run_manifest.json（RunManifest）
 ```
 
-典型结果：6 次迭代内收敛，ATE rmse ~3cm（合成噪声量级本就是厘米级）。
+典型结果：6–7 次迭代内收敛，ATE RMSE 约 0.15–0.22 m（随 seed 波动，不是验收
+阈值）。早期约 3 cm 的结果依赖直接使用真值路标；改为在线路标发现后，声呐缺少
+elevation 且路标不参与联合优化，初始化误差会分摊到 x/y 估计。
 `tests/l2_replay/determinism_test.sh` 就是把这整条流程跑两遍、diff
 `_trajectory.tum`，验证其中没有藏着全局可变随机状态（见
 [第 12 节](#12-测试体系-tests)）。
@@ -1221,7 +1237,7 @@ diff -q "$WORKDIR/run1_trajectory.tum" "$WORKDIR/run2_trajectory.tum"
 | `evaluation` | 零误差自比较；已知 1m 偏移轨迹对 rmse 精确为 1.0 |
 
 ```bash
-ctest --test-dir build --output-on-failure   # C++：13/13
+ctest --test-dir build --output-on-failure   # C++：14/14
 cd adapters/holoocean && pytest               # Python：9/9
 tools/lint/check_no_ros_in_core.sh            # 依赖不变量
 ```
@@ -1315,9 +1331,9 @@ build-essential`，60s 超时专门用来探测卡住/被限速的镜像（对�
   app 真正实例化四车道队列或驱动状态机转换，这层运行时基础设施是"已搭、未接线"。
 - 求解器是 Eigen 手写 LM，不是 Ceres/GTSAM（架构第 20 节延后决策），且直接在原始
   7 参数块上做加法更新+事后重归一化，不是严格的流形更新。
-- 位姿图只优化 keyframe 变量，不联合优化路标点；`nearby_points_W` 目前由外部
-  （合成 scenario 或未来的 submap_manager 查询）提供。`sonar_range_factor` 的
-  数据关联用"按当前航迹推算位姿选最近已知目标"，只在合成数据下成立。
+- 位姿图只优化 keyframe 变量，不联合优化路标点；`nearby_points_W` 由
+  `SubmapManager::QueryNearestPoint()` 在线查询或发现。新路标用当前 dead-reckoned pose
+  和零 elevation 初始化，后续只复用固定位置，不会被图优化精化。
 - `algorithms/mapping/submap_manager` 尽管叫"submap"，实现粒度是按 keyframe，
   没有距离/重叠/帧数触发的 submap 边界逻辑。
 - `evaluation/` 只有 ATE（平移 RMSE/mean/max），没有 RPE，也没有 Umeyama

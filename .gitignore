@@ -1,7 +1,8 @@
 # Sibling repositories kept for reference/porting; not part of this repo's history.
-# Contents are ignored, but README.md (how to fetch each one) is tracked.
+# Contents are ignored; the recovery README and audited overview are tracked.
 /external_repos/*
 !/external_repos/README.md
+!/external_repos/external-repos-overview.md
 
 # Build artifacts
 /build/

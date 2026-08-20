@@ -1,18 +1,68 @@
 ---
 title: 水下声光融合 SLAM 平台长期架构设计
 created: 2026-08-17
-updated: 2026-08-18
+updated: 2026-08-19
 type: engineering-design
 tags: [acoustic-optic-fusion, sonar, camera, slam, multi-modal-slam, calibration, 3d-reconstruction, deep-learning]
 status: approved-design
 confidence: high
+implementation_reference: ./uw-slam-codebase-reference-2026-08-18.md
 ---
 
 # 水下声光融合 SLAM 平台长期架构设计
 
+> **文档权威范围**：本文定义平台应该演进到的目标状态、长期不变量和阶段决策，
+> 不代表所有模块已经实现。当前代码中实际存在的类型、算法、接线和验证结果以
+> [代码库参考](./uw-slam-codebase-reference-2026-08-18.md)为准。第 22 节是后续逐文件
+> 审计附录，其中对上游版本、接口和风险的修正优先于正文里的早期事实假设。
+
 > 本文定义从 HoloOcean 水下实时仿真到声光融合 SLAM、三维重建和可视化演示的长期平台架构。SVIn、`sonar_camera_reconstruction` 以及未来论文代码均作为可替换 baseline 或 adapter，不拥有平台的数据契约、状态、地图和运行时控制权。
 
 > 顶层定位：以可观测性和概率状态为核心，以几何方法保证下限，以学习方法提高测量与地图上限，以分层地图隔离实时性和展示质量，以数据证据闭环支持长期迭代的研究型可部署平台。
+
+## 核心决策摘要
+
+- 算法核心与 ROS2、仿真器和第三方消息隔离，外部系统只通过 adapter 接入。
+- Protobuf 是跨语言领域契约的唯一事实源，原始观测、证据、因子、状态和地图语义分层。
+- 几何/概率估计器拥有权威状态，学习模型只能在校准、信息上限和 Gate 约束下增强测量。
+- 地图保存局部证据及其状态版本，允许轨迹修正后重定位或重融合，而不是一次性烘焙到世界系。
+- 录制、配置、随机 seed、模型与代码版本必须可追溯，确定性回放是平台级验收面。
+- 光学紧耦合、学习前端和神经地图按阶段进入，不提前侵入定位关键路径。
+
+## 当前实现映射
+
+| 状态 | 架构内容 |
+|---|---|
+| 已落地垂直切片 | Protobuf 契约、ROS 无关 core、声呐 CFAR、三类因子、pose graph、SubmapManager、MCAP、分层配置、RunManifest、确定性回放与轨迹评测 |
+| 部分落地 | HoloOcean Python 数据网关、ROS2 ImagingSonar 桥接、第三方 provider 边界 |
+| 仍是目标设计 | 实时光学/VIO 前端、原生紧耦合、多路自适应 reliability cap、完整三层地图、学习模型生命周期、神经地图与真实数据闭环 |
+
+## 阅读导航
+
+1. [背景与架构决策](#1-背景与架构决策)
+2. [目标与非目标](#2-目标与非目标)
+3. [技术路线选择](#3-技术路线选择)
+4. [顶层逻辑](#4-顶层逻辑数据面控制面与证据面)
+5. [模块依赖 DAG](#5-模块依赖-dag)
+6. [推荐仓库边界](#6-推荐仓库边界)
+7. [领域契约](#7-领域契约)
+8. [估计骨架与相关性治理](#8-估计骨架与相关性治理)
+9. [三层地图](#9-三层地图)
+10. [AI 模型生命周期](#10-ai-模型生命周期)
+11. [Sim-to-real 数据闭环](#11-sim-to-real-数据闭环)
+12. [运行时状态与恢复](#12-运行时状态与恢复)
+13. [线程、队列与 GPU 调度](#13-线程队列与-gpu-调度)
+14. [部署与配置治理](#14-部署与配置治理)
+15. [测试与评测矩阵](#15-测试与评测矩阵)
+16. [第一阶段最小闭环](#16-第一阶段最小闭环)
+17. [分阶段决策门](#17-分阶段决策门)
+18. [Demo 叙事与验收](#18-demo-叙事与验收)
+19. [第三方代码角色](#19-第三方代码角色)
+20. [已冻结与延后决策](#20-已冻结与延后决策)
+21. [架构不变量摘要](#21-架构不变量摘要)
+22. [代码库审计与架构细化附录](#22-2026-08-18-三方代码库审计与架构细化)
+
+---
 
 ## 1. 背景与架构决策
 
@@ -20,7 +70,7 @@ confidence: high
 
 - HoloOcean 水下声光仿真环境搭建；
 - ROS2 bridge 初步实现；
-- SVIn 在 ROS2 Humble 上的版本与依赖适配；
+- SVIn 主分支在 ROS2 Jazzy 上的版本与依赖适配；
 - `sonar_camera_reconstruction` 和 SVIn 官方数据集跑通；
 - 对 SVIn ROS2 分支声呐未迁移、ROS1 分支使用 Imagenex 831L 测距声呐的代码审计；
 - 对 HoloOcean imaging sonar 在 Windows 正常、Linux 异常的初步定位。
@@ -37,10 +87,10 @@ confidence: high
 
 本设计选择“ROS 无关算法内核 + 模块化单体 + 边缘适配器 + Hybrid 概率估计骨架”。理论依据与技术背景见：
 
-- [[comparisons/slam-underwater-slam-knowledge-framework-2026-08-04|SLAM 与水下 SLAM 知识体系、技术框架与技术演进]]；
-- [[concepts/factor-graph-underwater-acoustic-optic-slam|Factor Graph 在水下声光融合 SLAM 中的阐述框架]]；
-- [[comparisons/holoocean-to-acoustic-optic-slam-pipeline-2026-08-05|HoloOcean 到声光融合 SLAM demo pipeline 方案]]；
-- [[comparisons/simulation-slam-difficulty-checklist-2026-08-05|仿真 + 声光融合 SLAM 难点清单]]。
+- SLAM 与水下 SLAM 知识体系、技术框架与技术演进（外部知识库资料）；
+- Factor Graph 在水下声光融合 SLAM 中的阐述框架（外部知识库资料）；
+- [HoloOcean 到声光融合 SLAM demo pipeline 方案](./holoocean-to-acoustic-optic-slam-pipeline-2026-08-05.md)；
+- 仿真 + 声光融合 SLAM 难点清单（外部知识库资料）。
 
 ## 2. 目标与非目标
 
