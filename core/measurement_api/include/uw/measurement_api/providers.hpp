@@ -40,4 +40,14 @@ class SonarFrameProvider {
   virtual uw::domain::HealthReport Health() const = 0;
 };
 
+// A sensor-gateway-side source of ImageFrame, mirroring SonarFrameProvider.
+// Emits independent raw frames per physical camera; runtime pairing into a
+// CameraFrameBundle (frontend.hpp) belongs to the later synchronizer plan.
+class CameraFrameProvider {
+ public:
+  virtual ~CameraFrameProvider() = default;
+  virtual std::optional<uw::domain::ImageFrame> PollImageFrame() = 0;
+  virtual uw::domain::HealthReport Health() const = 0;
+};
+
 }  // namespace uw::measurement_api

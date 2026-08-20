@@ -21,6 +21,14 @@ T GetOr(const YAML::Node& node, const char* key, T fallback) {
   return node[key].as<T>();
 }
 
+void RequireSequenceLength(const YAML::Node& node, const char* field,
+                           std::size_t expected, const std::string& path) {
+  if (!node[field] || !node[field].IsSequence() || node[field].size() != expected) {
+    throw std::runtime_error(std::string(field) + " must contain exactly " +
+                             std::to_string(expected) + " values: " + path);
+  }
+}
+
 }  // namespace
 
 PlatformDefaultsConfig LoadPlatformDefaultsConfig(const std::string& path) {
@@ -57,6 +65,7 @@ uw::domain::RigCalibrationSnapshot LoadRigConfig(const std::string& path) {
       auto* edge = snapshot.add_frame_tree();
       edge->mutable_parent_frame()->set_value(edge_node["parent_frame"].as<std::string>());
       edge->mutable_child_frame()->set_value(edge_node["child_frame"].as<std::string>());
+      RequireSequenceLength(edge_node, "transform_row_major", 16, path);
       auto* transform = edge->mutable_transform();
       for (const auto& value : edge_node["transform_row_major"]) {
         transform->add_matrix_row_major(value.as<double>());
@@ -75,6 +84,37 @@ uw::domain::RigCalibrationSnapshot LoadRigConfig(const std::string& path) {
     noise->set_sigma_accel_bias_walk_c(GetOr<double>(imu, "sigma_accel_bias_walk_c", 0.0));
     noise->set_rate_hz(GetOr<double>(imu, "rate_hz", 200.0));
     noise->set_gravity_mps2(GetOr<double>(imu, "gravity_mps2", 9.80665));
+  }
+
+  if (root["cameras"]) {
+    for (const auto& camera_node : root["cameras"]) {
+      auto* camera = snapshot.add_cameras();
+      camera->mutable_sensor_id()->set_value(camera_node["sensor_id"].as<std::string>());
+      camera->set_width(camera_node["width"].as<uint32_t>());
+      camera->set_height(camera_node["height"].as<uint32_t>());
+      RequireSequenceLength(camera_node, "k_matrix_row_major", 9, path);
+      if (camera_node["width"].as<uint32_t>() == 0 ||
+          camera_node["height"].as<uint32_t>() == 0) {
+        throw std::runtime_error("camera width/height must be non-zero: " + path);
+      }
+      for (const auto& value : camera_node["k_matrix_row_major"]) {
+        camera->add_k_matrix_row_major(value.as<double>());
+      }
+      if (camera_node["distortion"]) {
+        for (const auto& value : camera_node["distortion"]) {
+          camera->add_distortion(value.as<double>());
+        }
+      }
+      camera->set_distortion_model(
+          GetOr<std::string>(camera_node, "distortion_model", std::string("plumb_bob")));
+    }
+  }
+
+  if (root["time_offset_seconds"]) {
+    for (const auto& entry : root["time_offset_seconds"]) {
+      (*snapshot.mutable_time_offset_seconds())[entry.first.as<std::string>()] =
+          entry.second.as<double>();
+    }
   }
 
   if (root["sonar_beam_models"]) {
@@ -158,6 +198,9 @@ ExperimentConfig LoadExperimentConfig(const std::string& path) {
     config.scenario = LoadScenarioConfig(ResolveRelative(base_dir, root["scenario"].as<std::string>()));
   }
 
+  if (root["frontends"] && root["frontends"]["optical"]) {
+    config.optical_frontend = root["frontends"]["optical"].as<std::string>();
+  }
   if (root["frontends"] && root["frontends"]["sonar"]) {
     config.sonar_frontend = root["frontends"]["sonar"].as<std::string>();
   }

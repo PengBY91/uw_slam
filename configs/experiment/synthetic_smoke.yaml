@@ -9,6 +9,7 @@ scenario: scenario/synthetic_smoke.yaml
 defaults: defaults/platform.yaml
 
 frontends:
+  optical: stereo_depth_frontend_v1
   sonar: sonar_cfar_frontend_v1
 
 factor_builders:

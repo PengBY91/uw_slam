@@ -67,6 +67,79 @@ message ImuPreintegrationMeasurement {
   repeated double bias_accel = 6;           // 3 entries
 }
 
+enum OpticalDepthScaleStatus {
+  OPTICAL_DEPTH_SCALE_STATUS_UNSPECIFIED = 0;
+  OPTICAL_DEPTH_SCALE_STATUS_METRIC = 1;
+  OPTICAL_DEPTH_SCALE_STATUS_RELATIVE_SCALE = 2;
+  OPTICAL_DEPTH_SCALE_STATUS_UNOBSERVED_SCALE = 3;
+}
+
+message OpticalDepthPriorMeasurement {
+  FrameId reference_camera_frame = 1;
+  uint32 width = 2;
+  uint32 height = 3;
+  repeated float depth_m = 4 [packed = true];
+  repeated float variance_m2 = 5 [packed = true];
+  bytes valid_mask = 6;
+  OpticalDepthScaleStatus scale_status = 7;
+  string producer_type = 8;
+}
+
+enum AcousticOpticAssociationStatus {
+  ACOUSTIC_OPTIC_ASSOCIATION_STATUS_UNSPECIFIED = 0;
+  ACOUSTIC_OPTIC_ASSOCIATION_STATUS_ACCEPTED = 1;
+  ACOUSTIC_OPTIC_ASSOCIATION_STATUS_AMBIGUOUS = 2;
+  ACOUSTIC_OPTIC_ASSOCIATION_STATUS_CONFLICT = 3;
+  ACOUSTIC_OPTIC_ASSOCIATION_STATUS_REJECTED = 4;
+}
+
+enum AcousticOpticAssociationReason {
+  ACOUSTIC_OPTIC_ASSOCIATION_REASON_UNSPECIFIED = 0;
+  ACOUSTIC_OPTIC_ASSOCIATION_REASON_NONE = 1;
+  ACOUSTIC_OPTIC_ASSOCIATION_REASON_TIME_DELTA = 2;
+  ACOUSTIC_OPTIC_ASSOCIATION_REASON_CALIBRATION = 3;
+  ACOUSTIC_OPTIC_ASSOCIATION_REASON_SCALE = 4;
+  ACOUSTIC_OPTIC_ASSOCIATION_REASON_NO_CANDIDATE = 5;
+  ACOUSTIC_OPTIC_ASSOCIATION_REASON_AMBIGUOUS_MARGIN = 6;
+  ACOUSTIC_OPTIC_ASSOCIATION_REASON_CROSS_MODAL_CONFLICT = 7;
+  ACOUSTIC_OPTIC_ASSOCIATION_REASON_POSTERIOR_INVALID = 8;
+  ACOUSTIC_OPTIC_ASSOCIATION_REASON_VARIANCE_NOT_IMPROVED = 9;
+}
+
+message AcousticOpticAssociationRecord {
+  EvidenceId sonar_evidence_id = 1;
+  AcousticOpticAssociationStatus status = 2;
+  repeated uint32 candidate_pixel_indices = 3 [packed = true];
+  bool has_selected_pixel = 4;
+  uint32 selected_pixel_index = 5;
+  double best_score = 6;
+  double second_best_score = 7;
+  double time_delta_seconds = 8;
+  double prior_depth_m = 9;
+  double posterior_depth_m = 10;
+  double prior_variance_m2 = 11;
+  double posterior_variance_m2 = 12;
+  AcousticOpticAssociationReason reason = 13;
+}
+
+enum DepthContribution {
+  DEPTH_CONTRIBUTION_INVALID = 0;
+  DEPTH_CONTRIBUTION_OPTICAL_ONLY = 1;
+  DEPTH_CONTRIBUTION_ACOUSTIC_OPTIC = 2;
+}
+
+message FusedDepthMeasurement {
+  FrameId reference_camera_frame = 1;
+  uint32 width = 2;
+  uint32 height = 3;
+  repeated float depth_m = 4 [packed = true];
+  repeated float variance_m2 = 5 [packed = true];
+  bytes valid_mask = 6;
+  // One byte per pixel, encoded with DepthContribution values.
+  bytes contribution_mask = 7;
+  repeated AcousticOpticAssociationRecord associations = 8;
+}
+
 // Generic evidence envelope, per platform architecture section 7.4.
 // `estimated_noise_scale` is a frontend SUGGESTION, never the backend's
 // final information matrix (that is FactorBuilder's job, section 7.6).
@@ -91,5 +164,7 @@ message MeasurementEvidence {
     StereoDepthMeasurement stereo_depth = 13;
     SonarRegistrationMeasurement sonar_registration = 14;
     ImuPreintegrationMeasurement imu_preintegration = 15;
+    OpticalDepthPriorMeasurement optical_depth_prior = 16;
+    FusedDepthMeasurement fused_depth = 17;
   }
 }

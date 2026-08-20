@@ -102,13 +102,16 @@ C++ 直接读）。
 ## 3. 目录结构地图
 
 ```
-schemas/proto/uw/domain/     11 个 .proto 文件，领域契约唯一事实源
+schemas/proto/uw/domain/     12 个 .proto 文件，领域契约唯一事实源
 core/
   domain/                    uw_domain：Stamp 助手、oneof payload 访问器模板
-  sensor_models/             uw_sensor_models：Pose3、声呐 beam 几何
+  sensor_models/             uw_sensor_models：Pose3、声呐 beam 几何、PinholeCamera/StereoGeometry
   measurement_api/           uw_measurement_api：Frontend/FactorBuilder/ResidualBlock/Provider 抽象（纯头文件）
 algorithms/
   frontends/sonar_cfar_frontend/     CFAR + 极坐标转换 + DBSCAN（移植自 sonar_camera_reconstruction）
+  frontends/stereo_optical_depth_frontend/  原生 SAD block matcher + StereoOpticalDepthFrontend（声光 plan 2）
+  frontends/acoustic_optic_associator/      FLS 弧带投影候选生成 + 几何关联审计，不含 posterior（声光 plan 3）
+  frontends/acoustic_optic_depth_fusion/    posterior 深度优化 + 真正产出 FusedDepthMeasurement（声光 plan 4）
   factor_builders/
     sonar_range_factor/              残差移植自 SVIn，雅可比独立重导
     relative_pose_factor/            原生：6D 相对位姿残差
@@ -122,6 +125,7 @@ runtime/
     config.hpp                       defaults→rig→scenario→experiment 分层配置类型
     run_manifest.hpp                 RunManifest（一次运行的不可变记录）
     mcap_io.hpp                      MCAP 读写的 protobuf 封装
+    acoustic_optic_synchronizer.hpp  纯函数：capture-time 声光配对/拒绝（声光 plan 3）
 adapters/
   holoocean/                         Python 包 uw_holoocean_adapter，直连 HoloOcean
   ros2/                              UW_BUILD_ROS2 开关保护的 ROS2 节点
@@ -131,13 +135,16 @@ adapters/
     sonar_camera_reconstruction_baseline/   纯 stub，脚本体是 TODO+exit 1
   datasets/                          纯 stub，只有 README
 apps/
-  tools/synth_bag_gen/                合成带真值的 MCAP bag
+  tools/synth_bag_gen/                合成带真值的 MCAP bag（位姿图/sonar/depth 路径）
+  tools/synth_stereo_gen/             合成单帧立体图像对 + GT 深度（声光 plan 2，独立于上者）
+  tools/optical_baseline_eval/        跑 StereoOpticalDepthFrontend，用 depth_metrics 打分
   replay_demo/                        bag 回放 → 前端 → 因子构建 → 求解 → 评测
-evaluation/                          ATE（无 RPE）
+evaluation/                          ATE（无 RPE）、depth RMSE/MAE/coverage
 configs/                             defaults/rig/scenario/experiment 四层 YAML
 tests/
   l0_contracts/                      protobuf round-trip 契约测试
   l2_replay/determinism_test.sh      两次跑 replay_demo 逐字节比对
+  l2_replay/optical_baseline_smoke_test.sh   synth_stereo_gen + optical_baseline_eval 端到端阈值门禁
 tools/
   lint/check_no_ros_in_core.sh       依赖不变量检查
   codegen/gen_py.sh                  生成 Python protobuf 绑定
@@ -188,6 +195,14 @@ protoc 因此为每一个生成独立的 C++/Python 类，类型系统直接阻�
 `sound_speed_assumption`。字段设计参照 `sonar_camera_reconstruction` 的
 `OculusPing`/`OculusFire`。
 
+### `image.proto`
+`ImageFrame`：canonical camera raw observation。`header`（`ObservationHeader`，与
+`SonarFrame` 共用同一套 capture/receive time、frame、calibration version、provenance
+语义）`width` `height` `row_stride_bytes` `encoding`（嵌套 enum：`MONO8/RGB8/BGR8`）
+`pixel_data`（bytes）`is_rectified` `exposure_seconds`。每个物理相机各自发出自己的
+`ImageFrame`；左右目配对由 runtime 按 capture time 和 rig 配置重建，不通过 topic 名
+隐式推断。
+
 ### `measurement.proto` —— 带物理语义的 typed payload
 - `SonarRangeBearing`：`range_m` `bearing_rad` `range_sigma_m` `bearing_sigma_rad`
   `sonar_frame`。故意不含 elevation，2D 前视声呐 ping 本来就观测不到。
@@ -195,12 +210,18 @@ protoc 因此为每一个生成独立的 C++/Python 类，类型系统直接阻�
   （语义 `from_T_to`）`covariance_6x6_row_major`（36 个 double，顺序
   `[tx,ty,tz,rx,ry,rz]`）。
 - `PressureDepthMeasurement`：`depth_m` `sigma_m`。
-- `VisualTrackMeasurement`/`StereoDepthMeasurement`/`SonarRegistrationMeasurement`/
-  `ImuPreintegrationMeasurement`：占位消息，暂无对应的 factor_builder 消费。
+- `VisualTrackMeasurement`/`SonarRegistrationMeasurement`/`ImuPreintegrationMeasurement`：
+  占位消息，暂无对应的 factor_builder 消费。
+- `OpticalDepthPriorMeasurement`/`FusedDepthMeasurement`：已落地 wire contract、C++ validation
+  和 C++/Python round-trip tests。`OpticalDepthPriorMeasurement` 由
+  `StereoOpticalDepthFrontend`（6.7）真正产出；`FusedDepthMeasurement` 由
+  `AcousticOpticDepthFusionFrontend::Fuse`（6.9）真正产出——两者都还没被任何 app 调用。
+- `StereoDepthMeasurement`：保留的早期占位 payload，新代码不再以它作为通用 optical
+  frontend 输出。
 - `MeasurementEvidence`：`evidence_id` `source_observations`（repeated）
   `estimated_noise_scale`（**只是前端建议值，绝不是最终 information**）
   `quality_features`（map）`observable_subspace` `valid_domain`
-  `algorithm_version` `model_version`，然后一个覆盖上述 7 种 payload 的 `oneof`。
+  `algorithm_version` `model_version`，然后一个覆盖上述 9 种 payload 的 `oneof`。
 
 ### `factor.proto`
 `FactorCandidate`：`associated_state_ids` `measurement_type` `residual_model`
@@ -341,8 +362,29 @@ class SonarFrontend {
 };
 ```
 注意：没有通用的 `Frontend<T>` 模板，设计上刻意不搞一个模板套所有模态
-（声呐/视觉/立体视觉的输入输出物理上不同，架构文档 7.4 节），今天只有这一个非泛型
-的 `SonarFrontend`。输出永远是 `HypothesisSet`，从不折叠成单一 6DoF 位姿。
+（声呐/视觉/立体视觉的输入输出物理上不同，架构文档 7.4 节）。`SonarFrontend`
+输出永远是 `HypothesisSet`，从不折叠成单一 6DoF 位姿。
+
+`frontend.hpp` 还定义了独立的 optical 契约（不是 `SonarFrontend` 的泛化）：
+```cpp
+struct CameraFrameBundle {
+  uw::domain::ImageFrame primary;
+  std::optional<uw::domain::ImageFrame> secondary;
+};
+
+class OpticalDepthFrontend {
+ public:
+  virtual ~OpticalDepthFrontend() = default;
+  virtual std::optional<uw::domain::MeasurementEvidence> Process(
+      const CameraFrameBundle&, const uw::domain::RigCalibrationSnapshot&) = 0;
+  virtual uw::domain::HealthReport Health() const = 0;
+};
+```
+`CameraFrameBundle` 是进程内值类型，不是新的录包消息——canonical bag 只保留独立
+`ImageFrame`，配对由 runtime 按 capture time 和 rig 配置重建。L0 contract test 里仍保留
+一个 fake stereo、一个 fake monocular metric 实现，用来验证接口没有写死双目；
+`algorithms/frontends/stereo_optical_depth_frontend/` 现在提供了真正的
+`StereoOpticalDepthFrontend`（见 6.x 节），但它还没有被 `apps/replay_demo` 构造或调用。
 
 `factor_builder.hpp`：
 ```cpp
@@ -384,9 +426,11 @@ class ResidualBlock {
 class LocalOdometryProvider { virtual std::optional<MeasurementEvidence> PollRelativePose() = 0; ... };
 class MapObservationProvider { virtual std::vector<MapEvidence> PollMapEvidence() = 0; ... };
 class SonarFrameProvider    { virtual std::optional<SonarFrame> PollSonarFrame() = 0; ... };
+class CameraFrameProvider   { virtual std::optional<ImageFrame> PollImageFrame() = 0; ... };
 ```
 全部非阻塞/轮询式，方便调度器车道在不阻塞 adapter 线程的情况下抽干队列。具体实现
-只存在于 `adapters/`，`core/`/`algorithms/` 只知道接口。
+只存在于 `adapters/`，`core/`/`algorithms/` 只知道接口。`CameraFrameProvider` 目前只有
+L0 contract test 里的 fake 实现，没有真正的相机 adapter。
 
 ---
 
@@ -587,6 +631,127 @@ struct GaussNewtonSummary {
 - `WorldPointsForKeyframe(id)`：目前只解码 `POINT_CLOUD` 表示（其余类型返回空，
   "v1 未实现"），把 `geometry_or_occupancy` 重新解释为紧凑 `float[3]` 三元组，
   逐点应用 `pose_WB.Apply(local)`。
+
+### 6.7 `algorithms/frontends/stereo_optical_depth_frontend`（声光 plan 2：optical baseline）
+
+实现 `core/measurement_api/frontend.hpp` 的 `OpticalDepthFrontend`，产出 plan 1
+新增的 `OpticalDepthPriorMeasurement`（`scale_status=METRIC`, `producer_type="stereo"`）。
+原创实现，不移植第三方——本仓库没有 OpenCV/vendor 图像依赖，延续 `dbscan.hpp` 的先例。
+
+- `core/sensor_models/camera_model.hpp`（`PinholeCamera`/`StereoGeometry`）：
+  `PinholeCamera::FromIntrinsics` 从 `CameraIntrinsics.k_matrix_row_major` 读 fx/fy/cx/cy，
+  忽略 distortion（v1 假设像素已去畸变）。`StereoGeometry::Resolve` 要求 rig 里两台相机的
+  `frame_tree` 边旋转部分完全相同（`isApprox`，1e-9），只允许纯平移基线——对应
+  `configs/rig/example_auv.yaml` 的实际布局；`valid=false` 而不是对不满足这个假设的
+  外参静默给出错误的深度（一般任意朝向的立体校正在这个阶段刻意不实现）。
+- `algorithms/frontends/stereo_optical_depth_frontend/block_matcher.hpp`（`BlockMatcher`）：
+  固定窗口 SAD 逐像素视差搜索，`right(u, v)` 在 `left` 里搜 `(u-d, v)`，`d` 取
+  `[min_disparity, max_disparity]` 里 SAD 最小的一个；`min_disparity` 默认 1（视差 0 意味着
+  无穷远，深度换算会除零）。迭代顺序固定（无 `unordered_map`/多线程），可复现。
+- `stereo_optical_depth_frontend.hpp`（`StereoOpticalDepthFrontend`）：`bundle.secondary`
+  缺失、`StereoGeometry::Resolve` 失败、或两张图 encoding/width/height 不一致都直接
+  `std::nullopt`（拒绝整个 bundle，不猜测）。有效像素：`depth_m = fx * baseline / disparity_px`；
+  `variance_m2 = (depth_m^2 / (fx * baseline) * disparity_sigma_px)^2`（标准逐像素视差
+  不确定度传播，`disparity_sigma_px` 默认 0.5，是假设的固定值，不是标定出来的）。无效像素
+  `depth_m=0, variance_m2=0`，匹配 plan 1 `ValidateOpticalDepthPrior` 对无效像素"没有语义"
+  的约定。
+- `evaluation/depth_metrics.hpp`（`ComputeDepthMetrics`）：只比较两个 grid 都标记为 valid 的
+  像素，`valid_coverage_fraction` 相对 GT-valid 像素数定义（不是全图）；v1 限制（同
+  `ComputeAte` 的写法一样明确写出）：不做 sonar-covered/视觉退化区域拆分，那需要场景 mask
+  和声光关联，属于后续 plan。
+- `apps/tools/synth_stereo_gen`、`apps/tools/optical_baseline_eval`：独立于
+  `apps/tools/synth_bag_gen`/`apps/replay_demo` 的两个新二进制，生成单帧合成立体图像对 +
+  GT 深度（复用 `OpticalDepthPriorMeasurement` 当 GT 载体，`producer_type="ground_truth"`），
+  跑真正的 `StereoOpticalDepthFrontend` 并用 `ComputeDepthMetrics` 打分。在真实 rig 尺寸
+  （640x480，`fx=420`，`baseline=0.12m`）上实测 `rmse_m=0`、`coverage≈0.93`——场景是无噪声的
+  单一深度平面，这证明的是几何管线本身正确，不是真实纹理下的匹配鲁棒性（那是 plan 5 的
+  场景矩阵要验证的）。`uw_l2_optical_baseline_smoke_test` 把这套流程接成 CI 门禁
+  （`--max-rmse-m 0.05 --min-coverage 0.9`）。**没有改动** `synth_bag_gen`/`replay_demo`
+  本身——立体前端目前完全独立于位姿图 replay 路径，`frontends.optical` 仍只是一个配置
+  选择器，没有被 `replay_demo` 构造。
+
+### 6.8 `algorithms/frontends/acoustic_optic_associator`（声光 plan 3：cross-modal geometry）
+
+只做几何关联审计，**不做** posterior depth 优化——`AcousticOpticAssociationRecord` 的
+`posterior_depth_m`/`posterior_variance_m2` 始终留 0，`reason` 从不设成
+`POSTERIOR_INVALID`/`VARIANCE_NOT_IMPROVED`/`CROSS_MODAL_CONFLICT`（后两者依赖 posterior
+残差，属于 plan 4 `AcousticOpticDepthFusionFrontend` 的范围）。继承仓库既有的 v1 规则
+（`hypothesis.proto` 文档化的限制）：每次 `Associate()` 只消费 `HypothesisSet` 的 top-1
+候选，最多产出一条 record。
+
+- `core/sensor_models/camera_model.hpp` 新增 `OpticalFromBodyRotation()`：本平台
+  `frame_tree`（`camera_*_link`/`sonar_link`/`base_link`）都是 body convention（x 前、y 左、
+  z 上，跟声呐自己的局部系一致），而 `PinholeCamera::Project`/`Unproject` 是标准 optical
+  convention（z 前、x 右、y 下）。plan 2 从没碰到这个问题——`StereoOpticalDepthFrontend`
+  只用 `baseline_m`/`fx` 的标量，从没把 rig 的 `Pose3` 和 `Project` 接到一起。这个固定旋转
+  （硬件安装常数，不是标定值）是 plan 3 第一次需要把两者接起来时补上的。
+- `core/sensor_models/sonar_arc_projector.hpp`（`ProjectSonarArcToCamera`/
+  `UnprojectPixelToSonarRangeBearing`）：前者采样理想弧
+  `p_S(phi)=rho[cos(phi)cos(theta),cos(phi)sin(theta),sin(phi)]`（架构文档 8.1 节），经
+  `camera_T_sonar`（body convention）→`OpticalFromBodyRotation()`→`PinholeCamera::Project`
+  投到像素，只保留 optical-frame 深度为正且落在图像内的采样；后者是反方向（像素+
+  `depth_m` 反投影→sonar frame→range/bearing，elevation 主动丢弃）。**`depth_m` 的语义是
+  camera optical-frame 的 z（跟 `OpticalDepthPriorMeasurement.depth_m` 完全一致），不是到
+  相机的欧氏距离**——单元测试踩过这个坑：boresight（bearing=0）时两者数值相同掩盖了这个
+  区别，换成非零 bearing 才会暴露（0.05 rad 的测试差了 0.005m）。
+- `runtime/acoustic_optic_synchronizer.hpp`（`SynchronizeAcousticOptic`）：纯函数，不是
+  状态机/队列消费者。用 `t_reference = t_sensor_capture + time_offset_seconds[sensor_id]`
+  （plan 1 的符号约定）分别修正 primary/secondary image 和 sonar 的 capture_time，
+  pairwise 最大差超过 `max_time_delta_s` 就整体拒绝（`nullopt`），不做任何外推。
+  `time_offset_seconds` 缺某个 sensor_id 时默认 0 偏移（v1 简化，写在函数注释里，没有
+  RunManifest/health 审计）。
+- `acoustic_optic_associator.hpp`（`AcousticOpticAssociator::Associate`）：先查
+  `optical_evidence` 的 `scale_status`——非 `METRIC` 直接 `REJECTED`/`SCALE`；再用
+  `sonar_arc_projector` 把该 sonar 假设的理想弧投到相机图像，对每个落在图内且
+  `valid_mask` 有效的像素，用它的 `depth_m` 反投影回 sonar frame 算预测 range/bearing，
+  和检测本身的 range/bearing 做残差 gate（`range_gate_m`/`bearing_gate_rad`），通过的按
+  归一化残差平方和打分；**同一个像素被多个弧采样命中时会先去重**（保留最优分数）再判
+  ambiguity margin——这是单元测试才发现的坑：`elevation_aperture_rad=0` 时全部
+  `arc_samples` 采样会退化成同一个点，去重前会被误判成"多个互相竞争的候选"而错误标成
+  `AMBIGUOUS`。`candidate_pixel_indices`/`best_score`/`second_best_score`/`prior_depth_m`/
+  `prior_variance_m2` 都是这一层就能算出来的几何量。
+- 全部三个组件都还没被 `apps/replay_demo` 或任何新 app 调用——plan 3 只交付经过单测验证
+  的组件；plan 4（见 6.9）在这些组件之上第一次产出真正的 `FusedDepthMeasurement`，但同样
+  还没接进任何 app——端到端跑一遍看真实产物是 plan 5（scenario matrix + 评测 harness）的
+  范围。
+
+### 6.9 `algorithms/frontends/acoustic_optic_depth_fusion`（声光 plan 4：probabilistic fusion）
+
+第一次真正产出 `FusedDepthMeasurement`（wire evidence，不只是进程内类型）。"不能证明一致，
+就不融合"（架构文档第 9 节）：`Fuse()` 只要 optical evidence 有有效的
+`OpticalDepthPriorMeasurement` payload，就一定返回一个完整分辨率的 `FusedDepthMeasurement`
+——**每个像素默认 `DEPTH_CONTRIBUTION_OPTICAL_ONLY`**（optical prior 原样透传），最多有
+**一个**像素（plan 3 top-1 声呐假设选中的那个，且几何关联 `ACCEPTED`）可能被升级成
+`DEPTH_CONTRIBUTION_ACOUSTIC_OPTIC`——升级条件是 posterior 优化收敛、方差相对 prior 有
+实质改善、且残差通过 innovation gate；任何一步没过，那个像素照样保持 optical prior 原值，
+不是部分应用的"半融合"结果。`HypothesisSet` 为空（声呐掉线）时优雅降级成全图
+optical-only、`associations` 为空——这是文档化的正常行为，不是错误路径
+（架构文档第 10 节场景 8 sonar_dropout）。只有 optical evidence 完全没有
+`OpticalDepthPriorMeasurement` payload 时才返回 `std::nullopt`（没有可以融合的东西）。
+
+- `posterior_depth_optimizer.hpp`（`OptimizePosteriorDepth`）：对 plan 3 选中的那个像素，
+  优化标量 depth `d`：`min_d (d-d_o)²/σ_d² + (range(d)-ρ)²/σ_ρ² + (bearing(d)-θ)²/σ_θ²`，
+  `range(d)`/`bearing(d)` 直接复用 plan 3 的 `UnprojectPixelToSonarRangeBearing`——这一层
+  没有新增任何几何原语，只是绕着已有函数加了个标量优化器。v1 用**朴素平方残差**
+  （Gaussian loss，不是 Huber/Cauchy，留作后续增强）和**确定性、有界的黄金分割搜索**
+  （`d ∈ [d_o - k·σ_d, d_o + k·σ_d]`），不是无约束 Gauss-Newton——保证不会发散，代价是
+  假设该区间内代价函数近似单峰（跟 `GaussNewtonSolver` 自己写明的 v1 局限性同一个精神）。
+  posterior variance 用 Laplace 近似（`2/f''(d*)`，`f''` 用中心差分数值估计）。三种情况
+  返回 `valid=false`：`prior_variance_m2`/`sonar_range_sigma_m`/`sonar_bearing_sigma_rad`
+  任一 `<=0`，或最优点/代价非有限。
+- `acoustic_optic_depth_fusion_frontend.hpp`（`AcousticOpticDepthFusionFrontend::Fuse`）：
+  内部持有一个 `AcousticOpticAssociator`（plan 3）。只有 plan 3 判定 `ACCEPTED` 的候选才会
+  被送进 posterior 优化；优化结果按顺序检查——非 finite → `REJECTED`/`POSTERIOR_INVALID`；
+  方差没有按配置比例改善 → `REJECTED`/`VARIANCE_NOT_IMPROVED`；range/bearing 残差超过
+  `innovation_gate_sigma` 倍 sonar sigma → `CONFLICT`/`CROSS_MODAL_CONFLICT`——这两个
+  reason 正是 plan 3 明确留白、说"依赖 posterior 残差、属于 plan 4"的那两个。全部通过才
+  写回 `posterior_depth_m`/`posterior_variance_m2` 并把该像素的 `contribution_mask` 设成
+  `ACOUSTIC_OPTIC`。单元测试里用一个 boresight 退化配置（`range(d)=d`、`bearing(d)=0`
+  恒成立）把整个 cost function 收敛成闭式加权最小二乘，可以直接断言优化器数值上收敛到
+  手算的精确解，而不只是"往对的方向挪动了"。
+- 三个模块（plan 2 stereo frontend、plan 3 associator、plan 4 fusion）都还没被任何 app
+  调用——`apps/replay_demo` 的位姿图 loop 完全没变。plan 5（scenario matrix + 评测
+  harness）是第一个会实际调用 `Fuse()` 产出真实数据的地方。
 
 ---
 

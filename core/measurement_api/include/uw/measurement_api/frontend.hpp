@@ -1,5 +1,7 @@
 #pragma once
 
+#include <optional>
+
 #include "uw/domain/domain.hpp"
 
 namespace uw::measurement_api {
@@ -14,6 +16,20 @@ class SonarFrontend {
  public:
   virtual ~SonarFrontend() = default;
   virtual uw::domain::HypothesisSet ProcessSonarFrame(const uw::domain::SonarFrame& frame) = 0;
+  virtual uw::domain::HealthReport Health() const = 0;
+};
+
+struct CameraFrameBundle {
+  uw::domain::ImageFrame primary;
+  std::optional<uw::domain::ImageFrame> secondary;
+};
+
+class OpticalDepthFrontend {
+ public:
+  virtual ~OpticalDepthFrontend() = default;
+  virtual std::optional<uw::domain::MeasurementEvidence> Process(
+      const CameraFrameBundle& bundle,
+      const uw::domain::RigCalibrationSnapshot& calibration) = 0;
   virtual uw::domain::HealthReport Health() const = 0;
 };
 

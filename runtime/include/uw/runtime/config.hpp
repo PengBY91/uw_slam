@@ -67,6 +67,7 @@ struct ExperimentConfig {
   ScenarioConfig scenario;
 
   std::string sonar_frontend = "sonar_cfar_frontend_v1";
+  std::string optical_frontend = "stereo_depth_frontend_v1";
   std::string estimator_mode = "black_box_vio";
   std::string map_backend = "submap_point_cloud_v1";
   bool write_run_manifest = true;

@@ -23,11 +23,24 @@ TEST(Config, LoadsExperimentConfigWithAllThreeLayers) {
   EXPECT_DOUBLE_EQ(config.defaults.warmup_seconds, 0.0);
 
   // rig/example_auv.yaml
-  EXPECT_EQ(config.rig.calibration_version().value(), "example_auv_v1");
-  ASSERT_EQ(config.rig.frame_tree_size(), 2);
-  EXPECT_EQ(config.rig.frame_tree(1).child_frame().value(), "sonar_link");
+  EXPECT_EQ(config.rig.calibration_version().value(), "example_auv_v2");
+  ASSERT_EQ(config.rig.frame_tree_size(), 4);
+  EXPECT_EQ(config.rig.frame_tree(1).child_frame().value(), "camera_left_link");
+  EXPECT_EQ(config.rig.frame_tree(2).child_frame().value(), "camera_right_link");
+  EXPECT_EQ(config.rig.frame_tree(3).child_frame().value(), "sonar_link");
+
+  ASSERT_EQ(config.rig.cameras_size(), 2);
+  EXPECT_EQ(config.rig.cameras(0).sensor_id().value(), "camera_left");
+  EXPECT_EQ(config.rig.cameras(0).width(), 640u);
+  ASSERT_EQ(config.rig.cameras(0).k_matrix_row_major_size(), 9);
+  EXPECT_DOUBLE_EQ(config.rig.cameras(0).k_matrix_row_major(0), 420.0);
+  EXPECT_EQ(config.rig.cameras(1).sensor_id().value(), "camera_right");
+
   ASSERT_EQ(config.rig.sonar_beam_models_size(), 1);
   EXPECT_TRUE(config.rig.sonar_beam_models(0).sonar_enabled());
+  EXPECT_DOUBLE_EQ(config.rig.time_offset_seconds().at("camera_left"), 0.0);
+  EXPECT_DOUBLE_EQ(config.rig.time_offset_seconds().at("camera_right"), 0.0);
+  EXPECT_DOUBLE_EQ(config.rig.time_offset_seconds().at("sonar0"), 0.0);
 
   // scenario/synthetic_smoke.yaml
   EXPECT_EQ(config.scenario.seed, 42u);
@@ -38,6 +51,7 @@ TEST(Config, LoadsExperimentConfigWithAllThreeLayers) {
 
   // experiment/synthetic_smoke.yaml itself
   EXPECT_EQ(config.sonar_frontend, "sonar_cfar_frontend_v1");
+  EXPECT_EQ(config.optical_frontend, "stereo_depth_frontend_v1");
   EXPECT_EQ(config.estimator_mode, "black_box_vio");
   EXPECT_TRUE(config.write_run_manifest);
 }
@@ -59,4 +73,33 @@ TEST(Config, ParsesNonDefaultWarmupSeconds) {
   const auto config = uw::runtime::LoadPlatformDefaultsConfig(tmp_path.string());
   EXPECT_DOUBLE_EQ(config.warmup_seconds, 1.5);
   std::remove(tmp_path.string().c_str());
+}
+
+TEST(Config, RejectsRigTransformThatIsNotFourByFour) {
+  const auto path = std::filesystem::temp_directory_path() / "uw_bad_transform_rig.yaml";
+  {
+    std::ofstream out(path);
+    out << "calibration_version: bad\n"
+           "frame_tree:\n"
+           "  - parent_frame: base_link\n"
+           "    child_frame: camera_left_link\n"
+           "    transform_row_major: [1, 0, 0]\n";
+  }
+  EXPECT_THROW(uw::runtime::LoadRigConfig(path.string()), std::runtime_error);
+  std::remove(path.string().c_str());
+}
+
+TEST(Config, RejectsCameraIntrinsicMatrixThatIsNotThreeByThree) {
+  const auto path = std::filesystem::temp_directory_path() / "uw_bad_camera_rig.yaml";
+  {
+    std::ofstream out(path);
+    out << "calibration_version: bad\n"
+           "cameras:\n"
+           "  - sensor_id: camera_left\n"
+           "    width: 640\n"
+           "    height: 480\n"
+           "    k_matrix_row_major: [420, 0, 320]\n";
+  }
+  EXPECT_THROW(uw::runtime::LoadRigConfig(path.string()), std::runtime_error);
+  std::remove(path.string().c_str());
 }

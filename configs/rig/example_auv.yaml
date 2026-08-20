@@ -1,17 +1,46 @@
 # RigCalibrationSnapshot 的人可读来源（唯一标定事实源，架构文档第 7.1 节）。
 # v1 尚未被 apps/ 消费；字段名对应 schemas/proto/uw/domain/calibration.proto。
 
-calibration_version: "example_auv_v1"
+calibration_version: "example_auv_v2"
 
 frame_tree:
   - parent_frame: base_link
     child_frame: imu_link
-    transform_row_major:  # 4x4，单位矩阵示例
+    transform_row_major:
       [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]
+  - parent_frame: base_link
+    child_frame: camera_left_link
+    transform_row_major:
+      [1,0,0,0.15, 0,1,0,0.06, 0,0,1,0, 0,0,0,1]
+  - parent_frame: base_link
+    child_frame: camera_right_link
+    transform_row_major:
+      [1,0,0,0.15, 0,1,0,-0.06, 0,0,1,0, 0,0,0,1]
   - parent_frame: base_link
     child_frame: sonar_link
     transform_row_major:
       [1,0,0,0.1, 0,1,0,0, 0,0,1,-0.05, 0,0,0,1]
+
+cameras:
+  - sensor_id: camera_left
+    width: 640
+    height: 480
+    k_matrix_row_major: [420,0,320, 0,420,240, 0,0,1]
+    distortion: [0,0,0,0]
+    distortion_model: plumb_bob
+  - sensor_id: camera_right
+    width: 640
+    height: 480
+    k_matrix_row_major: [420,0,320, 0,420,240, 0,0,1]
+    distortion: [0,0,0,0]
+    distortion_model: plumb_bob
+
+time_offset_seconds:
+  camera_left: 0.0
+  camera_right: 0.0
+  sonar0: 0.0
+  imu0: 0.0
+  depth0: 0.0
 
 imu_noise:
   sigma_gyro_c: 1.6968e-4

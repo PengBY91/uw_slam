@@ -1,10 +1,10 @@
-add_library(uw_evaluation STATIC src/trajectory_metrics.cpp)
+add_library(uw_evaluation STATIC src/trajectory_metrics.cpp src/depth_metrics.cpp)
 target_include_directories(uw_evaluation PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(uw_evaluation PUBLIC uw_sensor_models)
 target_compile_options(uw_evaluation PRIVATE -Wall -Wextra)
 
 if(UW_BUILD_TESTS)
-  add_executable(uw_evaluation_test test/trajectory_metrics_test.cpp)
+  add_executable(uw_evaluation_test test/trajectory_metrics_test.cpp test/depth_metrics_test.cpp)
   target_link_libraries(uw_evaluation_test PRIVATE uw_evaluation GTest::gtest GTest::gtest_main)
   add_test(NAME uw_evaluation_test COMMAND uw_evaluation_test)
 endif()

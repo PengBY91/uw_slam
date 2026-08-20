@@ -21,3 +21,19 @@ backend 的实现——这是紧接着的下一步，不应该修改这里定义
 
 每次运行仍然会产出一个不可变 `RunManifest`（见 `runtime/include/uw/runtime/run_manifest.hpp`），
 记录实际生效的配置/标定/代码/模型哈希，即使当前配置文件本身还没被程序读取。
+
+## 声光前端契约字段
+
+`rig/*.yaml` 的 `cameras`、camera/sonar `frame_tree` 边和
+`time_offset_seconds` 已解析进 `RigCalibrationSnapshot`。时间偏移采用
+`t_reference = t_sensor_capture + time_offset_seconds[sensor_id]` 的符号约定。
+
+`experiment/*.yaml` 的 `frontends.optical` 已被解析。`stereo_depth_frontend_v1` 现在有真正的
+实现（`algorithms/frontends/stereo_optical_depth_frontend`，`StereoOpticalDepthFrontend`），
+由 `apps/tools/optical_baseline_eval` 独立跑通并用 `uw_l2_optical_baseline_smoke_test` 把关，
+但**没有**被 `apps/replay_demo` 动态构造——`frontends.optical` 仍然只是一个配置选择器，不是
+`replay_demo` 里可切换的运行能力。`runtime/acoustic_optic_synchronizer.hpp`（capture-time
+配对）、`algorithms/frontends/acoustic_optic_associator`（FLS 弧带候选生成 + 几何关联审计）
+和 `algorithms/frontends/acoustic_optic_depth_fusion`（posterior 深度优化，真正产出
+`FusedDepthMeasurement`）都已经落地并有单测覆盖，但同样是独立组件，还没有被任何 app 接起来
+跑成端到端流程——把声光证据接入位姿图 replay、以及场景矩阵/评测 harness，属于后续 plan。

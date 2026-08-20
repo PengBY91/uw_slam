@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package uw.domain;
+
+import "uw/domain/observation.proto";
+
+// Canonical raw camera observation. Each physical camera emits its own
+// ImageFrame; runtime pairing is reconstructed from capture time and rig
+// configuration instead of being permanently baked into the bag.
+message ImageFrame {
+  ObservationHeader header = 1;
+  uint32 width = 2;
+  uint32 height = 3;
+  uint32 row_stride_bytes = 4;
+
+  enum ImageEncoding {
+    IMAGE_ENCODING_UNSPECIFIED = 0;
+    IMAGE_ENCODING_MONO8 = 1;
+    IMAGE_ENCODING_RGB8 = 2;
+    IMAGE_ENCODING_BGR8 = 3;
+  }
+  ImageEncoding encoding = 5;
+
+  bytes pixel_data = 6;
+  bool is_rectified = 7;
+  double exposure_seconds = 8;
+}

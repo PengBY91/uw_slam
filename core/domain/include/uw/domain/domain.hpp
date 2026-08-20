@@ -19,6 +19,7 @@
 #include "uw/domain/health.pb.h"
 #include "uw/domain/hypothesis.pb.h"
 #include "uw/domain/ids.pb.h"
+#include "uw/domain/image.pb.h"
 #include "uw/domain/map.pb.h"
 #include "uw/domain/measurement.pb.h"
 #include "uw/domain/observation.pb.h"
@@ -33,6 +34,31 @@ Stamp ToStamp(std::chrono::system_clock::time_point tp);
 std::chrono::system_clock::time_point ToTimePoint(const Stamp& stamp);
 double ToSeconds(const Stamp& stamp);
 Stamp FromSeconds(double seconds);
+
+// ---- Camera/depth grid validation --------------------------------------
+enum class ValidationCode {
+  kOk = 0,
+  kMissingDimensions,
+  kUnsupportedImageEncoding,
+  kInvalidImageStride,
+  kImagePayloadSizeMismatch,
+  kDepthGridSizeMismatch,
+  kDepthMaskSizeMismatch,
+  kContributionMaskSizeMismatch,
+  kInvalidScaleStatus,
+  kInvalidDepthValue,
+  kInvalidVarianceValue,
+};
+
+struct ValidationResult {
+  ValidationCode code = ValidationCode::kOk;
+  std::string message;
+  bool ok() const { return code == ValidationCode::kOk; }
+};
+
+ValidationResult ValidateImageFrame(const ImageFrame& frame);
+ValidationResult ValidateOpticalDepthPrior(const OpticalDepthPriorMeasurement& prior);
+ValidationResult ValidateFusedDepth(const FusedDepthMeasurement& fused);
 
 // ---- SonarFrame validation ---------------------------------------------
 // sonar_camera_reconstruction's imaging_sonar.py assumes azimuth_angles is
@@ -70,6 +96,8 @@ UW_DOMAIN_DEFINE_PAYLOAD_TRAITS(VisualTrackMeasurement, visual_track);
 UW_DOMAIN_DEFINE_PAYLOAD_TRAITS(StereoDepthMeasurement, stereo_depth);
 UW_DOMAIN_DEFINE_PAYLOAD_TRAITS(SonarRegistrationMeasurement, sonar_registration);
 UW_DOMAIN_DEFINE_PAYLOAD_TRAITS(ImuPreintegrationMeasurement, imu_preintegration);
+UW_DOMAIN_DEFINE_PAYLOAD_TRAITS(OpticalDepthPriorMeasurement, optical_depth_prior);
+UW_DOMAIN_DEFINE_PAYLOAD_TRAITS(FusedDepthMeasurement, fused_depth);
 
 #undef UW_DOMAIN_DEFINE_PAYLOAD_TRAITS
 
