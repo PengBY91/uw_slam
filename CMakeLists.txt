@@ -57,6 +57,7 @@ add_subdirectory(apps/tools/synth_bag_gen)
 add_subdirectory(apps/tools/synth_stereo_gen)
 add_subdirectory(apps/replay_demo)
 add_subdirectory(apps/tools/optical_baseline_eval)
+add_subdirectory(apps/tools/acoustic_optic_scenario_matrix)
 
 if(UW_BUILD_TESTS)
   add_subdirectory(tests)

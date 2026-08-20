@@ -29,3 +29,10 @@ add_test(
           $<TARGET_FILE:synth_stereo_gen> $<TARGET_FILE:optical_baseline_eval>
           ${CMAKE_SOURCE_DIR}/configs/experiment/synthetic_smoke.yaml
 )
+
+add_test(
+  NAME uw_l2_acoustic_optic_scenario_matrix_determinism_test
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/l2_replay/acoustic_optic_scenario_matrix_determinism_test.sh
+          $<TARGET_FILE:acoustic_optic_scenario_matrix>
+          ${CMAKE_SOURCE_DIR}/configs/experiment/synthetic_smoke.yaml
+)

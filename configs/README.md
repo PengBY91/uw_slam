@@ -35,5 +35,7 @@ backend 的实现——这是紧接着的下一步，不应该修改这里定义
 `replay_demo` 里可切换的运行能力。`runtime/acoustic_optic_synchronizer.hpp`（capture-time
 配对）、`algorithms/frontends/acoustic_optic_associator`（FLS 弧带候选生成 + 几何关联审计）
 和 `algorithms/frontends/acoustic_optic_depth_fusion`（posterior 深度优化，真正产出
-`FusedDepthMeasurement`）都已经落地并有单测覆盖，但同样是独立组件，还没有被任何 app 接起来
-跑成端到端流程——把声光证据接入位姿图 replay、以及场景矩阵/评测 harness，属于后续 plan。
+`FusedDepthMeasurement`）都已经落地并有单测覆盖。`apps/tools/acoustic_optic_scenario_matrix`
+现在把这四者接成一条真实跑通的流水线（含真实、非新写的 `SonarCfarFrontend`），覆盖
+架构文档第 10 节的 9 场景矩阵，见代码库参考文档 6.10 节的真实结果表——但**仍然没有**接进
+`apps/replay_demo`；把声光证据接入位姿图 replay 属于后续 plan（mapping handoff）。

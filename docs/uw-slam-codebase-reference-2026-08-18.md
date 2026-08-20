@@ -138,13 +138,15 @@ apps/
   tools/synth_bag_gen/                合成带真值的 MCAP bag（位姿图/sonar/depth 路径）
   tools/synth_stereo_gen/             合成单帧立体图像对 + GT 深度（声光 plan 2，独立于上者）
   tools/optical_baseline_eval/        跑 StereoOpticalDepthFrontend，用 depth_metrics 打分
+  tools/acoustic_optic_scenario_matrix/  声光 plan 1-4 全组件真实接线 + 9 场景矩阵（声光 plan 5）
   replay_demo/                        bag 回放 → 前端 → 因子构建 → 求解 → 评测
-evaluation/                          ATE（无 RPE）、depth RMSE/MAE/coverage
+evaluation/                          ATE（无 RPE）、depth RMSE/MAE/coverage、false-fusion 判定
 configs/                             defaults/rig/scenario/experiment 四层 YAML
 tests/
   l0_contracts/                      protobuf round-trip 契约测试
   l2_replay/determinism_test.sh      两次跑 replay_demo 逐字节比对
   l2_replay/optical_baseline_smoke_test.sh   synth_stereo_gen + optical_baseline_eval 端到端阈值门禁
+  l2_replay/acoustic_optic_scenario_matrix_determinism_test.sh   两次跑 scenario matrix 逐字节比对（延迟字段除外）
 tools/
   lint/check_no_ros_in_core.sh       依赖不变量检查
   codegen/gen_py.sh                  生成 Python protobuf 绑定
@@ -752,6 +754,72 @@ optical-only、`associations` 为空——这是文档化的正常行为，不�
 - 三个模块（plan 2 stereo frontend、plan 3 associator、plan 4 fusion）都还没被任何 app
   调用——`apps/replay_demo` 的位姿图 loop 完全没变。plan 5（scenario matrix + 评测
   harness）是第一个会实际调用 `Fuse()` 产出真实数据的地方。
+
+### 6.10 `apps/tools/acoustic_optic_scenario_matrix`（声光 plan 5：simulation/replay/evaluation）
+
+第一次把 plan 1-4 的真实组件接成一条完整流水线跑通：`SynchronizeAcousticOptic` →
+`StereoOpticalDepthFrontend` → `SonarCfarFrontend`（**不是新组件，是这个系列开始之前
+就已存在的实现**）→ `AcousticOpticDepthFusionFrontend::Fuse`，跑架构文档第 10 节的
+9 场景矩阵，每个场景默认 20 次独立种子 trial。不经过 MCAP（详见该 app 源文件头部注释
+的取舍说明）；"三路消融"落地为 2 个条件（optical-only vs fused）× 2 个 region 切片
+（全图、sonar 投影覆盖区，后者直接复用 `AcousticOpticAssociationRecord.
+candidate_pixel_indices`，不是新的管线）——第三个切片（视觉退化区）被跳过，因为本
+plan 的退化场景是整张图均匀退化，一个"局部退化区" mask 会退化成跟全图切片完全一样，
+没有独立信息量。
+
+**两个真实 bug，是靠实跑（不是单测）才暴露的，值得记录避免以后重踩：**
+
+1. **GT 深度和实际烘焙进立体图像对的视差不自洽**：早期版本手写了一个"看起来合理"的
+   GT 深度（6.0m），但实际用来生成图像对的视差是从 `fx*baseline/GT深度` 四舍五入到
+   最近整数像素再反推回去的——四舍五入前后的深度不相等，造成全图恒定 ~0.3m 的
+   系统性 RMSE，长得像一个流水线 bug，实际是场景构造的自洽性问题。修法：GT 深度必须
+   由"四舍五入后的整数视差"反推，而不是反过来，这个原则跟 plan 2 的
+   `synth_stereo_gen` 一致。
+2. **立体图像对合成时，"这个像素属于目标 patch 还是背景"的判定，用错了参考系**：
+   最初实现里 `RIGHT(u,v) = LEFT_texture(u + disparity_at(u,v))`，`disparity_at`
+   直接读 RIGHT 自己的像素坐标 `(u,v)` 来判定 patch 归属。这看起来对称、无害，实际上
+   因为视差本身会把 LEFT/RIGHT 的坐标错开，导致"能被干净恢复出目标视差的安全区域"
+   在 LEFT（也就是深度网格实际索引的参考系）里被整体平移了 `target_disparity_px`
+   个像素——连 patch 正中心都落在污染区里，block matcher 稳定恢复出一个两个视差之间
+   的错误折中值。表现为：候选像素的 optical 深度既不等于目标深度也不等于背景深度，
+   sonar 残差因此巨大，几何关联全部 `NO_CANDIDATE`。修法（`MakeStereoPair`）：改成
+   标准的"背景铺满整张 RIGHT 图，再把目标 patch（从 LEFT 对应位置取内容、按视差平移）
+   贴上去覆盖背景"——RIGHT 因此完全由自己的坐标决定内容来源，不再依赖"用哪个视差"
+   这个尚待判定的量来判定自己的坐标属于哪个区域。
+
+**修复后 20-trial/scenario 的真实结果（`--seed` 默认值下的一次跑）**，即使经过上述修复，
+数字本身仍然值得如实记录，不因为"看起来不够漂亮"就继续调参掩盖：
+
+| 场景 | accepted | ambiguous | rejected | 备注 |
+|---|---|---|---|---|
+| `clean_textured` | 0/20 | 20/20 | 0/20 | 见下方"为什么 clean 反而总是 ambiguous"说明 |
+| `low_texture_sonar_visible` | 17/20 | 0/20 | 3/20 | 噪声打破了候选间的精确并列 |
+| `turbid_sonar_visible` | 2/20 | 0/20 | 18/20 | 重噪声下大部分帧几何残差直接超 gate |
+| `repeated_structure` | 20/20 | 0/20 | 0/20 | 本次参数下没有触发预期的走样 |
+| `elevation_stress` | 0/20 | 20/20 | 0/20 | 同 clean_textured 的机制 |
+| `time_offset_fault` | — | — | — | `sync_rejected=20/20`，同步阶段整体拒绝 |
+| `extrinsic_perturbation`（+1.0m 扰动） | 0/20 | 0/20 | 20/20 | `NO_CANDIDATE`——几何残差超 gate，拒绝而非误融合 |
+| `sonar_dropout` | 0/20 | 0/20 | 0/20 | 无 association record；`fused_full_rmse==optical_full_rmse`，纯 passthrough |
+| `optical_invalid_region` | 0/20 | 0/20 | 20/20 | `NO_CANDIDATE`——目标区域整体标 invalid，没有可用像素 |
+
+**为什么"干净"场景反而总是 `AMBIGUOUS`，而不是本来期望的 `ACCEPTED`**：这不是
+bug，是架构文档第 14 节风险表第一条列出的真实现象——弧投影在
+`elevation_aperture_rad=0.19`（真实 rig 值）、`arc_samples=16` 默认值下，采样步长
+约 5px；只要目标 patch 比这个步长宽，就会有 2-3 个弧样本落在同一块深度均匀的区域内，
+它们对同一个 sonar 读数给出几乎完全相同（噪声为零时精确相同）的残差，触发
+`ambiguity_margin` 判定为并列。反直觉但可解释的是：`low_texture`/`turbid` 这些"更难"
+的退化场景反而 `accepted` 更多——因为噪声打破了这种精确并列，让某一个候选明显胜出。
+这恰恰验证了几何only关联在无噪声、局部平坦目标上的固有局限，也正是
+`AMBIGUOUS`（宁可不融合也不瞎选）这个状态存在的意义。**没有为了让 `clean_textured`
+显示 `accepted` 而去调 `ambiguity_margin` 或调小 patch 到不安全的尺寸**——那样只是
+把这个真实现象藏起来，不是修复。
+
+`uw_l2_acoustic_optic_scenario_matrix_determinism_test` 把整个二进制重跑两遍
+（跳过 `p95_latency_ms`——那是真实 wall-clock 测量，本来就不该要求逐字节相同）
+diff 输出确认可复现。降低的 MVP gate 集合（只有 accepted≥5 时的 false-fusion-rate
+≤5%）在当前参数下全部通过（进程退出码 0）；架构文档第 12.2 节其余门槛（posterior
+NLL 校准、真实调度器下的 P95 延迟预算、专门验证 ambiguity 场景错误接受率的场景）
+本 plan 明确没有实现，不是"实现了但没写"，这个边界记录在该 app 的源文件头注释里。
 
 ---
 
