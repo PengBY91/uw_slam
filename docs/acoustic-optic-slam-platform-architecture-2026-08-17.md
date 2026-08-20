@@ -30,7 +30,7 @@ confidence: high
 1. 系统边界由论文代码的消息和状态定义；
 2. VIO 输出与后端重复使用同源 camera/IMU 时存在相关信息重复融合风险；
 3. 2D FLS 的 elevation ambiguity 容易被错误压缩成完整 6DoF pose；
-4. 后端轨迹修正难以回灌已经烘焙到世界坐标系的点云；
+4. 后端轨迹修正难以回灌已经转换并固定到世界坐标系、不再保留局部坐标引用的点云；
 5. 学习模型缺少训练、校准、部署和失败样本回流机制；
 6. ROS callback、dense mapping 和 GPU 推理容易互相阻塞；
 7. 平均 FPS 和最终点云观感不足以支持质量、速度和声光贡献的判断。
@@ -363,7 +363,7 @@ MapEvidence {
 }
 ~~~
 
-第一阶段支持 stereo surface samples、sonar range/free-space evidence、local point cloud 和 semantic mask。地图证据保留局部坐标和原始观测引用，避免永久烘焙到旧世界位姿。
+第一阶段支持 stereo surface samples、sonar range/free-space evidence、local point cloud 和 semantic mask。地图证据保留局部坐标和原始观测引用，避免永久转换并固定到旧世界位姿、导致后续无法回溯。
 
 ### 7.9 HealthReport
 
@@ -731,24 +731,24 @@ HoloOcean
 
 ## 22. 2026-08-18 三方代码库审计与架构细化
 
-> 本节基于对 `SVIn`、`sonar_camera_reconstruction`、`ocean_t` 三个仓库的逐文件代码级 audit（而非仅读 README 或早期抽样审阅）产出。目的是修正此前基于文档/README 推断出的具体判断、把第 6/7/19 节的抽象契约落到真实字段，并重新评估 Gate 3 的实施成本。**不改变第 20 节已冻结的路线决策**，只修正支撑这些决策的事实前提，属于细化而非推翻。
+> 本节基于对 `SVIn`、`sonar_camera_reconstruction`、`ocean_t` 三个仓库的逐文件代码级 audit（而非仅读 README 或早期抽样审阅）产出。目的是修正此前基于文档/README 推断出的具体判断、把第 6/7/19 节的抽象契约落到真实字段，并重新评估 Gate 3 的实施成本。不改变第 20 节已冻结的路线决策，只修正支撑这些决策的事实前提，属于细化而非推翻。
 
 ### 22.1 关键结论修正表
 
 | 结论对象 | 此前判断（08-05/08-17 文档） | 代码审计后的修正判断 | 对架构的影响 |
 |---|---|---|---|
-| SVIn ROS 版本 | 文档内 "ROS2 Jazzy/Humble" 表述不一致 | 确认 `main` 分支为 ROS2 **Jazzy**；仓库另有独立 `ros1` 分支 | `apps/demo_bringup` 与 CI 镜像需明确锁定 Jazzy；若平台其余部分基于 Humble，需要单独评估移植成本，不能默认二者互通 |
+| SVIn ROS 版本 | 文档内 "ROS2 Jazzy/Humble" 表述不一致 | 确认 `main` 分支为 ROS2 Jazzy；仓库另有独立 `ros1` 分支 | `apps/demo_bringup` 与 CI 镜像需明确锁定 Jazzy；若平台其余部分基于 Humble，需要单独评估移植成本，不能默认二者互通 |
 | SVIn sonar/depth 支持现状 | "sonar/depth modes 默认禁用"，隐含判断为大量待实现工作 | Ceres 残差层已完整实现：`SonarError`（1维 range 残差 cost function）、`SonarParameterBlock`、`ThreadedKFVio::addSonarMeasurement`/`addDepthMeasurement`、`VioParametersReader` 对 `isSonarUsed`/`isDepthUsed`/`T_SSo` 的解析均已就绪；main 分支只是 ROS2 `Subscriber.cpp` 里的 sonar/depth 回调整段被注释；`ros1` 分支的 sonar 回调是激活状态（`subSonarRange_` 订阅 `/imagenex831l/range` 并调用 `addSonarMeasurement`），depth 在两个分支都未接线 | Gate 3（原生紧耦合）的真实成本显著低于此前预估，见 22.3 |
 | `sonar_camera_reconstruction` 可编译性 | 未提及构建依赖风险 | `sonar_camera_reconstruction_pkg/package.xml` 声明依赖同实验室 `bruce_slam` 包，仓库本身不能独立编译 | 必须先解决 `bruce_slam` 依赖（vendor 或最小裁剪 fork），是 pipeline 文档 Phase 1 Day 3 之前的硬阻塞项，此前的执行顺序估计偏乐观 |
 | `sonar_camera_reconstruction` 点云姿态处理 | 未提及 | `merge.py` 的 `rotate_cloud` 显式丢弃 pitch，只用 roll+yaw 旋转点云到 `map` frame；`merge.launch` 还隐藏发布一条 `map -> odom` 恒等 static TF，把 `odom_topic` 直接当 `map` 位姿用 | 该 baseline 只适合近似水平姿态、近场高浊度场景；有明显俯仰角（爬升/下潜、非水平安装）时会产生系统性几何偏差，必须写进 evaluation 的已知局限，不能作为路线 B 稠密建图分支的无条件真值参考 |
-| `ocean_t` 与 SVIn 的关系 | pipeline 文档假设团队会先跑通官方 SVIn 再评估 sonar/depth 可行性（Phase 1-2） | `ocean_t/src/svin2_pipeline.py` 并非对接官方 SVIn，而是团队自研的 Python/scipy 简化滑窗 BA + ORB 回环 + voxel-grid 声纳地图原型；其 FLS 前端对每个方位列 `elev = np.random.uniform(-vfov_half_rad, vfov_half_rad)` 随机赋值后当作真实 3D 点送入优化器 | **直接违反第 6/21 节 "FLS 只在可观测维度约束状态，不虚构 elevation" 的架构不变量**。该原型不能作为 sonar factor 的实现参考，只能作为图优化契约（窗口化、边缘化先验、回环触发）的验证脚手架，且命名 `svin2_pipeline.py` 容易被误读为"已集成 SVIn"，需要在团队内部澄清 claim 边界 |
+| `ocean_t` 与 SVIn 的关系 | pipeline 文档假设团队会先跑通官方 SVIn 再评估 sonar/depth 可行性（Phase 1-2） | `ocean_t/src/svin2_pipeline.py` 并非对接官方 SVIn，而是团队自研的 Python/scipy 简化滑窗 BA + ORB 回环 + voxel-grid 声纳地图原型；其 FLS 前端对每个方位列 `elev = np.random.uniform(-vfov_half_rad, vfov_half_rad)` 随机赋值后当作真实 3D 点送入优化器 | 直接违反第 6/21 节 "FLS 只在可观测维度约束状态，不虚构 elevation" 的架构不变量。该原型不能作为 sonar factor 的实现参考，只能作为图优化契约（窗口化、边缘化先验、回环触发）的验证脚手架，且命名 `svin2_pipeline.py` 容易被误读为"已集成 SVIn"，需要在团队内部澄清 claim 边界 |
 
 ### 22.2 Gate 3（原生紧耦合）重新评估
 
 第 17 节 Gate 3 的通过条件不变（松耦合相关性/延迟/精度成为可测瓶颈，且原始 measurement contract 已稳定），但成本模型需要更新：
 
 - 原假设：实现声呐紧耦合残差需要新写大量估计器代码，风险集中在残差建模和可观测性调参。
-- 修正后：残差数学（`SonarError`）、参数块（`SonarParameterBlock`）、接入点（`addSonarMeasurement`）在 SVIn 内部**已经存在且被 IMU/vision 状态传播路径调用**；真正缺口是 ROS2 侧的一层消息桥接（新增 ROS2 sonar 消息类型 + 在 `Subscriber.cpp` 恢复/改写被注释的回调），属于 adapter 层的小补丁，不触碰 `okvis_ceres` 内部。depth 因子在两个分支都未接线，成本与 sonar 相当，仍需新写。
+- 修正后：残差数学（`SonarError`）、参数块（`SonarParameterBlock`）、接入点（`addSonarMeasurement`）在 SVIn 内部已经存在，且被 IMU/vision 状态传播路径调用；真正缺口是 ROS2 侧的一层消息桥接（新增 ROS2 sonar 消息类型 + 在 `Subscriber.cpp` 恢复/改写被注释的回调），属于 adapter 层的小补丁，不触碰 `okvis_ceres` 内部。depth 因子在两个分支都未接线，成本与 sonar 相当，仍需新写。
 
 据此新增一条允许的并行动作（不改变 Gate 顺序，不阻塞 Gate 1/Gate 2）：
 
@@ -775,24 +775,24 @@ HoloOcean
 
 第 7.1 节 `RigCalibrationSnapshot` 和 7.3 节 `SonarFrame` 此前是抽象结构，现基于两个第三方仓库的真实字段补充具体映射，避免实现时重新发明字段命名：
 
-**来自 SVIn config yaml（可直接映射，SVIn yaml 作为单向派生目标，不作为标定事实源）：**
+来自 SVIn config yaml（可直接映射，SVIn yaml 作为单向派生目标，不作为标定事实源）：
 
 - `cameras[].T_SC`、`sonar_params.T_SSo`（均为 4x4 展平矩阵）→ `RigCalibrationSnapshot.frame_tree` 中对应外参边；
 - `imu_params.{sigma_g_c, sigma_a_c, sigma_bg, sigma_ba, sigma_gw_c, sigma_aw_c}` → IMU 噪声模型字段；
 - `sonar_params.T_SSo` 与 `isSonarUsed`/`isDepthUsed` 开关 → 标定快照里 sonar/depth 是否启用的标志，配合第 8.3 节 observability manager 使用。
 
-**来自 `OculusPing`（`sonar_oculus` msg，含此前文档未展开的 `OculusFire` 子消息）：**
+来自 `OculusPing`（`sonar_oculus` msg，含此前文档未展开的 `OculusFire` 子消息）：
 
 - `fire_msg.speed_of_sound`、`fire_msg.salinity` → `SonarFrame.sound_speed_assumption` 及其不确定性来源；
 - `fire_msg.range`（设定量程）、`fire_msg.gain` → `SonarFrame.max_range`、`gain_metadata`；
 - `bearings`（int16，单位 0.01°，需保证严格升序，`sonar_camera_reconstruction` 内部用 `interp1d(assume_sorted=True)` 隐含此假设且不做校验，非升序会静默产生错误重映射）→ `SonarFrame.azimuth_angles`，adapter 层必须显式校验升序而不是信任上游。
 
-**SVIn 输出位姿的已知缺口**：`okvis_ros` 的 `okvis_odometry`（`nav_msgs/Odometry`）在代码中未见对 covariance 字段的有效填充。第 7.7 节 `StateSnapshot.marginal_uncertainty` 若来自黑盒 VIO 模式，不能假设 SVIn 输出自带可用协方差，`LocalOdometryProvider` adapter 必须自行估计或标定一个协方差代理，不能直接透传空/零协方差进入 `RelativePoseEvidence`。
+SVIn 输出位姿的已知缺口：`okvis_ros` 的 `okvis_odometry`（`nav_msgs/Odometry`）在代码中未见对 covariance 字段的有效填充。第 7.7 节 `StateSnapshot.marginal_uncertainty` 若来自黑盒 VIO 模式，不能假设 SVIn 输出自带可用协方差，`LocalOdometryProvider` adapter 必须自行估计或标定一个协方差代理，不能直接透传空/零协方差进入 `RelativePoseEvidence`。
 
 ### 22.5 Adapter 最小接入点细化（细化第 19 节）
 
-- **`LocalOdometryProvider`（SVIn）**：黑盒模式下最小接入直接消费 ROS2 `okvis_odometry`；若需要低频全局修正，改消费 `pose_graph` 的 `uber_odometry`。接入时必须补齐 22.4 节提到的协方差代理，不能假设消息自带。`svin_health`（自定义 `okvis_ros/msg/SvinHealth`：`is_tracking_ok`/`num_tracked_kps`/`kps_per_quadrant`/`covisibilities`/`quality`）可直接映射到第 7.9 节 `HealthReport`，无需自建视觉健康指标。
-- **`MapObservationProvider`（sonar_camera_reconstruction）**：不要包装 `merge_node.py` 的 ROS I/O 层，而是直接复用 `merge.py` 中的纯函数 `MergeFunctions.merge_data()`；在其调用 `rotate_cloud`（丢 pitch、烘焙到 `map` frame）**之前**截获局部点云，改由我们自己的 versioned `StateStore` 提供 pose 并按 7.8 节 `MapEvidence` 的 `local_frame` 语义变换，不复用其内部世界坐标烘焙逻辑。接入前必须先解决 `bruce_slam` 构建依赖（vendor 最小子集或独立 fork/patch，记录在第 19 节的 fork/patch 台账中）。
+- `LocalOdometryProvider`（SVIn）：黑盒模式下最小接入直接消费 ROS2 `okvis_odometry`；若需要低频全局修正，改消费 `pose_graph` 的 `uber_odometry`。接入时必须补齐 22.4 节提到的协方差代理，不能假设消息自带。`svin_health`（自定义 `okvis_ros/msg/SvinHealth`：`is_tracking_ok`/`num_tracked_kps`/`kps_per_quadrant`/`covisibilities`/`quality`）可直接映射到第 7.9 节 `HealthReport`，无需自建视觉健康指标。
+- `MapObservationProvider`（sonar_camera_reconstruction）：跳过 `merge_node.py` 的 ROS I/O 层，直接复用 `merge.py` 中的纯函数 `MergeFunctions.merge_data()`；在其调用 `rotate_cloud`（丢 pitch、把点云直接转换并固定到 `map` frame，不保留局部坐标引用，后续轨迹修正无法回溯）之前截获局部点云，改由我们自己的 versioned `StateStore` 提供 pose 并按 7.8 节 `MapEvidence` 的 `local_frame` 语义变换，不复用其内部把点云转换并固定到世界坐标的逻辑。接入前必须先解决 `bruce_slam` 构建依赖（vendor 最小子集或独立 fork/patch，记录在第 19 节的 fork/patch 台账中）。
 
 ### 22.6 新增风险登记
 

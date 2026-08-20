@@ -17,7 +17,7 @@ updated: 2026-08-18
 
 # HoloOcean 到声光融合 SLAM demo pipeline 方案
 
-> 背景：团队已经基于 [[entities/papers/2024-holoocean-full-featured-marine-robotics-simulator|HoloOcean]] 搭建好水下声光仿真环境。现阶段目标不是完整 ROV/AUV 产品系统，而是结合 HoloOcean 仿真、`ivanacollg/sonar_camera_reconstruction` 与 `AutonomousFieldRoboticsLab/SVIn`，构建从仿真数据生成到声光融合 SLAM demo 的完整 pipeline。
+> 背景：团队已经基于 [[entities/papers/2024-holoocean-full-featured-marine-robotics-simulator|HoloOcean]] 搭建好水下声光仿真环境。现阶段目标是结合 HoloOcean 仿真、`ivanacollg/sonar_camera_reconstruction` 与 `AutonomousFieldRoboticsLab/SVIn`，构建从仿真数据生成到声光融合 SLAM demo 的完整 pipeline，暂不追求完整 ROV/AUV 产品系统。
 
 > 2026-08-17 架构定位更新：现有“SVIn VIO 位姿 → `sonar_camera_reconstruction` 点云”的串联方案保留为第一阶段 baseline，但不作为最终系统。目标架构升级为“VIO 先验驱动的声光 pose-graph SLAM + 自适应双前端稠密建图”：SVIn 提供连续局部里程计，成像声纳、depth 与回环约束在上层 pose graph 中修正关键帧位姿；双目视觉精细重建与 sonar-grounded 抗退化重建生成局部几何，再由 submap manager 维护全局一致地图。
 
@@ -37,7 +37,7 @@ HoloOcean simulation
   -> evaluation + RViz visualization + video export
 ```
 
-核心验收不是“单个模型 smoke test”，而是：
+核心验收需要满足以下几点，不止于“单个模型 smoke test”：
 
 1. 仿真端能稳定导出多传感器同步数据。
 2. 数据能转换成两个 codebase 可消费的 topic / bag / config。
@@ -122,8 +122,8 @@ uw_ao_slam_pipeline/
 
 SVIn main branch 是 ROS2 Jazzy，但 README 明确说 sonar/depth modes 默认禁用，旧 sonar/custom topic 到 ROS2 仍在迁移。因此 SVIn 分支应分两步：
 
-1. **main branch audit**：先跑 visual-inertial / GoPro / AFRL launch，验证 build、bag replay、trajectory 输出。
-2. **sonar/depth branch audit**：检查 `ros1` branch 是否更接近论文中的 sonar-depth tightly coupled 实现；必要时用 HoloOcean 数据生成 ROS1 bag。
+1. main branch audit：先跑 visual-inertial / GoPro / AFRL launch，验证 build、bag replay、trajectory 输出。
+2. sonar/depth branch audit：检查 `ros1` branch 是否更接近论文中的 sonar-depth tightly coupled 实现；必要时用 HoloOcean 数据生成 ROS1 bag。
 
 适配重点：
 
@@ -199,7 +199,7 @@ Odometry pose
   -> publish PointCloud2
 ```
 
-这意味着 adapter 的验收重点不是“图像能显示”，而是下面这些几何量必须一致：
+这意味着“图像能显示”不能作为 adapter 的验收标准，下面这些几何量必须一致：
 
 | 检查项 | 若错误会发生什么 |
 |---|---|
@@ -398,19 +398,19 @@ Day 6-7: SVIn main branch 只做 baseline/audit
 
 ## 6. 关键技术风险
 
-1. **Sonar message schema 不匹配**  
+1. Sonar message schema 不匹配  
    HoloOcean imaging sonar 输出不一定能直接映射到 OculusPing 或 SVIn 的 Imagenex range topic。需要先读两个 codebase 的实际订阅字段，不要盲目做全量仿真消息。
 
-2. **sonar_camera_reconstruction 是 ROS1 主线**  
+2. sonar_camera_reconstruction 是 ROS1 主线  
    若 HoloOcean 当前是 ROS2，需要用 ros1_bridge、bag conversion 或离线转换脚本。
 
-3. **SVIn main branch 声呐/深度默认禁用**  
+3. SVIn main branch 声呐/深度默认禁用  
    当前 SVIn 更适合作为 audit 和 baseline，不保证短期承担完整声光 SLAM demo 主线。
 
-4. **坐标系与时间同步**  
+4. 坐标系与时间同步  
    声光融合最容易失败在 TF、timestamp、camera optical frame、sonar frame、NED/ENU 转换。必须先用简单直线轨迹验证尺度和方向。
 
-5. **仿真结果不能直接支撑主 claim**  
+5. 仿真结果不能直接支撑主 claim  
    HoloOcean demo 可以支撑工程闭环、可视化和消融开发，但后续研究 claim 仍应回到公开真实数据或真实采集数据验证。
 
 ## 7. 给工程师的任务拆分
@@ -651,7 +651,7 @@ $$
 
 #### 10.4.7 Submap manager
 
-地图管理器必须保存“局部观测 + keyframe/submap pose”，不能只保存已经烘焙到全局坐标的点：
+地图管理器必须保存“局部观测 + keyframe/submap pose”，不能只保存已经转换并固定到全局坐标、不再保留局部坐标引用的点：
 
 - 每个 local cloud 绑定 keyframe id、capture timestamp、sensor quality 和生成配置；
 - 小范围关键帧融合成 submap；
@@ -821,11 +821,11 @@ HoloOcean 可以证明实时 pipeline、可控退化、工程闭环、消融和�
 
 ### 11.1 对本文既有判断的修正
 
-1. **SVIn ROS 版本**：确认 `main` 分支为 ROS2 **Jazzy**（非 Humble），第 3.3/4.4 节的表述据此收敛。
-2. **SVIn sonar/depth 现状**：不是"大量待实现"，而是 Ceres 残差层（`SonarError`/`SonarParameterBlock`/`addSonarMeasurement`）已完整实现，main 分支只是 ROS2 `Subscriber.cpp` 里的 sonar/depth 回调被注释；`ros1` 分支的 sonar 回调实际是激活的（订阅 `/imagenex831l/range`）。第 4.4 节 Phase 2/3 的"审计"工作量应下修，Phase 3 的"HoloOcean imaging sonar 降维成 Imagenex range-like observation"判断依然成立，但对接目标从"探索是否可行"变为"补一层 ROS2 消息桥接"这样更具体的工程任务。Depth 因子在两个分支都未接线，工作量不变。
-3. **`sonar_camera_reconstruction` 构建依赖**：`package.xml` 声明依赖同实验室 `bruce_slam` 包，不能独立编译。第 4.5 节 "Day 3: 跑 sonar_camera_reconstruction sample bag" 之前必须先插入一步解决该依赖，原时间表偏乐观。
-4. **`sonar_camera_reconstruction` 姿态处理**：`merge.py` 的点云旋转显式丢弃 pitch，只用 roll+yaw；`merge.launch` 还隐藏发布一条 `map -> odom` 恒等 static TF。第 10.4.6 节"自适应双建图前端"里 sonar-grounded 分支的适用范围应明确限定为近似水平姿态场景。
-5. **`ocean_t` 现状**：`ocean_t/src/svin2_pipeline.py` 并非对接官方 SVIn，而是团队自研的 Python/scipy 简化紧耦合估计器原型，其 FLS 前端对 elevation 使用 `np.random.uniform` 随机赋值后当真实 3D 点使用，直接违反平台架构第 6/21 节的不变量。这意味着本文 Phase 2（"跑通 SVIn 分支"）尚未真正开始——`ocean_t` 里现有的紧耦合原型不能等同于 Phase 2 的交付物，且该原型需要先整改（去随机化 elevation、修复每帧重新播种导致的不可复现问题）才能作为任何契约验证的参考。
+1. SVIn ROS 版本：确认 `main` 分支为 ROS2 Jazzy（非 Humble），第 3.3/4.4 节的表述据此收敛。
+2. SVIn sonar/depth 现状：并非"大量待实现"。Ceres 残差层（`SonarError`/`SonarParameterBlock`/`addSonarMeasurement`）已完整实现，main 分支只是 ROS2 `Subscriber.cpp` 里的 sonar/depth 回调被注释；`ros1` 分支的 sonar 回调实际是激活的（订阅 `/imagenex831l/range`）。第 4.4 节 Phase 2/3 的"审计"工作量应下修，Phase 3 的"HoloOcean imaging sonar 降维成 Imagenex range-like observation"判断依然成立，但对接目标从"探索是否可行"变为"补一层 ROS2 消息桥接"这样更具体的工程任务。Depth 因子在两个分支都未接线，工作量不变。
+3. `sonar_camera_reconstruction` 构建依赖：`package.xml` 声明依赖同实验室 `bruce_slam` 包，不能独立编译。第 4.5 节 "Day 3: 跑 sonar_camera_reconstruction sample bag" 之前必须先插入一步解决该依赖，原时间表偏乐观。
+4. `sonar_camera_reconstruction` 姿态处理：`merge.py` 的点云旋转显式丢弃 pitch，只用 roll+yaw；`merge.launch` 还隐藏发布一条 `map -> odom` 恒等 static TF。第 10.4.6 节"自适应双建图前端"里 sonar-grounded 分支的适用范围应明确限定为近似水平姿态场景。
+5. `ocean_t` 现状：`ocean_t/src/svin2_pipeline.py` 并非对接官方 SVIn，而是团队自研的 Python/scipy 简化紧耦合估计器原型，其 FLS 前端对 elevation 使用 `np.random.uniform` 随机赋值后当真实 3D 点使用，直接违反平台架构第 6/21 节的不变量。这意味着本文 Phase 2（"跑通 SVIn 分支"）尚未真正开始。`ocean_t` 里现有的紧耦合原型不能等同于 Phase 2 的交付物，且该原型需要先整改（去随机化 elevation、修复每帧重新播种导致的不可复现问题）才能作为任何契约验证的参考。
 
 ### 11.2 对执行顺序的影响
 

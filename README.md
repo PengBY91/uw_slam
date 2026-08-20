@@ -1,16 +1,16 @@
 # uw_slam — 水下声光融合 SLAM 平台
 
-`uw_slam` 是水下自主平台声呐 + 光学融合 SLAM 的长期代码框架。它是
+`uw_slam` 是水下自主平台声呐 + 光学融合 SLAM 的长期代码框架，是
 [`acoustic-optic-slam-platform-architecture-2026-08-17.md`](./docs/acoustic-optic-slam-platform-architecture-2026-08-17.md)
-（长期架构设计，下称"架构文档"）的第一次真实代码落地：不是在 `ocean_t`/`SVIn`/
-`sonar_camera_reconstruction` 三个既有代码库上小修小补，而是按架构文档第 5-7 节的
-依赖不变量、领域契约、仓库边界重新搭建的独立仓库，允许把三者中有价值的具体实现
-（声呐 range 因子、CFAR 前端）移植/参考进来。配套的第一阶段工程方案见
+（长期架构设计，下称"架构文档"）的第一次真实代码落地，按架构文档第 5-7 节的
+依赖不变量、领域契约、仓库边界独立搭建。`ocean_t`/`SVIn`/`sonar_camera_
+reconstruction` 三个既有代码库保持不动，只把其中有价值的具体实现（声呐 range
+因子、CFAR 前端）移植或参考过来。配套的第一阶段工程方案见
 [`holoocean-to-acoustic-optic-slam-pipeline-2026-08-05.md`](./docs/holoocean-to-acoustic-optic-slam-pipeline-2026-08-05.md)。
 
-**当前状态**：骨架 + 每一层至少一条可编译、可运行、有测试覆盖的真实垂直切片（不是
-接口占位）。13/13 C++ 测试、9/9 Python 测试通过；有一条端到端可跑的合成数据 demo。
-不是空骨架，但也远不是生产可用——"已知边界"一节列出了尚未做的部分。
+现在的状态：骨架加上每一层至少一条可编译、可运行、有测试覆盖的真实垂直切片，
+不是接口占位。13/13 C++ 测试、9/9 Python 测试通过，有一条端到端可跑的合成数据
+demo。离生产可用还远，尚未做的部分列在"已知边界"一节。
 
 ## 目录
 
@@ -27,24 +27,24 @@
 
 ## 与仓库内其他目录的关系
 
-`external_repos/{SVIn,sonar_camera_reconstruction,ocean_t}/` 是**独立的、未被本仓库
-修改**的参考仓库，各自有自己的 git 历史，整个 `external_repos/` 已加入
+`external_repos/{SVIn,sonar_camera_reconstruction,ocean_t}/` 是独立的参考仓库，
+本仓库不修改它们，各自保留自己的 git 历史。整个 `external_repos/` 已加入
 `.gitignore`，不纳入本仓库版本控制：
 
 | 目录 | 关系 |
 |---|---|
 | `external_repos/SVIn/` | 上游第三方仓库（GPLv3）。`sonar_range_factor` 移植了其 `SonarError` 残差公式，见 [`NOTICE`](./NOTICE) 第 1 节。其余部分（双目 VIO 内部状态估计）不移植，是架构文档明确的非目标，只作为外部黑盒对比 baseline。 |
-| `external_repos/sonar_camera_reconstruction/` | 上游第三方仓库（MIT）。`sonar_cfar_frontend` 移植了其 CFAR 检测 + 极坐标转换 + DBSCAN 聚类，见 [`NOTICE`](./NOTICE) 第 2 节。其 `merge.py` 里丢弃 pitch、直接烘焙到 `map` frame 的部分**没有**被移植（架构文档 22.1 节的审计发现），本仓库的前端只输出声呐局部坐标系下的证据。 |
+| `external_repos/sonar_camera_reconstruction/` | 上游第三方仓库（MIT）。`sonar_cfar_frontend` 移植了其 CFAR 检测 + 极坐标转换 + DBSCAN 聚类，见 [`NOTICE`](./NOTICE) 第 2 节。其 `merge.py` 里丢弃 pitch、把点云直接转换并固定到 `map` frame（不保留局部坐标引用，后续轨迹修正无法回溯）的部分没有被移植（架构文档 22.1 节的审计发现），本仓库的前端只输出声呐局部坐标系下的证据。 |
 | `external_repos/ocean_t/` | 团队早期的 HoloOcean 驱动原型，已被 `adapters/holoocean/` 取代，不再维护，仅保留供历史参考。 |
-| `external_repos/holoocean-ros/` | 上游第三方仓库（MIT，byu-holoocean/holoocean-ros）。HoloOcean 官方 ROS2 接口，当前实际在用的仿真工具——`holoocean_main` 加载场景并把传感器数据发到 ROS2 话题（`holoocean_interfaces` 定义的消息类型），`holoocean_examples` 是操作示例。`adapters/third_party/holoocean_ros_bridge` + `adapters/ros2` 消费其 `ImagingSonar` 话题（见下）。 |
+| `external_repos/holoocean-ros/` | 上游第三方仓库（MIT，byu-holoocean/holoocean-ros）。HoloOcean 官方 ROS2 接口，是当前实际在用的仿真工具。`holoocean_main` 加载场景并把传感器数据发到 ROS2 话题（`holoocean_interfaces` 定义的消息类型），`holoocean_examples` 是操作示例。`adapters/third_party/holoocean_ros_bridge` + `adapters/ros2` 消费其 `ImagingSonar` 话题（见下）。 |
 | `external_repos/holoocean_bridge/` | 一个同事独立维护的 HoloOcean→ROS2 桥接包，未 vendor 进本仓库（不同 provenance/license 链）。`adapters/third_party/svin_bridge`、`adapters/third_party/sonar_camera_reconstruction_baseline` 的 README 已经把它记录为「可参考、不可直接抄」；`adapters/third_party/holoocean_ros_bridge` 的镜像翻转等转换细节也是读它推导出来的，见该目录 README。 |
 
 ## 许可与代码出处
 
-本仓库整体采用 **GPLv3**（见 [`LICENSE`](./LICENSE)），原因是直接移植了 GPLv3 许可的
-`SVIn` 代码。移植文件保留原始文件头版权声明；每一处移植的具体来源、移植了什么、
-刻意没有移植什么，都记录在 [`NOTICE`](./NOTICE) 里——修改移植代码前请先读一遍
-`NOTICE`，避免破坏可追溯性。
+本仓库整体采用 GPLv3（见 [`LICENSE`](./LICENSE)），原因是直接移植了 GPLv3 许可的
+`SVIn` 代码。移植文件保留原始文件头版权声明，每一处移植的具体来源、移植了什么、
+刻意没有移植什么，都记录在 [`NOTICE`](./NOTICE) 里，修改移植代码前请先读一遍，
+避免破坏可追溯性。
 
 ## 架构总览
 
@@ -80,14 +80,15 @@ tools/              codegen、lint、开发环境安装脚本
 
 ## 构建
 
-**依赖**：`cmake`（≥3.22）、`g++`（C++17）、`protobuf-compiler`/`libprotobuf-dev`、
+依赖：`cmake`（≥3.22）、`g++`（C++17）、`protobuf-compiler`/`libprotobuf-dev`、
 `libeigen3-dev`、`libgtest-dev`、`libyaml-cpp-dev`。MCAP C++ SDK 没有包管理器分发，
 通过 CMake `FetchContent` 从源码拉取（见 `cmake/UwMcap.cmake`，只用其 header-only
 实现，`MCAP_COMPRESSION_NO_{ZSTD,LZ4}` 关闭压缩后端以避免额外依赖）。
 
-`./tools/setup_dev_env.sh` 优先尝试 `apt-get`；如果 apt 的包镜像不可达/被限速（本仓库
-在一个仅 HTTPS 出网正常、HTTP(80) 镜像大量超时的沙箱环境中开发，`apt-get` 会卡住不动），
-会自动回退到用 `conda-forge` 建一个独立的 `uw_slam_build` 环境。两条路径二选一即可：
+`./tools/setup_dev_env.sh` 优先尝试 `apt-get`。本仓库在一个仅 HTTPS 出网正常、
+HTTP(80) 镜像大量超时的沙箱环境中开发，apt 的包镜像常不可达，`apt-get` 会卡住不动，
+脚本会自动回退到用 `conda-forge` 建一个独立的 `uw_slam_build` 环境。两条路径二选一
+即可：
 
 ```bash
 ./tools/setup_dev_env.sh
@@ -112,10 +113,10 @@ uv sync   # 或 pip install -e .
 pytest    # 9/9 通过
 ```
 
-`adapters/ros2`（`-DUW_BUILD_ROS2=ON`）：需要一个 source 好的 ROS2 Jazzy 环境，
+`adapters/ros2`（`-DUW_BUILD_ROS2=ON`）需要一个 source 好的 ROS2 Jazzy 环境，
 外加 `external_repos/holoocean-ros/holoocean_interfaces`（HoloOcean 官方 ROS2 消息
-包）colcon build 到 `CMAKE_PREFIX_PATH` 上——它不在公共 ROS2 包索引里，`find_package
-(holoocean_interfaces REQUIRED)` 才能成功。这套本机验证过的路径：
+包）colcon build 到 `CMAKE_PREFIX_PATH` 上，因为它不在公共 ROS2 包索引里，
+`find_package(holoocean_interfaces REQUIRED)` 才能成功。下面是本机验证过的路径：
 
 ```bash
 # 1) ROS2 Jazzy（apt，见 https://docs.ros.org/en/jazzy/Installation.html）
@@ -147,11 +148,12 @@ cmake --build build -j"$(nproc)" --target uw_holoocean_sonar_bridge_node
 
 ## 运行端到端 demo
 
-`synth_bag_gen` + `replay_demo` 的合成数据 demo 不需要 HoloOcean/ROS2 环境：用
+`synth_bag_gen` + `replay_demo` 的合成数据 demo 不需要 HoloOcean/ROS2 环境。用
 `synth_bag_gen` 生成带已知真值的合成 MCAP bag，再用 `replay_demo` 跑完整的
 前端 → 因子构建 → 位姿图求解 → 评测 流程。
-两种驱动方式——命令行参数（快速试验）或 `--experiment` 接入分层 YAML 配置——在默认
-参数下应给出相同结果；显式传入的 CLI 参数会覆盖 `--experiment` 里对应的值。
+两种驱动方式在默认参数下应给出相同结果：命令行参数（快速试验），或者
+`--experiment` 接入分层 YAML 配置。显式传入的 CLI 参数会覆盖 `--experiment` 里
+对应的值。
 
 ```bash
 # 方式一：命令行参数
@@ -168,11 +170,11 @@ build/apps/replay_demo/replay_demo \
 cat /tmp/demo_trajectory.tum
 ```
 
-ATE 不再是早期版本的 ~3cm，原因是 `sonar_range_factor` 的路标关联从"直接读
+ATE 不再是早期版本的 ~3cm。原因是 `sonar_range_factor` 的路标关联从"直接读
 `/scenario/sonar_targets` 的真值坐标"换成了真实的 `SubmapManager::QueryNearestPoint()`
-在线发现——第一次看到某个路标时只能假设它和当前 pose 同一个 elevation（声呐没有
-仰角信息），这个初值误差会被 depth 因子钉死的 z 挤到 x/y 上。这是架构文档明确记录
-的 v1 限制（没有联合路标估计），不是回归；细节见 `CODEBASE_GUIDE.md` 8.2 节。
+在线发现：第一次看到某个路标时只能假设它和当前 pose 同一个 elevation（声呐没有
+仰角信息），z 被 depth 因子固定后，这个初值误差会转嫁到 x/y 分量上。这是架构文档明确记录
+的 v1 限制（没有联合路标估计），不是回归，细节见 `CODEBASE_GUIDE.md` 8.2 节。
 
 ## 分层配置系统
 
@@ -196,15 +198,15 @@ ATE 不再是早期版本的 ~3cm，原因是 `sonar_range_factor` 的路标关�
 
 对应架构文档验收面设计，三层测试：
 
-- **L0 契约**（`tests/l0_contracts/`）：Protobuf round-trip，保证 schema 是唯一事实源
+- L0 契约（`tests/l0_contracts/`）：Protobuf round-trip，保证 schema 是唯一事实源
   这件事在代码层面成立。
-- **L1 单元**：每个移植/新写的因子、frontend、solver 各自的单元测试（就近放在各自
+- L1 单元：每个移植/新写的因子、frontend、solver 各自的单元测试（就近放在各自
   模块的 `test/` 目录下），包括：`sonar_range_factor` 用有限差分验证解析雅可比、
   `sonar_cfar_frontend` 用固定 fixture 声呐图做 CFAR + DBSCAN 的 golden-value 回归、
   `config_test` 直接读真实 `configs/experiment/synthetic_smoke.yaml` 逐字段断言解析
   结果。
-- **L2 确定性回放**（`tests/l2_replay/determinism_test.sh`）：同一 bag/config/seed 跑
-  两次 `replay_demo`，结果必须逐字节一致——这是"没有藏着全局可变随机状态"的直接
+- L2 确定性回放（`tests/l2_replay/determinism_test.sh`）：同一 bag/config/seed 跑
+  两次 `replay_demo`，结果必须逐字节一致。这是"没有藏着全局可变随机状态"的直接
   验证，也是修过的一类真实 bug（见下）的回归测试思路来源。
 
 ```bash
@@ -220,7 +222,7 @@ tools/lint/check_no_ros_in_core.sh            # 依赖不变量：core/algorithm
   链接成功、启动无报错），但没有接过真实的 `holoocean_main`/HoloOcean 仿真进程
   （需要 UE5 二进制 + Epic Games EULA，本机没做这一步），也没有把它接到
   `SonarFrontend`/`apps/replay_demo` 的下游。`uw_ros2_svin_bridge`（svin_bridge 的
-  ROS2 包装）仍然是全注释的文档骨架，没有真实代码可编译——两者状态不同，见
+  ROS2 包装）仍然是全注释的文档骨架，没有真实代码可编译，两者状态不同，见
   `adapters/ros2/README.md` 的对照表，不要混为一谈。
   `adapters/third_party/svin_bridge/` 本身（不含 ROS2 包装那层）在当前开发机上没有
   真实 SVIn 进程可对，只做到接口和文档层面的正确性，代码与本文档中均有标注，不假装
@@ -230,12 +232,12 @@ tools/lint/check_no_ros_in_core.sh            # 依赖不变量：core/algorithm
   `frontends`/`estimator_mode`/`map_backend` 等算法变体选择字段只是被读取和打印，
   尚未真正驱动"选哪个 frontend/estimator"这类分支（目前两个 app 各自只实现一条
   固定管线）。
-- 第一版求解器是 Eigen 手写的 Gauss-Newton/LM，不是 Ceres/GTSAM——这是架构文档第 20
-  节明确记录的延后决策，`Solver` 接口留了替换口子，但目前只有一种实现。
+- 第一版求解器是 Eigen 手写的 Gauss-Newton/LM，还没换成 Ceres/GTSAM。这是架构文档第
+  20 节明确记录的延后决策，`Solver` 接口留了替换口子，但目前只有一种实现。
 - 位姿图只优化 keyframe 变量，不联合优化路标点（架构文档 10.4.5 节）；数据关联
   现在走真实的 `SubmapManager::QueryNearestPoint()`（不再直接读 ground truth），
   但新路标第一次被发现时的 elevation 只能假设和当前 pose 一致（声呐没有仰角
-  信息），之后也不会被后续因子精化——见上一节 ATE 变化的解释。
+  信息），之后也不会被后续因子精化，ATE 变化的解释见上一节。
 - `reliability` 的 `final_information = min(learned, physical, calibration, cross_modal)`
   多路 cap（架构文档 8.4 节）v1 只实现了固定常数上限，真正的多路自适应是后续工作。
 
