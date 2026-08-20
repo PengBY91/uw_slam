@@ -14,6 +14,8 @@
   [长期架构设计](./acoustic-optic-slam-platform-architecture-2026-08-17.md)。
 - **追溯第一阶段方案为什么演变成当前结构**：读
   [HoloOcean Pipeline 工程方案](./holoocean-to-acoustic-optic-slam-pipeline-2026-08-05.md)。
+- **验证某个功能是否跑得通、该加载什么环境**：读
+  [测试与验证指南](./testing-and-verification-guide-2026-08-20.md)。
 
 ## 按任务选择文档
 
@@ -22,6 +24,7 @@
 | 查找类型、接口、算法或 CMake target | [代码库参考](./uw-slam-codebase-reference-2026-08-18.md) | [根 README](../README.md) |
 | 理解领域契约、依赖 DAG、状态机与 Gate | [长期架构设计](./acoustic-optic-slam-platform-architecture-2026-08-17.md) | [代码库参考](./uw-slam-codebase-reference-2026-08-18.md) |
 | 配置或复现实验 | [配置说明](../configs/README.md) | [根 README](../README.md#运行端到端-demo) |
+| 验证某项功能、判断该加载哪个运行环境 | [测试与验证指南](./testing-and-verification-guide-2026-08-20.md) | `tools/verify_pipeline.sh` |
 | 修改 HoloOcean Python 网关 | [HoloOcean 适配器](../adapters/holoocean/README.md) | [Pipeline 工程方案](./holoocean-to-acoustic-optic-slam-pipeline-2026-08-05.md) |
 | 构建或排查 ROS2 接入 | [ROS2 适配器](../adapters/ros2/README.md) | [外部仓库恢复说明](../external_repos/README.md) |
 | 理解第三方仓库角色与风险 | [外部代码概览](../external_repos/external-repos-overview.md) | [外部仓库恢复说明](../external_repos/README.md) |
@@ -36,6 +39,7 @@
 | [代码库参考](./uw-slam-codebase-reference-2026-08-18.md) | 当前事实 | 当前类型、函数、参数、数据流、测试与工具 | `919e1f0`，2026-08-19 |
 | [长期架构设计](./acoustic-optic-slam-platform-architecture-2026-08-17.md) | 已批准设计 | 长期目标、模块边界、不变量与阶段决策 | 2026-08-19 |
 | [Pipeline 工程方案](./holoocean-to-acoustic-optic-slam-pipeline-2026-08-05.md) | 演进中/历史参考 | 第一阶段 baseline、方案演进与代码审计修订 | `919e1f0`，2026-08-19 |
+| [测试与验证指南](./testing-and-verification-guide-2026-08-20.md) | 当前说明 | 分功能验证命令、判定标准与运行环境要求 | `90b7752`，2026-08-20 |
 | [配置说明](../configs/README.md) | 组件当前说明 | 四层配置字段、覆盖顺序和消费范围 | 随配置代码维护 |
 | [HoloOcean 适配器](../adapters/holoocean/README.md) | 组件当前说明 | Python 网关安装、代码生成和验证边界 | 随适配器维护 |
 | [ROS2 适配器](../adapters/ros2/README.md) | 组件当前说明 | ROS2 构建、目标状态和未接通边界 | 随适配器维护 |
