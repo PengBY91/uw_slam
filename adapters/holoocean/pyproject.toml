@@ -18,6 +18,17 @@ dependencies = [
 holoocean = ["holoocean"]
 dev = ["pytest>=7.0"]
 
+[tool.uv]
+# uv's default "universal" resolution solves the lock across every platform
+# reachable by requires-python, including Windows — and holoocean==0.5.8's
+# pywin32<=228 pin has no wheel for any cp310+ tag, so resolving the win32
+# branch fails outright regardless of the platform actually running uv.
+# This project only ever targets Linux (see CLAUDE.md/README — WSL2/Ubuntu
+# dev machine, no Windows support claimed anywhere), so scope resolution to
+# that and let the broken win32-only branch of holoocean's own metadata go
+# unsolved rather than blocking every `uv sync`/`uv lock`.
+environments = ["sys_platform == 'linux'"]
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
