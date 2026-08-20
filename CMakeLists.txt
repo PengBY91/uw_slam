@@ -41,6 +41,7 @@ add_subdirectory(algorithms/frontends/acoustic_optic_associator)
 add_subdirectory(algorithms/frontends/acoustic_optic_depth_fusion)
 add_subdirectory(algorithms/estimation)
 add_subdirectory(algorithms/mapping/submap_manager)
+add_subdirectory(algorithms/mapping/acoustic_optic_map_bridge)
 
 add_subdirectory(runtime)
 add_subdirectory(evaluation)

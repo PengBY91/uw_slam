@@ -118,6 +118,7 @@ algorithms/
     depth_factor/                    原生：1D 深度残差
   estimation/                        Eigen 手写 LM 求解器、PoseGraphProblem、StateStore
   mapping/submap_manager/            按 keyframe 存储 MapEvidence（并非经典 submap 边界逻辑）
+  mapping/acoustic_optic_map_bridge/ FusedDepthMeasurement → base_link 系 MapEvidence（声光 plan 6）
 runtime/
   include/uw/runtime/
     state_machines.hpp               三个正交的滞回状态机
@@ -820,6 +821,47 @@ diff 输出确认可复现。降低的 MVP gate 集合（只有 accepted≥5 时
 ≤5%）在当前参数下全部通过（进程退出码 0）；架构文档第 12.2 节其余门槛（posterior
 NLL 校准、真实调度器下的 P95 延迟预算、专门验证 ambiguity 场景错误接受率的场景）
 本 plan 明确没有实现，不是"实现了但没写"，这个边界记录在该 app 的源文件头注释里。
+
+### 6.11 `algorithms/mapping/acoustic_optic_map_bridge`（声光 plan 6：mapping handoff，系列收尾）
+
+只有一个函数：`BuildMapEvidenceFromFusedDepth`。把 plan 4 的 `FusedDepthMeasurement`
+转成 `MapEvidence`（`POINT_CLOUD` 表示），喂给 `algorithms/mapping/submap_manager`——
+**这个模块是声光系列开始之前就已经存在的**，本 plan 一行都没改它
+（`git diff --stat -- algorithms/mapping/submap_manager` 是空的），只是新增了第二个
+`MapEvidence` 生产者。
+
+坐标系链路（复用已有的三段几何，没有新增任何投影原语）：
+`像素+深度 --PinholeCamera::Unproject--> optical frame --OpticalFromBodyRotation()ᵀ-->
+camera body frame --camera_pose.Apply()--> base_link frame`——**存的是 base_link 系，不是
+camera-optical 系，也不是 world 系**。这是刻意的：`SubmapManager::WorldPointsForKeyframe`
+是用 `pose_WB.Apply(local)` 把本地点变到世界系，`pose_WB` 语义是"keyframe 的 base_link
+→world 位姿"，所以 local 点必须先落在 base_link 系，`WorldPointsForKeyframe` 才能直接复用、
+不用改一行代码。`reintegration_policy` 设成 `TRANSFORM_ONLY`——相机外参当作固定值（跟
+plan 2-4 的既有 v1 范围一致），位姿修正只需要移动，不需要拿 `source_observations` 重新
+跑一遍前端。
+
+值得指出的对比：`apps/replay_demo` 现有的声呐 landmark 插入代码（约第 296-309 行）用的是
+另一条路——直接把点存成 `local_frame="world"`，keyframe pose 钉死成 identity，本质是绕开
+"local 点要落在哪个参考系"这个问题的权宜写法（对应 README 里记录的 z=0 anchor 那类 v1
+限制）。本 plan **没有改动、也没有替换** `replay_demo` 这段代码——只是新增了一条按照
+`map.proto` 自己文档注释里写的原则（"local_frame + state_version，等 StateStore 修正
+时才重新变换"）实现的、真正意义上"对"的路径，还没有接进 `replay_demo` 使用。
+
+单测（`uw_acoustic_optic_map_bridge_test`）里最后一个用例直接实例化真正的
+`SubmapManager`（不是 mock），先设一次 keyframe pose 验证世界系坐标，再设第二次
+*不同* 的 pose、**不重新 `AddMapEvidence`**，验证 `WorldPointsForKeyframe` 立刻反映新
+位姿——这正是架构文档第 16 节"local fused evidence 可在 state 更新后重新变换，不被前端
+固化到 world frame"这条完成条件的直接证明。
+
+**声光系列六个 plan 到这里全部完成**：contracts/calibration → optical baseline →
+cross-modal geometry → probabilistic fusion → simulation/evaluation → mapping handoff。
+**但没有任何一个 plan 把这些组件接进 `apps/replay_demo` 的位姿图主循环**——`replay_demo`
+仍然只跑声呐 + 相对位姿 + 深度的固定管线，没有构造过
+`StereoOpticalDepthFrontend`/`AcousticOpticDepthFusionFrontend`/
+`BuildMapEvidenceFromFusedDepth` 中的任何一个。六个 plan 交付的是一套经过单测和端到端
+场景矩阵验证过的、可复用的组件集合，不是一个已经跑起来的产品功能——这个边界需要在
+未来任何"声光融合现在能做什么"的讨论里明确说清楚，不能被"六个 plan 都做完了"这句话
+掩盖。
 
 ---
 

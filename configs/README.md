@@ -37,5 +37,10 @@ backend 的实现——这是紧接着的下一步，不应该修改这里定义
 和 `algorithms/frontends/acoustic_optic_depth_fusion`（posterior 深度优化，真正产出
 `FusedDepthMeasurement`）都已经落地并有单测覆盖。`apps/tools/acoustic_optic_scenario_matrix`
 现在把这四者接成一条真实跑通的流水线（含真实、非新写的 `SonarCfarFrontend`），覆盖
-架构文档第 10 节的 9 场景矩阵，见代码库参考文档 6.10 节的真实结果表——但**仍然没有**接进
-`apps/replay_demo`；把声光证据接入位姿图 replay 属于后续 plan（mapping handoff）。
+架构文档第 10 节的 9 场景矩阵，见代码库参考文档 6.10 节的真实结果表。
+`algorithms/mapping/acoustic_optic_map_bridge` 把 `FusedDepthMeasurement` 转成
+`MapEvidence`（base_link 系），接进既有、未改动的 `submap_manager`，并用真实
+`SubmapManager` 验证了 pose 修正后可重新变换（详见代码库参考文档 6.11 节）——至此
+声光系列六个 plan 全部完成。**但仍然没有任何一个 plan 接进 `apps/replay_demo` 的位姿图
+主循环**——这六个 plan 交付的是一套单测和端到端场景矩阵验证过的组件集合，不是
+`replay_demo` 里能跑起来的产品功能，讨论"声光融合现在能做什么"时不能被这句话掩盖。
