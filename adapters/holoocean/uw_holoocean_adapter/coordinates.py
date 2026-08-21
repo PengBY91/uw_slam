@@ -153,6 +153,34 @@ def build_body_extrinsic(location_m: np.ndarray, rotation_deg: np.ndarray) -> Po
     return Pose(translation=np.array([x, -y, -z]), quaternion_xyzw=matrix_to_quaternion(r_body))
 
 
+def pose_sensor_to_pose(matrix_4x4: np.ndarray) -> Pose:
+    """Converts HoloOcean's live PoseSensor output (a (4,4) float array —
+    confirmed against a real HoloOcean 2.3.0 install, `OpenWater-HoveringCamera`
+    scenario) directly to a Pose, with NO Y/Z axis flip.
+
+    This is deliberately different from build_body_extrinsic above, which
+    DOES flip Y/Z: that function parses a sensor's mounting (location,
+    rotation) out of the UE Editor scenario config, which is expressed in
+    UE's own internal left-handed convention. PoseSensor is not that — it's
+    a HoloOcean *simulation output*, and HoloOcean's Python API already
+    normalizes such live sensor readings to a standard right-handed
+    convention before handing them to Python (matching this platform's own
+    body/world convention directly, no further flip needed) — same
+    precedent external_repos/ocean_t/src/svin2_pipeline.py's own code
+    follows: `state["PoseSensor"]` is read as `T[:3,3]` (translation) /
+    `T[:3,:3]` (rotation) with no axis correction anywhere in that call
+    site. Do not add a flip here without re-verifying against real
+    recorded data first (e.g. does depth increase as expected under a
+    known dive command) — conflating this function with
+    build_body_extrinsic's convention was a real, easy-to-make mistake
+    this docstring exists to head off.
+    """
+    matrix = np.asarray(matrix_4x4, dtype=float)
+    if matrix.shape != (4, 4):
+        raise ValueError(f"expected a (4, 4) pose matrix, got shape {matrix.shape}")
+    return Pose(translation=matrix[:3, 3].copy(), quaternion_xyzw=matrix_to_quaternion(matrix[:3, :3]))
+
+
 def ue_points_to_body(points_ue: np.ndarray) -> np.ndarray:
     """Flips Y/Z only (no translation) — matches CoordTransformer.body_to_world's
     p_ue construction, factored out so it can be reused/tested independently."""

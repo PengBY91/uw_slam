@@ -157,6 +157,51 @@ TEST(DomainValidation, AcceptsWellFormedImageAndDepthGrids) {
   EXPECT_TRUE(uw::domain::ValidateOpticalDepthPrior(prior).ok());
 }
 
+TEST(DomainValidation, ConvertToMono8ConvertsColorAndPassesThroughMono8) {
+  uw::domain::ImageFrame mono;
+  mono.set_width(2);
+  mono.set_height(1);
+  mono.set_row_stride_bytes(2);
+  mono.set_encoding(uw::domain::ImageFrame::IMAGE_ENCODING_MONO8);
+  mono.set_pixel_data(std::string{"\x01\x02", 2});
+  const auto mono_passthrough = uw::domain::ConvertToMono8(mono);
+  ASSERT_TRUE(mono_passthrough.has_value());
+  EXPECT_EQ(mono_passthrough->pixel_data(), mono.pixel_data());
+
+  uw::domain::ImageFrame rgb;
+  rgb.set_width(1);
+  rgb.set_height(1);
+  rgb.set_row_stride_bytes(3);
+  rgb.set_encoding(uw::domain::ImageFrame::IMAGE_ENCODING_RGB8);
+  rgb.set_pixel_data(std::string{"\xff\x00\x00", 3});  // pure red
+  const auto rgb_gray = uw::domain::ConvertToMono8(rgb);
+  ASSERT_TRUE(rgb_gray.has_value());
+  EXPECT_EQ(rgb_gray->encoding(), uw::domain::ImageFrame::IMAGE_ENCODING_MONO8);
+  EXPECT_EQ(rgb_gray->row_stride_bytes(), 1u);
+  ASSERT_EQ(rgb_gray->pixel_data().size(), 1u);
+  EXPECT_EQ(static_cast<unsigned char>(rgb_gray->pixel_data()[0]), 76);  // round(0.299*255)
+
+  uw::domain::ImageFrame bgr;
+  bgr.set_width(1);
+  bgr.set_height(1);
+  bgr.set_row_stride_bytes(3);
+  bgr.set_encoding(uw::domain::ImageFrame::IMAGE_ENCODING_BGR8);
+  bgr.set_pixel_data(std::string{"\x00\x00\xff", 3});  // same pure red, BGR channel order
+  const auto bgr_gray = uw::domain::ConvertToMono8(bgr);
+  ASSERT_TRUE(bgr_gray.has_value());
+  EXPECT_EQ(static_cast<unsigned char>(bgr_gray->pixel_data()[0]), 76);
+}
+
+TEST(DomainValidation, ConvertToMono8RejectsInvalidInput) {
+  uw::domain::ImageFrame malformed;
+  malformed.set_width(2);
+  malformed.set_height(1);
+  malformed.set_row_stride_bytes(2);
+  malformed.set_encoding(uw::domain::ImageFrame::IMAGE_ENCODING_RGB8);
+  malformed.set_pixel_data(std::string{"\x01\x02", 2});  // too short for a 2-wide RGB8 row
+  EXPECT_FALSE(uw::domain::ConvertToMono8(malformed).has_value());
+}
+
 TEST(DomainValidation, RejectsPayloadAndGridShapeMismatches) {
   uw::domain::ImageFrame image;
   image.set_width(2);

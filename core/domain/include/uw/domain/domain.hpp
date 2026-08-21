@@ -60,6 +60,16 @@ ValidationResult ValidateImageFrame(const ImageFrame& frame);
 ValidationResult ValidateOpticalDepthPrior(const OpticalDepthPriorMeasurement& prior);
 ValidationResult ValidateFusedDepth(const FusedDepthMeasurement& fused);
 
+// RGB8/BGR8 -> MONO8 grayscale conversion (ITU-R BT.601 luminance weights).
+// Frontends that only need grayscale (stereo_landmark_vo_frontend,
+// stereo_optical_depth_frontend) hard-require MONO8; this lets a caller
+// convert a color camera frame (e.g. a real HoloOcean RGB8 capture) at the
+// point of consumption instead of teaching recording adapters to discard
+// color at capture time. Returns `frame` unchanged if already MONO8, and
+// nullopt if `frame` fails ValidateImageFrame or uses an encoding other
+// than MONO8/RGB8/BGR8.
+std::optional<ImageFrame> ConvertToMono8(const ImageFrame& frame);
+
 // ---- SonarFrame validation ---------------------------------------------
 // sonar_camera_reconstruction's imaging_sonar.py assumes azimuth_angles is
 // ascending (interp1d(..., assume_sorted=True)) and never checks it; a

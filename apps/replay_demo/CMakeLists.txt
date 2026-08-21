@@ -11,6 +11,7 @@ target_link_libraries(replay_demo PRIVATE
   uw_submap_manager
   uw_sonar_cfar_frontend
   uw_stereo_optical_depth_frontend
+  uw_stereo_landmark_vo_frontend
   uw_acoustic_optic_depth_fusion
   uw_acoustic_optic_map_bridge
 )

@@ -1,0 +1,25 @@
+# 跟 synthetic_smoke.yaml 完全一样，只是 estimator_mode 换成 stereo_landmark_vo：
+# apps/replay_demo 会用 algorithms/frontends/stereo_landmark_vo_frontend 从
+# /raw/camera/left,right 实时算相对位姿因子，取代 synthetic_smoke.yaml 默认的
+# black_box_vio（从 synth_bag_gen 写进 bag 的 ground-truth+noise 证据里读）。
+# 见 configs/README.md 里这个字段的说明。
+
+rig: rig/example_auv.yaml
+scenario: scenario/synthetic_smoke.yaml
+defaults: defaults/platform.yaml
+
+frontends:
+  optical: stereo_depth_frontend_v1
+  sonar: sonar_cfar_frontend_v1
+
+factor_builders:
+  - relative_pose_v1
+  - sonar_range_v1
+  - depth_v1
+
+estimator_mode: stereo_landmark_vo
+map_backend: submap_point_cloud_v1
+
+output:
+  trajectory_format: tum
+  write_run_manifest: true

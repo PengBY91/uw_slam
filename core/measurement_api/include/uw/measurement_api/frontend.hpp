@@ -33,4 +33,21 @@ class OpticalDepthFrontend {
   virtual uw::domain::HealthReport Health() const = 0;
 };
 
+// Relative-pose-from-camera-frames evidence (a RelativePoseMeasurement
+// payload), as an alternative to a black-box VIO's opaque odometry output
+// — see algorithms/frontends/stereo_landmark_vo_frontend, the first
+// implementation. Same "one bundle in, one evidence out" shape as
+// OpticalDepthFrontend; an implementation that needs cross-time state
+// (comparing this call's frame to the previous one) holds that privately,
+// same as StereoOpticalDepthFrontend's frame counters — the interface
+// itself stays stateless-looking on purpose (section 7.4).
+class VisualOdometryFrontend {
+ public:
+  virtual ~VisualOdometryFrontend() = default;
+  virtual std::optional<uw::domain::MeasurementEvidence> Process(
+      const CameraFrameBundle& bundle,
+      const uw::domain::RigCalibrationSnapshot& calibration) = 0;
+  virtual uw::domain::HealthReport Health() const = 0;
+};
+
 }  // namespace uw::measurement_api

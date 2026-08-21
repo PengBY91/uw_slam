@@ -4,9 +4,18 @@
 
 **当前状态**：`apps/tools/synth_bag_gen` 和 `apps/replay_demo` 都可以通过 `--experiment <path>` 加载
 这里的分层配置（解析代码见 `runtime/include/uw/runtime/config.hpp`，用 yaml-cpp）。仍是 v1 明确限制
-的部分：`experiment/*.yaml` 里选择算法变体的字段（`frontends`/`estimator_mode`/`map_backend`）目前
+的部分：`experiment/*.yaml` 里选择算法变体的字段（`frontends`/`estimator_mode`/`map_backend`）大多
 只被读取和打印，两个 app 各自仍只实现一条固定管线，还没有真正按配置切换 frontend/estimator/map
-backend 的实现——这是紧接着的下一步，不应该修改这里定义的分层结构或字段命名。
+backend 的实现——这是紧接着的下一步，不应该修改这里定义的分层结构或字段命名。**一个例外**：
+`apps/replay_demo` 现在真的会按 `estimator_mode` 分支——`stereo_landmark_vo`（需要 rig 带相机）会
+用 `algorithms/frontends/stereo_landmark_vo_frontend` 从 `/raw/camera/left,right` 实时算相对位姿因
+子，替代默认 `black_box_vio` 从 bag 里 `/evidence/relative_pose` 读取合成生成器写入的
+ground-truth+noise 证据；见 `configs/experiment/synthetic_smoke_vo.yaml`。**同一分支下的第二个例
+外**：`frontends.landmark_detector`（`bright_blob` 默认值 / `harris_corner`）也真的会被消费，选择
+`stereo_landmark_vo_frontend` 内部用哪个 landmark 检测器——`bright_blob`
+（`LandmarkBlobDetector`）是给 `synth_bag_gen` 的合成高亮方块场景调的，`harris_corner`
+（`HarrisCornerDetector`）是给真实相机画面（没有理由出现孤立高亮色块）用的，见两者各自的头文件
+注释。
 
 - `defaults/`：平台级默认值，不含任何具体机体/场景信息。`estimation.warmup_seconds`
   （默认 0，即不启用）用于让开局前 N 秒的 keyframe 只做 dead reckoning（继续吃

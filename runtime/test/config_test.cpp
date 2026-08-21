@@ -52,6 +52,7 @@ TEST(Config, LoadsExperimentConfigWithAllThreeLayers) {
   // experiment/synthetic_smoke.yaml itself
   EXPECT_EQ(config.sonar_frontend, "sonar_cfar_frontend_v1");
   EXPECT_EQ(config.optical_frontend, "stereo_depth_frontend_v1");
+  EXPECT_EQ(config.landmark_detector, "bright_blob");  // not set in this experiment file; default
   EXPECT_EQ(config.estimator_mode, "black_box_vio");
   EXPECT_TRUE(config.write_run_manifest);
 }

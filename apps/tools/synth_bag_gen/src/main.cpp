@@ -203,7 +203,83 @@ uw::domain::SonarFrame BuildSyntheticSonarFrame(const std::string& kf_id, uint64
 constexpr uint32_t kCameraWidth = 640;
 constexpr uint32_t kCameraHeight = 480;
 
-uint8_t StereoTexture(int u, int v) { return static_cast<uint8_t>((u * 131 + v * 67 + 19) % 256); }
+// Dimmed vs. the original full [0,255) range: keeps background strictly
+// below kLandmarkPatchMinIntensity (see LandmarkPatchIntensity) so a
+// threshold-based landmark detector can't pick up background texture as a
+// false landmark.
+uint8_t StereoTexture(int u, int v) { return static_cast<uint8_t>(15 + ((u * 131 + v * 67 + 19) % 110)); }
+
+// One 3D landmark's projected pixel footprint for one keyframe, plus the
+// (fixed, scenario-wide) id used to look up its patch pattern — see
+// LandmarkPatchIntensity. Not the landmark's identity in any tracking
+// sense from a consumer's point of view: a real frontend must recover
+// correspondence from patch appearance/geometry alone, the same as it
+// would from a real camera, not from this id.
+struct VisibleLandmark {
+  int id = 0;
+  Eigen::Vector3d camera_optical;
+};
+
+constexpr int kLandmarksPerKeyframe = 10;
+constexpr int kLandmarkPatchHalfSize = 6;  // 13x13 px, small enough that a keyframe's cluster rarely collides
+constexpr int kLandmarkPatchMinIntensity = 160;  // > StereoTexture's max (124), so patches threshold cleanly
+
+// Landmark cloud scattered along the trajectory corridor, `kLandmarksPerKeyframe`
+// clustered near EACH keyframe's own arc position (radius/depth still
+// jittered, so the cluster isn't coplanar — a coplanar point set
+// degenerates a rigid Kabsch/Procrustes fit). This replaces an earlier
+// version that scattered points uniformly across the whole arc: with a
+// fixed total landmark count, uniform scatter thins out badly per unit of
+// travel once arc_radians/radius_m grow, so a camera's (narrow, unlike the
+// sonar's ~6 rad) field of view could lose overlap with the previous
+// keyframe within just a few steps — confirmed by running
+// stereo_landmark_vo_frontend end-to-end (not just its unit tests, which
+// use hand-built fixtures) and watching visible-landmark counts collapse
+// from ~18 to 1 by keyframe 7. Anchoring density to each keyframe directly
+// guarantees neighboring keyframes share a healthy landmark overlap
+// regardless of trajectory length. Jitter is drawn from the caller's
+// seeded `rng`, once, up front — never reseeded, never global (CLAUDE.md's
+// RNG discipline / the L2 determinism test).
+std::vector<Eigen::Vector3d> BuildVisualLandmarks(const ScenarioOptions& opt, std::mt19937_64& rng) {
+  std::uniform_real_distribution<double> radius_jitter(0.6, 1.2);
+  std::uniform_real_distribution<double> depth_jitter(-2.5, 2.5);
+  const double keyframe_step_rad =
+      opt.num_keyframes > 1 ? opt.arc_radians / (opt.num_keyframes - 1) : opt.arc_radians;
+  std::uniform_real_distribution<double> theta_offset_jitter(-1.5 * keyframe_step_rad, 1.5 * keyframe_step_rad);
+
+  std::vector<Eigen::Vector3d> landmarks;
+  landmarks.reserve(static_cast<std::size_t>(kLandmarksPerKeyframe) * opt.num_keyframes);
+  for (int kf = 0; kf < opt.num_keyframes; ++kf) {
+    const double kf_t =
+        opt.num_keyframes > 1 ? static_cast<double>(kf) / (opt.num_keyframes - 1) : 0.0;
+    const double base_theta = kf_t * opt.arc_radians;
+    for (int j = 0; j < kLandmarksPerKeyframe; ++j) {
+      const double theta = base_theta + theta_offset_jitter(rng);
+      const double radius = opt.radius_m * radius_jitter(rng);
+      const double depth = -opt.depth_m + depth_jitter(rng);
+      landmarks.emplace_back(radius * std::sin(theta), radius * (1.0 - std::cos(theta)), depth);
+    }
+  }
+  return landmarks;
+}
+
+// Deterministic per-landmark pattern (a small position-dependent hash, not
+// a uniform blob): gives each landmark id a reproducible but visually
+// distinctive footprint so a future frontend can actually tell landmarks
+// apart by patch appearance (normalized cross-correlation or similar)
+// instead of all "features" looking identical, which no real matcher could
+// disambiguate. Not learned, not ported from anywhere — same precedent as
+// sonar_cfar_frontend's dbscan.hpp and block_matcher.hpp (see NOTICE).
+uint8_t LandmarkPatchIntensity(int landmark_id, int du, int dv) {
+  uint32_t h = static_cast<uint32_t>(landmark_id) * 2654435761u;
+  h ^= static_cast<uint32_t>((du + kLandmarkPatchHalfSize) * (2 * kLandmarkPatchHalfSize + 1) +
+                              (dv + kLandmarkPatchHalfSize)) *
+       2246822519u;
+  h ^= h >> 13;
+  h *= 3266489917u;
+  h ^= h >> 16;
+  return static_cast<uint8_t>(kLandmarkPatchMinIntensity + (h % (256 - kLandmarkPatchMinIntensity)));
+}
 
 Pose3 FindRigEdgePose(const uw::domain::RigCalibrationSnapshot& rig, const std::string& child_frame) {
   for (const auto& edge : rig.frame_tree()) {
@@ -222,9 +298,8 @@ const uw::domain::CameraIntrinsics* FindRigCamera(const uw::domain::RigCalibrati
 
 std::pair<uw::domain::ImageFrame, uw::domain::ImageFrame> BuildStereoPair(
     const uw::sensor_models::StereoGeometry& stereo_geometry,
-    const std::optional<Eigen::Vector3d>& target_camera_optical, uint64_t t_ns) {
+    const std::vector<VisibleLandmark>& visible_landmarks, uint64_t t_ns) {
   constexpr double kBackgroundDepthM = 15.0;
-  constexpr int kPatchHalfSize = 12;
   const int background_disparity_px = std::max(
       1, static_cast<int>(std::lround(stereo_geometry.left.fx * stereo_geometry.baseline_m / kBackgroundDepthM)));
 
@@ -239,25 +314,35 @@ std::pair<uw::domain::ImageFrame, uw::domain::ImageFrame> BuildStereoPair(
     }
   }
 
-  if (target_camera_optical.has_value() && target_camera_optical->z() > 0.5) {
-    const Eigen::Vector2d pixel = stereo_geometry.left.Project(*target_camera_optical);
+  // Each landmark's patch is painted into BOTH images at its own
+  // depth-derived disparity, with identical content in both — unlike the
+  // single-target trick this replaced (which only warped `right`, relying
+  // on `left` already holding the same background texture value by
+  // construction). That trick gave a locally-consistent disparity for
+  // dense block matching but no single-frame-salient blob a landmark
+  // frontend could detect or track between keyframes; painting both sides
+  // makes each landmark an actual detectable, matchable feature.
+  for (const auto& landmark : visible_landmarks) {
+    if (landmark.camera_optical.z() <= 0.5) continue;
+    const Eigen::Vector2d pixel = stereo_geometry.left.Project(landmark.camera_optical);
     const int center_u = static_cast<int>(std::lround(pixel.x()));
     const int center_v = static_cast<int>(std::lround(pixel.y()));
-    const int target_disparity_px = std::max(
+    const int disparity_px = std::max(
         1, static_cast<int>(std::lround(stereo_geometry.left.fx * stereo_geometry.baseline_m /
-                                        target_camera_optical->z())));
-    for (int dv = -kPatchHalfSize; dv <= kPatchHalfSize; ++dv) {
+                                        landmark.camera_optical.z())));
+    for (int dv = -kLandmarkPatchHalfSize; dv <= kLandmarkPatchHalfSize; ++dv) {
       const int v = center_v + dv;
       if (v < 0 || v >= static_cast<int>(kCameraHeight)) continue;
-      for (int du = -kPatchHalfSize; du <= kPatchHalfSize; ++du) {
+      for (int du = -kLandmarkPatchHalfSize; du <= kLandmarkPatchHalfSize; ++du) {
         const int u_left = center_u + du;
-        const int u_right = u_left - target_disparity_px;
+        const int u_right = u_left - disparity_px;
         if (u_left < 0 || u_left >= static_cast<int>(kCameraWidth) || u_right < 0 ||
             u_right >= static_cast<int>(kCameraWidth)) {
           continue;
         }
-        right_pixels[static_cast<std::size_t>(v) * kCameraWidth + static_cast<std::size_t>(u_right)] =
-            static_cast<char>(StereoTexture(u_left, v));
+        const char intensity = static_cast<char>(LandmarkPatchIntensity(landmark.id, du, dv));
+        left_pixels[static_cast<std::size_t>(v) * kCameraWidth + static_cast<std::size_t>(u_left)] = intensity;
+        right_pixels[static_cast<std::size_t>(v) * kCameraWidth + static_cast<std::size_t>(u_right)] = intensity;
       }
     }
   }
@@ -338,6 +423,12 @@ int main(int argc, char** argv) {
 
   const auto trajectory = BuildGroundTruthTrajectory(opt);
   const auto targets = BuildSonarTargets(opt);
+  // Only meaningful when a camera rig is loaded (see `rig` above); drawn
+  // here, after `rng` exists but before the per-keyframe loop below, so it
+  // consumes a fixed slice of the seeded stream without perturbing the
+  // per-keyframe pose/range/bearing draws that follow.
+  const std::vector<Eigen::Vector3d> visual_landmarks =
+      rig.has_value() ? BuildVisualLandmarks(opt, rng) : std::vector<Eigen::Vector3d>{};
 
   uw::runtime::McapProtobufWriter writer;
   if (!writer.Open(opt.out_path)) {
@@ -425,10 +516,9 @@ int main(int argc, char** argv) {
             *rig, "camera_left", "camera_left_link", "camera_right", "camera_right_link");
         if (stereo_geometry.valid) {
           const Pose3 camera_pose = FindRigEdgePose(*rig, "camera_left_link");
-          std::optional<Eigen::Vector3d> nearest_visible_target;
-          double nearest_visible_range = std::numeric_limits<double>::max();
-          for (const auto& target : targets) {
-            const Eigen::Vector3d local_body = trajectory[i].Inverse().Apply(target);
+          std::vector<VisibleLandmark> visible;
+          for (std::size_t li = 0; li < visual_landmarks.size(); ++li) {
+            const Eigen::Vector3d local_body = trajectory[i].Inverse().Apply(visual_landmarks[li]);
             const Eigen::Vector3d local_camera_body = camera_pose.Inverse().Apply(local_body);
             const Eigen::Vector3d local_optical =
                 uw::sensor_models::OpticalFromBodyRotation() * local_camera_body;
@@ -438,12 +528,9 @@ int main(int argc, char** argv) {
                 pixel.y() >= stereo_geometry.left.height) {
               continue;  // outside the camera's (narrower than sonar) field of view
             }
-            if (local_optical.z() < nearest_visible_range) {
-              nearest_visible_range = local_optical.z();
-              nearest_visible_target = local_optical;
-            }
+            visible.push_back(VisibleLandmark{static_cast<int>(li), local_optical});
           }
-          auto stereo_pair = BuildStereoPair(stereo_geometry, nearest_visible_target, t_ns);
+          auto stereo_pair = BuildStereoPair(stereo_geometry, visible, t_ns);
           writer.WriteMessage("/raw/camera/left", t_ns, stereo_pair.first);
           writer.WriteMessage("/raw/camera/right", t_ns, stereo_pair.second);
         }

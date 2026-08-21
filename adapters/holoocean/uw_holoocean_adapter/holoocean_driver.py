@@ -1,15 +1,41 @@
 """HoloOcean session driver — the actual replacement for ocean_t/src/main.py.
 
-KNOWN LIMITATION (this repo state): the `holoocean` Python package is not
-installed on the machine this was developed on (no HoloOcean/Unreal
-environment available), so `HoloOceanSession` below cannot be exercised
-end-to-end here. The import is deferred and guarded (see `_import_holoocean`)
-so the rest of this package (coordinates, canonical_writer,
-scenario_randomization, and their tests) work and are tested without
-HoloOcean installed. What IS real and tested: the deterministic seeding
-discipline, the capture/receive time separation, and the canonical bag
-output format — the parts of the ocean_t audit findings (platform
-architecture section 22.3) that don't require an actual simulator.
+UPDATE: exercised against a real HoloOcean 2.3.0 install (native Windows —
+WSL2 can't render, see the platform architecture notes on that) via a
+throwaway test script, not yet through this class directly. That test run
+is what caught the two real bugs fixed here (see below); this class itself
+still hasn't been driven end-to-end, so treat it as "fixed against known
+issues, not yet proven" rather than fully verified. `_import_holoocean`'s
+deferred/guarded import still means the rest of this package (coordinates,
+canonical_writer, scenario_randomization, and their tests) works and is
+tested without HoloOcean installed, on any machine including this one.
+
+Four real bugs found and fixed by that real-install test run (the first
+two via a throwaway script, the last two via record_session.py's first
+actual recording attempt), none caught by this module's own
+(HoloOcean-absent) test coverage:
+  - `step()` called `self._env.tick(action)` when an action was supplied.
+    HoloOcean's `tick(n)` takes a TICK COUNT, not an action —
+    `TypeError: 'list' object cannot be interpreted as an integer` the
+    moment a real action list was passed. The action-applying call is
+    `env.step(action)`; `env.tick()` (no action) is for advancing without
+    supplying a new command. Fixed below.
+  - `__init__` never called `self._env.reset()`. HoloOcean requires
+    `reset()` on a freshly created environment before the first
+    tick/step — per HoloOcean's own docs, confirmed by hitting exactly
+    that failure mode against the real install. Fixed below.
+  - `step()` read `self._env.ticks_per_sec`, which doesn't exist —
+    `HoloOceanEnvironment` only has the private `_ticks_per_sec` (no
+    public getter; `set_ticks_per_sec()` is a setter with no matching
+    getter). Fixed below by reading the private attribute directly, with
+    a comment explaining why there's no cleaner option.
+  - `close()` called `self._env.close()`, which also doesn't exist.
+    Checking external_repos/HoloOcean/client/src/holoocean/environments.py
+    (read-only reference) directly: `HoloOceanEnvironment` only exposes
+    cleanup through the context-manager protocol
+    (`__enter__`/`__exit__`, its own source comments call this "Context
+    manager APIs") — no public `close()`. Fixed below by calling
+    `self._env.__exit__(None, None, None)`.
 
 Determinism fix vs ocean_t/src/svin2_pipeline.py: this module accepts a
 single `numpy.random.Generator` seeded once from the scenario config and
@@ -72,6 +98,7 @@ class HoloOceanSession:
         self._rng = np.random.default_rng(seed)
         self._randomization = randomization or ScenarioRandomization()
         self._env = self._holoocean.make(scenario_name)
+        self._env.reset()
         self._tick = 0
 
     def apply_randomization(self) -> None:
@@ -89,10 +116,22 @@ class HoloOceanSession:
     def step(self, action: Optional[Any] = None) -> RawSensorFrame:
         import time as _time
 
-        state = self._env.tick(action) if action is not None else self._env.tick()
-        sim_time_s = self._tick * (1.0 / self._env.ticks_per_sec)
+        state = self._env.step(action) if action is not None else self._env.tick()
+        # HoloOceanEnvironment has no public ticks_per_sec accessor — only
+        # the private `_ticks_per_sec` (set from the scenario config or
+        # defaulted to 30) and a set_ticks_per_sec() *setter* with no
+        # matching getter. Confirmed by hitting `AttributeError:
+        # 'HoloOceanEnvironment' object has no attribute 'ticks_per_sec'`
+        # against the real install.
+        sim_time_s = self._tick * (1.0 / self._env._ticks_per_sec)
         self._tick += 1
         return RawSensorFrame(sim_time_s=sim_time_s, receive_time_s=_time.time(), sensors=state)
 
     def close(self) -> None:
-        self._env.close()
+        # HoloOceanEnvironment has no public close() either (confirmed the
+        # same way as ticks_per_sec above) — cleanup is only exposed
+        # through the context-manager protocol (`with holoocean.make(...)
+        # as env:`), which is what its own source calls "Context manager
+        # APIs" in a comment, i.e. the one bit of the exit path actually
+        # meant to be called from outside the class.
+        self._env.__exit__(None, None, None)

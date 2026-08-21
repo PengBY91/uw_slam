@@ -99,6 +99,42 @@ ValidationResult ValidateImageFrame(const ImageFrame& frame) {
   return {};
 }
 
+std::optional<ImageFrame> ConvertToMono8(const ImageFrame& frame) {
+  if (!ValidateImageFrame(frame).ok()) return std::nullopt;
+  if (frame.encoding() == ImageFrame::IMAGE_ENCODING_MONO8) return frame;
+  if (frame.encoding() != ImageFrame::IMAGE_ENCODING_RGB8 &&
+      frame.encoding() != ImageFrame::IMAGE_ENCODING_BGR8) {
+    return std::nullopt;
+  }
+  const bool is_rgb = frame.encoding() == ImageFrame::IMAGE_ENCODING_RGB8;
+  const uint32_t width = frame.width();
+  const uint32_t height = frame.height();
+  const uint32_t src_stride = frame.row_stride_bytes();
+  const uint32_t dst_stride = width;
+
+  std::string gray(static_cast<std::size_t>(dst_stride) * height, '\0');
+  const auto* src = reinterpret_cast<const unsigned char*>(frame.pixel_data().data());
+  for (uint32_t y = 0; y < height; ++y) {
+    const unsigned char* row = src + static_cast<std::size_t>(y) * src_stride;
+    char* out_row = gray.data() + static_cast<std::size_t>(y) * dst_stride;
+    for (uint32_t x = 0; x < width; ++x) {
+      const unsigned char c0 = row[x * 3 + 0];
+      const unsigned char c1 = row[x * 3 + 1];
+      const unsigned char c2 = row[x * 3 + 2];
+      const unsigned char r = is_rgb ? c0 : c2;
+      const unsigned char b = is_rgb ? c2 : c0;
+      const double luminance = 0.299 * r + 0.587 * c1 + 0.114 * b;
+      out_row[x] = static_cast<char>(static_cast<unsigned char>(std::lround(luminance)));
+    }
+  }
+
+  ImageFrame result = frame;
+  result.set_encoding(ImageFrame::IMAGE_ENCODING_MONO8);
+  result.set_row_stride_bytes(dst_stride);
+  result.set_pixel_data(gray);
+  return result;
+}
+
 ValidationResult ValidateOpticalDepthPrior(const OpticalDepthPriorMeasurement& prior) {
   const std::size_t pixels = PixelCount(prior.width(), prior.height());
   if (pixels == 0) {

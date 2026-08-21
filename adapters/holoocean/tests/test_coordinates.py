@@ -4,6 +4,7 @@ from uw_holoocean_adapter.coordinates import (
     Pose,
     build_body_extrinsic,
     matrix_to_quaternion,
+    pose_sensor_to_pose,
     ue_points_to_body,
 )
 
@@ -45,3 +46,35 @@ def test_ue_points_to_body_flips_only_y_and_z():
     points = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
     flipped = ue_points_to_body(points)
     assert np.allclose(flipped, np.array([[1.0, -2.0, -3.0], [4.0, -5.0, -6.0]]))
+
+
+def test_pose_sensor_to_pose_identity_matrix_gives_identity_pose():
+    pose = pose_sensor_to_pose(np.eye(4))
+    assert np.allclose(pose.translation, np.zeros(3))
+    assert np.allclose(np.abs(pose.quaternion_xyzw[3]), 1.0)
+
+
+def test_pose_sensor_to_pose_does_not_flip_axes():
+    # Unlike build_body_extrinsic, this must NOT flip Y/Z — translation
+    # passes through untouched.
+    matrix = np.eye(4)
+    matrix[:3, 3] = [1.0, 2.0, 3.0]
+    pose = pose_sensor_to_pose(matrix)
+    assert np.allclose(pose.translation, np.array([1.0, 2.0, 3.0]))
+
+
+def test_pose_sensor_to_pose_round_trips_a_known_rotation():
+    rotation = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])  # 90 deg about Z
+    matrix = np.eye(4)
+    matrix[:3, :3] = rotation
+    matrix[:3, 3] = [0.5, -0.5, 1.5]
+    pose = pose_sensor_to_pose(matrix)
+    assert np.allclose(pose.to_matrix4(), matrix, atol=1e-9)
+
+
+def test_pose_sensor_to_pose_rejects_wrong_shape():
+    try:
+        pose_sensor_to_pose(np.eye(3))
+        assert False, "expected ValueError"
+    except ValueError:
+        pass

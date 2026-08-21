@@ -58,6 +58,7 @@
 #include "uw/factor_builders/sonar_range_factor_builder.hpp"
 #include "uw/frontends/acoustic_optic_depth_fusion_frontend.hpp"
 #include "uw/frontends/sonar_cfar_frontend.hpp"
+#include "uw/frontends/stereo_landmark_vo_frontend.hpp"
 #include "uw/frontends/stereo_optical_depth_frontend.hpp"
 #include "uw/mapping/acoustic_optic_map_bridge.hpp"
 #include "uw/mapping/submap_manager.hpp"
@@ -131,11 +132,22 @@ int main(int argc, char** argv) {
   // acoustic-optic pass below so the no-experiment path (used by
   // tests/l2_replay/determinism_test.sh) is provably unchanged.
   std::optional<uw::domain::RigCalibrationSnapshot> rig;
+  // Was read-but-unused before stereo_landmark_vo_frontend (see README's
+  // "已知边界" — experiment's frontend/estimator/map-backend selection
+  // fields didn't actually dispatch on anything). "stereo_landmark_vo"
+  // is the first value that does: it switches the relative-pose block
+  // below from synth_bag_gen's ground-truth+noise "black-box VIO" bag
+  // evidence to real evidence computed from /raw/camera/left,right — see
+  // that block for why this needs `rig` too, not just this string.
+  std::string estimator_mode = "black_box_vio";
+  std::string landmark_detector = "bright_blob";
   if (!opt.experiment_path.empty()) {
     const auto config = uw::runtime::LoadExperimentConfig(opt.experiment_path);
     defaults = config.defaults;
     write_run_manifest = config.write_run_manifest;
     if (config.rig.cameras_size() > 0) rig = config.rig;
+    estimator_mode = config.estimator_mode;
+    landmark_detector = config.landmark_detector;
     std::cout << "loaded experiment config: " << opt.experiment_path << " (sonar_frontend="
               << config.sonar_frontend << ", estimator_mode=" << config.estimator_mode << ")\n";
   }
@@ -225,29 +237,113 @@ int main(int argc, char** argv) {
   int next_landmark_id = 0;
   int num_landmarks_discovered = 0;
 
+  // Shared by both the relative-pose block below and the acoustic-optic
+  // pass further down: synth_bag_gen's camera ImageFrames don't carry a
+  // keyframe id via header.observation_id (unlike sonar/depth evidence),
+  // only a capture_time — this reconstructs "kfN" from that, relying on
+  // synth_bag_gen's fixed 5 Hz keyframe spacing (kKeyframeIntervalS).
+  auto keyframe_id_for_time = [&](const uw::domain::Stamp& capture_time) -> std::string {
+    const double t_s = uw::domain::ToSeconds(capture_time);
+    const int index = static_cast<int>(std::lround(t_s / kKeyframeIntervalS));
+    return "kf" + std::to_string(index);
+  };
+
   int num_relative_pose_factors = 0;
-  uw::runtime::ReadMcapMessages<uw::domain::MeasurementEvidence>(
-      opt.bag_path, "/evidence/relative_pose",
-      [&](uint64_t, const uw::domain::MeasurementEvidence& evidence) {
-        if (!uw::domain::HasPayload<uw::domain::RelativePoseMeasurement>(evidence)) return;
-        const auto& measurement = uw::domain::GetPayload<uw::domain::RelativePoseMeasurement>(evidence);
-        const std::string from = measurement.from_keyframe().value();
-        const std::string to = measurement.to_keyframe().value();
-        if (!problem.HasKeyframe(from)) return;  // out-of-order/unexpected input: skip, don't guess
+  if (rig.has_value() && estimator_mode == "stereo_landmark_vo") {
+    // Real relative-pose evidence computed from stereo camera frames
+    // (algorithms/frontends/stereo_landmark_vo_frontend) instead of
+    // synth_bag_gen's ground-truth+noise "black-box VIO" stand-in read
+    // from /evidence/relative_pose below. Keyframes must be visited in
+    // order (the frontend is stateful across calls, comparing this call's
+    // landmarks to the previous one's) — collect frames by id first, then
+    // iterate kf0..kfN in order rather than relying on bag stream order.
+    std::unordered_map<std::string, uw::domain::ImageFrame> left_by_kf, right_by_kf;
+    int max_kf_index = -1;
+    // StereoLandmarkVoFrontend hard-requires MONO8 (repo-wide convention,
+    // see stereo_optical_depth_frontend too); synth_bag_gen already writes
+    // MONO8 so ConvertToMono8 is a no-op there, but a real HoloOcean
+    // recording is RGB8 (camera_conversion.py) and needs converting here,
+    // at the point of consumption, rather than the recorder discarding
+    // color at capture time.
+    uw::runtime::ReadMcapMessages<uw::domain::ImageFrame>(
+        opt.bag_path, "/raw/camera/left", [&](uint64_t, const uw::domain::ImageFrame& f) {
+          const auto mono = uw::domain::ConvertToMono8(f);
+          if (!mono.has_value()) return;
+          const std::string kf_id = keyframe_id_for_time(f.header().capture_time());
+          left_by_kf[kf_id] = *mono;
+          max_kf_index = std::max(max_kf_index, std::stoi(kf_id.substr(2)));
+        });
+    uw::runtime::ReadMcapMessages<uw::domain::ImageFrame>(
+        opt.bag_path, "/raw/camera/right", [&](uint64_t, const uw::domain::ImageFrame& f) {
+          const auto mono = uw::domain::ConvertToMono8(f);
+          if (!mono.has_value()) return;
+          right_by_kf[keyframe_id_for_time(f.header().capture_time())] = *mono;
+        });
 
-        const auto measured_relative = Pose3::FromProto(measurement.relative_pose());
-        const auto dead_reckoned_initial_guess = problem.GetKeyframePose(from) * measured_relative;
-        problem.AddKeyframe(to, dead_reckoned_initial_guess);
+    uw::frontends::StereoLandmarkVoFrontendParams vo_params;
+    vo_params.detector_kind = landmark_detector == "harris_corner"
+                                   ? uw::frontends::LandmarkDetectorKind::kHarrisCorner
+                                   : uw::frontends::LandmarkDetectorKind::kBrightBlob;
+    uw::frontends::StereoLandmarkVoFrontend vo_frontend(vo_params);
 
-        uw::domain::FactorCandidate candidate;
-        candidate.set_residual_model(uw::factor_builders::RelativePoseFactorBuilder::kResidualModel);
-        candidate.set_proposed_noise(relative_pose_sqrt_info);
-        auto block = relative_pose_builder.Build(candidate, evidence, {});
-        if (block) {
-          problem.AddResidualBlock(std::move(block), {from, to});
-          ++num_relative_pose_factors;
-        }
-      });
+    for (int i = 0; i <= max_kf_index; ++i) {
+      const std::string kf_id = "kf" + std::to_string(i);
+      auto left_it = left_by_kf.find(kf_id);
+      auto right_it = right_by_kf.find(kf_id);
+      if (left_it == left_by_kf.end() || right_it == right_by_kf.end()) continue;
+
+      uw::measurement_api::CameraFrameBundle bundle;
+      bundle.primary = left_it->second;
+      bundle.primary.mutable_header()->mutable_observation_id()->set_value(kf_id);
+      bundle.secondary = right_it->second;
+
+      const auto vo_evidence = vo_frontend.Process(bundle, *rig);
+      if (!vo_evidence.has_value()) continue;  // first frame seen, or couldn't fit this transition
+
+      const auto& measurement = uw::domain::GetPayload<uw::domain::RelativePoseMeasurement>(*vo_evidence);
+      const std::string from = measurement.from_keyframe().value();
+      const std::string to = measurement.to_keyframe().value();
+      if (!problem.HasKeyframe(from)) continue;  // out-of-order/unexpected input: skip, don't guess
+
+      const auto measured_relative = Pose3::FromProto(measurement.relative_pose());
+      const auto dead_reckoned_initial_guess = problem.GetKeyframePose(from) * measured_relative;
+      problem.AddKeyframe(to, dead_reckoned_initial_guess);
+
+      uw::domain::FactorCandidate candidate;
+      candidate.set_residual_model(uw::factor_builders::RelativePoseFactorBuilder::kResidualModel);
+      candidate.set_proposed_noise(relative_pose_sqrt_info);
+      auto block = relative_pose_builder.Build(candidate, *vo_evidence, {});
+      if (block) {
+        problem.AddResidualBlock(std::move(block), {from, to});
+        ++num_relative_pose_factors;
+      }
+    }
+    std::cout << "stereo_landmark_vo_frontend: computed relative-pose evidence from camera frames "
+                 "(estimator_mode=stereo_landmark_vo)\n";
+  } else {
+    uw::runtime::ReadMcapMessages<uw::domain::MeasurementEvidence>(
+        opt.bag_path, "/evidence/relative_pose",
+        [&](uint64_t, const uw::domain::MeasurementEvidence& evidence) {
+          if (!uw::domain::HasPayload<uw::domain::RelativePoseMeasurement>(evidence)) return;
+          const auto& measurement = uw::domain::GetPayload<uw::domain::RelativePoseMeasurement>(evidence);
+          const std::string from = measurement.from_keyframe().value();
+          const std::string to = measurement.to_keyframe().value();
+          if (!problem.HasKeyframe(from)) return;  // out-of-order/unexpected input: skip, don't guess
+
+          const auto measured_relative = Pose3::FromProto(measurement.relative_pose());
+          const auto dead_reckoned_initial_guess = problem.GetKeyframePose(from) * measured_relative;
+          problem.AddKeyframe(to, dead_reckoned_initial_guess);
+
+          uw::domain::FactorCandidate candidate;
+          candidate.set_residual_model(uw::factor_builders::RelativePoseFactorBuilder::kResidualModel);
+          candidate.set_proposed_noise(relative_pose_sqrt_info);
+          auto block = relative_pose_builder.Build(candidate, evidence, {});
+          if (block) {
+            problem.AddResidualBlock(std::move(block), {from, to});
+            ++num_relative_pose_factors;
+          }
+        });
+  }
   std::cout << "added " << num_relative_pose_factors << " relative-pose factors, "
             << problem.NumKeyframes() << " keyframes\n";
 
@@ -403,12 +499,8 @@ int main(int argc, char** argv) {
   int num_acoustic_optic_rejected = 0;
   int num_map_evidence_points = 0;
   if (rig.has_value()) {
-    auto keyframe_id_for_time = [&](const uw::domain::Stamp& capture_time) -> std::string {
-      const double t_s = uw::domain::ToSeconds(capture_time);
-      const int index = static_cast<int>(std::lround(t_s / kKeyframeIntervalS));
-      return "kf" + std::to_string(index);
-    };
-
+    // keyframe_id_for_time is defined above, shared with the relative-pose
+    // block's stereo_landmark_vo_frontend path.
     std::unordered_map<std::string, uw::domain::ImageFrame> left_by_kf, right_by_kf;
     std::unordered_map<std::string, uw::domain::SonarFrame> sonar_by_kf;
     uw::runtime::ReadMcapMessages<uw::domain::ImageFrame>(

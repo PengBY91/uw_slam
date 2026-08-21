@@ -68,6 +68,12 @@ struct ExperimentConfig {
 
   std::string sonar_frontend = "sonar_cfar_frontend_v1";
   std::string optical_frontend = "stereo_depth_frontend_v1";
+  // Only consumed when estimator_mode == "stereo_landmark_vo" — selects
+  // uw::frontends::LandmarkDetectorKind ("bright_blob" or "harris_corner",
+  // see that enum's comment). "bright_blob" is tuned for
+  // apps/tools/synth_bag_gen's synthetic scene; "harris_corner" is for
+  // real camera imagery.
+  std::string landmark_detector = "bright_blob";
   std::string estimator_mode = "black_box_vio";
   std::string map_backend = "submap_point_cloud_v1";
   bool write_run_manifest = true;

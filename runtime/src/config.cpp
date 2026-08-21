@@ -204,6 +204,9 @@ ExperimentConfig LoadExperimentConfig(const std::string& path) {
   if (root["frontends"] && root["frontends"]["sonar"]) {
     config.sonar_frontend = root["frontends"]["sonar"].as<std::string>();
   }
+  if (root["frontends"] && root["frontends"]["landmark_detector"]) {
+    config.landmark_detector = root["frontends"]["landmark_detector"].as<std::string>();
+  }
   config.estimator_mode = GetOr<std::string>(root, "estimator_mode", config.estimator_mode);
   config.map_backend = GetOr<std::string>(root, "map_backend", config.map_backend);
   if (root["output"]) {
