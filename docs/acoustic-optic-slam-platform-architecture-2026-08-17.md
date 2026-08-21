@@ -188,50 +188,55 @@ ROS2 topic 只是数据面的传输机制，不是算法内部 API。
 
 ~~~text
 apps / demo_bringup
-  └─→ uw_runtime
+  └─→ uw::runtime
         ├─→ frontend APIs
-        ├─→ uw_estimation
-        ├─→ uw_mapping
+        ├─→ uw::estimation
+        ├─→ uw::mapping
         └─→ adapter APIs
 
 frontend implementations
-  ├─→ uw_measurement_api
-  ├─→ uw_sensor_models
-  └─→ uw_domain
+  ├─→ uw::measurement_api
+  ├─→ uw::sensor_models
+  └─→ uw::domain
 
 factor_builders
-  ├─→ uw_measurement_api
-  ├─→ uw_sensor_models
-  └─→ uw_domain
+  ├─→ uw::measurement_api
+  ├─→ uw::sensor_models
+  └─→ uw::domain
 
-uw_estimation
+uw::estimation
   ├─→ factor APIs
-  ├─→ uw_measurement_api
-  └─→ uw_domain
+  ├─→ uw::measurement_api
+  └─→ uw::domain
 
-uw_mapping
-  ├─→ uw_measurement_api
-  └─→ uw_domain
+uw::mapping
+  ├─→ uw::measurement_api
+  └─→ uw::domain
 
 ml_runtime
   ├─→ frontend APIs
   ├─→ model manifests
-  └─→ uw_domain
+  └─→ uw::domain
 
 ROS2 / HoloOcean / datasets / third_party
   └─→ adapters
-        ├─→ uw_measurement_api
-        ├─→ uw_sensor_models
-        └─→ uw_domain
+        ├─→ uw::measurement_api
+        ├─→ uw::sensor_models
+        └─→ uw::domain
 
-uw_measurement_api ─→ uw_sensor_models ─→ uw_domain
+uw::measurement_api ─→ uw::sensor_models ─→ uw::domain
 ~~~
+
+（C++ 层面 `uw::sensor_models` 与 `uw::measurement_api` 是各自独立的 include 分区
+`include/sensor_models/`、`include/measurement_api/`，但 CMake 里合并进同一个
+`core`/`uw::core` target 一起编译——这里的箭头描述的是 API/namespace 边界，不是
+物理 CMake target 拆分，见 `cmake/Libraries.cmake`。）
 
 依赖不变量：
 
-1. `uw_domain` 不依赖 ROS、仿真器、算法实现或第三方仓库；
-2. `uw_estimation` 不依赖具体视觉/声呐前端实现；
-3. `uw_mapping` 只消费版本化状态和地图证据；
+1. `uw::domain` 不依赖 ROS、仿真器、算法实现或第三方仓库；
+2. `uw::estimation` 不依赖具体视觉/声呐前端实现；
+3. `uw::mapping` 只消费版本化状态和地图证据；
 4. HoloOcean、厂商消息和论文消息只存在于 adapters；
 5. 数据流中的 map→loop→estimation 反馈不能形成代码依赖环；
 6. apps 负责组合，不拥有算法状态；

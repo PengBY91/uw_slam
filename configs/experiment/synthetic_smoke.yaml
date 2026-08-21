@@ -1,5 +1,5 @@
 # "怎么跑"：选择 frontend/estimator/reliability policy/map backend/算力预算
-# （架构文档第 14.2 节）。可通过 --experiment 传给 apps/tools/synth_bag_gen 和
+# （架构文档第 14.2 节）。可通过 --experiment 传给 apps/synth_bag_gen.cpp 和
 # apps/replay_demo；rig/scenario/defaults 三层已被完整加载，frontends/
 # estimator_mode/map_backend 目前只读取和打印，还没有真正驱动算法选择，见
 # configs/README.md。

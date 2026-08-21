@@ -18,7 +18,7 @@ message SonarRangeBearing {
   FrameId sonar_frame = 5;
   // Elevation is intentionally ABSENT here. It is not observable from a 2D
   // FLS ping and must never be fabricated into a fixed value (architecture
-  // invariant, section 6/21) — see algorithms/frontends/sonar_cfar_frontend.
+  // invariant, section 6/21) — see include/frontends/sonar_cfar_frontend.hpp.
 }
 
 message RelativePoseMeasurement {
@@ -144,7 +144,7 @@ message FusedDepthMeasurement {
 // `estimated_noise_scale` is a frontend SUGGESTION, never the backend's
 // final information matrix (that is FactorBuilder's job, section 7.6).
 // The C++ side wraps this in a thin templated accessor
-// (core/measurement_api/include/uw/measurement_api/measurement_evidence.hpp)
+// (include/measurement_api/measurement_evidence.hpp)
 // so call sites are still type-safe despite the wire-level oneof.
 message MeasurementEvidence {
   EvidenceId evidence_id = 1;

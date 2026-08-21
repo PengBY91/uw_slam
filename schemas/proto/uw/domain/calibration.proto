@@ -13,7 +13,7 @@ import "uw/domain/ids.proto";
 // what was found in SVIn's config yaml (cameras[].T_SC, sonar_params.T_SSo,
 // imu_params.{sigma_g_c,sigma_a_c,sigma_bg,sigma_ba,sigma_gw_c,sigma_aw_c}).
 // SVIn's own yaml is a per-run MUTABLE file — this snapshot is the opposite:
-// adapters/third_party/svin_bridge generates a throwaway SVIn yaml FROM this
+// the SVIn bridge (adapters/svin_bridge.md) generates a throwaway SVIn yaml FROM this
 // snapshot, one-way, never the reverse.
 message Transform3D {
   // Row-major 4x4 homogeneous transform, 16 entries, matching the flattened

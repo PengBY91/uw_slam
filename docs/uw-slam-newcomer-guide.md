@@ -12,13 +12,17 @@
 从代码依赖关系看，上层依赖下层：
 
 ```text
-apps / adapters
+apps
+       ↓
+adapters (含 ROS2 隔离在 adapters/ros2/)
        ↓
 runtime + evaluation
        ↓
-algorithms
+frontends + factor_builders + estimation + mapping
        ↓
-core
+core (sensor_models + measurement_api)
+       ↓
+domain
        ↓
 schemas/proto
 ```
@@ -39,23 +43,24 @@ MeasurementEvidence / HypothesisSet
                          Submap / 指标 / 轨迹 / Manifest
 ```
 
-顶层 [`CMakeLists.txt`](../CMakeLists.txt) 基本就是完整的模块依赖清单。
+顶层 [`CMakeLists.txt`](../CMakeLists.txt) 与集中式 `cmake/Libraries.cmake` 基本就是
+完整的模块依赖清单。
 
 | 目录 | 核心职责 |
 |---|---|
 | `schemas/proto/` | 全系统唯一的数据语义：观测、量测、因子、状态、地图、标定 |
-| `core/domain` | Protobuf 的类型安全包装、数据校验、Evidence 辅助函数 |
-| `core/sensor_models` | `Pose3`、相机模型、声呐 beam、坐标投影 |
-| `core/measurement_api` | Frontend、FactorBuilder、ResidualBlock、Provider 抽象接口 |
-| `algorithms/frontends` | CFAR 声呐检测、立体深度、声光关联和概率融合 |
-| `algorithms/factor_builders` | 相对位姿、深度、声呐距离残差 |
-| `algorithms/estimation` | 位姿图和 Eigen 实现的 Gauss-Newton/LM |
-| `algorithms/mapping` | 局部地图证据管理、融合深度到点云的转换 |
-| `runtime` | MCAP、配置、同步、队列、状态机、RunManifest |
-| `adapters` | HoloOcean、ROS2、SVIn 等外部系统边界 |
+| `include/domain`、`src/domain` | Protobuf 的类型安全包装、数据校验、Evidence 辅助函数 |
+| `include/sensor_models`、`src/sensor_models` | `Pose3`、相机模型、声呐 beam、坐标投影 |
+| `include/measurement_api` | Frontend、FactorBuilder、ResidualBlock、Provider 抽象接口 |
+| `include/frontends`、`src/frontends` | CFAR 声呐检测、立体深度、声光关联和概率融合 |
+| `include/factor_builders`、`src/factor_builders` | 相对位姿、深度、声呐距离残差 |
+| `include/estimation`、`src/estimation` | 位姿图和 Eigen 实现的 Gauss-Newton/LM |
+| `include/mapping`、`src/mapping` | 局部地图证据管理、融合深度到点云的转换 |
+| `include/runtime`、`src/runtime` | MCAP、配置、同步、队列、状态机、RunManifest |
+| `include/adapters`、`src/adapters`、`adapters/ros2` | HoloOcean、ROS2、SVIn 等外部系统边界 |
 | `apps` | 将上述模块真正组装起来的可执行程序 |
-| `evaluation` | ATE/RPE、深度和融合质量指标 |
-| `tests` | L0 契约、L1 模块、L2 确定性回放 |
+| `include/evaluation`、`src/evaluation` | ATE/RPE、深度和融合质量指标 |
+| `tests` | 契约测试（`contracts/`）、按层单元测试、确定性回放（`integration/`） |
 | `external_repos` | 只读参考代码，不是本系统运行主体 |
 
 最重要的设计规则是：算法层不能知道 ROS2、HoloOcean 或 vendor 类型；外部数据进入
@@ -63,13 +68,13 @@ MeasurementEvidence / HypothesisSet
 
 理解这一规则可以从以下接口开始：
 
-- [`core/domain/include/uw/domain/domain.hpp`](../core/domain/include/uw/domain/domain.hpp)：
+- [`include/domain/domain.hpp`](../include/domain/domain.hpp)：
   Protobuf 类型安全包装、Evidence 构造和校验。
-- [`core/measurement_api/include/uw/measurement_api/frontend.hpp`](../core/measurement_api/include/uw/measurement_api/frontend.hpp)：
+- [`include/measurement_api/frontend.hpp`](../include/measurement_api/frontend.hpp)：
   声呐和光学前端接口。
-- [`core/measurement_api/include/uw/measurement_api/factor_builder.hpp`](../core/measurement_api/include/uw/measurement_api/factor_builder.hpp)：
+- [`include/measurement_api/factor_builder.hpp`](../include/measurement_api/factor_builder.hpp)：
   从量测证据构造残差块的接口。
-- [`core/measurement_api/include/uw/measurement_api/residual_block.hpp`](../core/measurement_api/include/uw/measurement_api/residual_block.hpp)：
+- [`include/measurement_api/residual_block.hpp`](../include/measurement_api/residual_block.hpp)：
   求解器使用的残差和雅可比接口。
 
 ## 核心数据概念
@@ -92,7 +97,7 @@ MeasurementEvidence / HypothesisSet
 
 ### 1. 声呐位姿图回放主链
 
-入口是 [`apps/replay_demo/src/main.cpp`](../apps/replay_demo/src/main.cpp)：
+入口是 [`apps/replay_demo.cpp`](../apps/replay_demo.cpp)：
 
 1. `synth_bag_gen` 生成圆弧轨迹、相对位姿、深度、声呐帧和 ground truth，写入
    canonical MCAP。
@@ -125,7 +130,7 @@ synth_bag_gen
 ### 2. 声光深度融合链
 
 入口是
-[`apps/tools/acoustic_optic_scenario_matrix/src/main.cpp`](../apps/tools/acoustic_optic_scenario_matrix/src/main.cpp)：
+[`apps/acoustic_optic_scenario_matrix.cpp`](../apps/acoustic_optic_scenario_matrix.cpp)：
 
 ```text
 9 类合成退化场景
@@ -141,21 +146,21 @@ synth_bag_gen
 
 融合采用“无法证明一致就不融合”的策略：整张深度图默认保留光学结果，只有通过
 几何关联、方差改善和残差门限的像素才升级为声光融合结果。核心实现见
-[`acoustic_optic_depth_fusion_frontend.cpp`](../algorithms/frontends/acoustic_optic_depth_fusion/src/acoustic_optic_depth_fusion_frontend.cpp)。
+[`acoustic_optic_depth_fusion_frontend.cpp`](../src/frontends/acoustic_optic_depth_fusion_frontend.cpp)。
 
 主要组件包括：
 
 | 阶段 | 实现 |
 |---|---|
-| 时间同步 | `runtime/acoustic_optic_synchronizer` |
-| 光学深度 | `algorithms/frontends/stereo_optical_depth_frontend` |
-| 声呐检测 | `algorithms/frontends/sonar_cfar_frontend` |
-| 跨模态关联 | `algorithms/frontends/acoustic_optic_associator` |
-| 概率深度融合 | `algorithms/frontends/acoustic_optic_depth_fusion` |
-| 深度和误融合评测 | `evaluation/depth_metrics.*`、`evaluation/fusion_metrics.*` |
+| 时间同步 | `include/runtime/acoustic_optic_synchronizer.hpp` |
+| 光学深度 | `include/frontends/stereo_optical_depth_frontend.hpp` |
+| 声呐检测 | `include/frontends/sonar_cfar_frontend.hpp` |
+| 跨模态关联 | `include/frontends/acoustic_optic_associator.hpp` |
+| 概率深度融合 | `include/frontends/acoustic_optic_depth_fusion_frontend.hpp` |
+| 深度和误融合评测 | `include/evaluation/depth_metrics.hpp`、`include/evaluation/fusion_metrics.hpp` |
 
 最新的
-[`algorithms/mapping/acoustic_optic_map_bridge`](../algorithms/mapping/acoustic_optic_map_bridge/)
+[`acoustic_optic_map_bridge`](../include/mapping/acoustic_optic_map_bridge.hpp)
 会进一步把融合深度转换成 `base_link` 局部点云。局部证据不会提前烘焙到世界坐标，
 因此位姿图修正后，`SubmapManager` 可以使用最新 keyframe 位姿重新计算世界点。
 
@@ -176,16 +181,18 @@ defaults → rig → scenario → experiment → 显式 CLI 参数
 - `scenario/`：轨迹、场景退化、故障和随机 seed。
 - `experiment/`：算法选择、地图后端和输出策略。
 
-解析入口是 [`runtime/src/config.cpp`](../runtime/src/config.cpp)，字段说明见
+解析入口是 [`src/runtime/config.cpp`](../src/runtime/config.cpp)，字段说明见
 [`configs/README.md`](../configs/README.md)。
 
 ### 外部接入
 
 - `adapters/holoocean`：Python HoloOcean 网关、坐标转换和 canonical MCAP 写入。
   Python 写出的 bag 可以直接由 C++ `replay_demo` 读取。
-- `adapters/ros2`：ROS2 传输边界。当前 HoloOcean 声呐节点能够订阅并转换消息，但尚未
-  驱动完整声呐前端和估计链。
-- `adapters/third_party`：把 SVIn、HoloOcean ROS bridge 等外部语义转换成平台 Provider。
+- `adapters/ros2`：ROS2 传输边界，是唯一允许出现 ROS2 头文件的地方。当前 HoloOcean
+  声呐节点能够订阅并转换消息，但尚未驱动完整声呐前端和估计链。
+- `include/adapters`、`src/adapters`（文档见 `adapters/svin_bridge.md`、
+  `adapters/holoocean_ros_bridge.md`）：把 SVIn、HoloOcean ROS bridge 等外部语义
+  转换成平台 Provider，与 ROS2 传输层解耦，可在无 ROS2 环境下单测。
 - `external_repos`：只读参考和移植来源，不应直接修改。
 
 ## 新人 60–90 分钟上手路径
@@ -262,14 +269,14 @@ scenario_matrix/main.cpp
 
 | 任务 | 首先查看 | 对应验证 |
 |---|---|---|
-| 修改领域字段 | `schemas/proto/`、`core/domain` | L0 contract tests |
-| 修改声呐检测 | `sonar_cfar_frontend` | 同目录 frontend tests |
-| 修改因子数学 | 对应 `factor_builders/*` | 残差和雅可比测试 |
-| 修改求解器 | `algorithms/estimation` | pose graph solver test |
-| 修改声光融合 | associator、depth fusion | 对应 L1 tests、scenario matrix |
-| 修改地图输出 | map bridge、submap manager | mapping tests |
-| 修改配置或回放 | `runtime`、`apps` | runtime tests、L2 replay tests |
-| 接入真实设备 | `adapters` | adapter tests，加端到端实机验证 |
+| 修改领域字段 | `schemas/proto/`、`include/domain` | `contract.*` tests |
+| 修改声呐检测 | `include/frontends/sonar_cfar_frontend.hpp` | `unit.frontends.SonarCfarFrontend*` |
+| 修改因子数学 | `include/factor_builders/`、`src/factor_builders/` | 残差和雅可比测试（`unit.factor_builders.*`） |
+| 修改求解器 | `include/estimation`、`src/estimation` | `unit.estimation.*` |
+| 修改声光融合 | associator、depth fusion（均在 `include/frontends`、`src/frontends`） | 对应 `unit.frontends.*`、scenario matrix |
+| 修改地图输出 | map bridge、submap manager（`include/mapping`、`src/mapping`） | `unit.mapping.*` |
+| 修改配置或回放 | `include/runtime`、`src/runtime`、`apps` | `unit.runtime.*`、`integration.*` |
+| 接入真实设备 | `include/adapters`、`src/adapters`、`adapters/ros2` | `unit.adapters.*`，加端到端实机验证 |
 
 ## 当前容易误解的边界
 

@@ -6,8 +6,8 @@ on a machine with a sourced ROS2 install — see the top-level `CMakeLists.txt`.
 
 | Target | Wraps | Depends on (beyond rclcpp) | Status |
 |---|---|---|---|
-| `uw_ros2_svin_bridge` | `adapters/third_party/svin_bridge` | `nav_msgs` | Header content fully commented out — documented skeleton, never compiled (see the header's doc comment). |
-| `uw_holoocean_sonar_bridge_node` | `adapters/third_party/holoocean_ros_bridge` | `holoocean_interfaces` (from `external_repos/holoocean-ros/holoocean_interfaces`, colcon-built) | Real `rclcpp::Node`, compiled and run against ROS2 Jazzy on this machine — see below for exactly what was/wasn't verified. |
+| `uw::ros2_adapters` | portable `include/adapters/` providers (SVIn `LocalOdometryProvider`, HoloOcean `SonarFrameProvider`, see `adapters/svin_bridge.md`/`adapters/holoocean_ros_bridge.md`) | `nav_msgs`, `holoocean_interfaces` | The SVIn side (`ros2_svin_odometry_bridge.hpp`) is header content fully commented out — documented skeleton, never compiled (see the header's doc comment). |
+| `holoocean_sonar_bridge_node` | `include/adapters/holoocean_ros_bridge_sonar_frame_provider.hpp` via `uw::ros2_adapters` | `holoocean_interfaces` (from `external_repos/holoocean-ros/holoocean_interfaces`, colcon-built) | Real `rclcpp::Node`, compiled and run against ROS2 Jazzy on this machine — see below for exactly what was/wasn't verified. |
 
 ## `holoocean_interfaces` is not on the ROS2 package index
 
@@ -24,7 +24,7 @@ build/install/log artifacts that do not belong inside a CMake-only C++ repo.
 
 ## What has and hasn't been verified
 
-- `uw_holoocean_sonar_bridge_node` compiles and links against a real
+- `holoocean_sonar_bridge_node` compiles and links against a real
   `rclcpp`/`holoocean_interfaces` on this machine.
 - It has **not** been run against a live `holoocean_main` process — that
   needs the actual HoloOcean simulator (Unreal Engine binary, Epic Games EULA,
@@ -32,9 +32,9 @@ build/install/log artifacts that do not belong inside a CMake-only C++ repo.
   `external_repos/holoocean-ros/docker/README.md` for what that requires).
   `HoloOceanRosBridgeSonarFrameProvider`'s conversion logic is the part that's
   actually tested, via its own unit tests
-  (`adapters/third_party/holoocean_ros_bridge/test/`), which don't need ROS2
-  or the simulator at all.
-- `uw_holoocean_sonar_bridge_node` is a thin transport layer only — nothing
+  (`tests/adapters/holoocean_ros_bridge_sonar_frame_provider_test.cpp`), which
+  don't need ROS2 or the simulator at all.
+- `holoocean_sonar_bridge_node` is a thin transport layer only — nothing
   downstream (`SonarFrontend::ProcessSonarFrame`) is wired to it yet; that's
   a separate integration this repo's own `sonar_cfar_frontend` hasn't had
-  wired into `apps/replay_demo` either (see that app's `README`/`main.cpp`).
+  wired into `apps/replay_demo.cpp` either (see that app's `README`/source).

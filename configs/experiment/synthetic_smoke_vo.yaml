@@ -1,5 +1,5 @@
 # 跟 synthetic_smoke.yaml 完全一样，只是 estimator_mode 换成 stereo_landmark_vo：
-# apps/replay_demo 会用 algorithms/frontends/stereo_landmark_vo_frontend 从
+# apps/replay_demo 会用 include/frontends/stereo_landmark_vo_frontend.hpp 从
 # /raw/camera/left,right 实时算相对位姿因子，取代 synthetic_smoke.yaml 默认的
 # black_box_vio（从 synth_bag_gen 写进 bag 的 ground-truth+noise 证据里读）。
 # 见 configs/README.md 里这个字段的说明。

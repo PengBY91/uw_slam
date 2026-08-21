@@ -1,5 +1,5 @@
 # 平台级默认值。不包含任何具体机体/场景信息（架构文档第 14.2 节）。
-# 通过 --experiment 被 apps/tools/synth_bag_gen 和 apps/replay_demo 消费；
+# 通过 --experiment 被 apps/synth_bag_gen 和 apps/replay_demo 消费；
 # 具体消费到什么程度见 configs/README.md。
 
 estimation:
@@ -10,7 +10,7 @@ estimation:
   # HoloOcean 部署（workfiles_02 的 merge_node）里"IMU 偏置还没收敛前丢弃早期帧"
   # 的经验；我们没有在线 IMU 滤波器，落地方式是：warmup 窗口内的 keyframe 整体
   # 不进图，第一个存活下来的 keyframe 变成新的 fixed anchor（实现见
-  # apps/replay_demo/src/main.cpp）。
+  # apps/replay_demo.cpp）。
   warmup_seconds: 0.0
 
 reliability:

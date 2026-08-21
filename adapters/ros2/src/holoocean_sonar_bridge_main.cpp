@@ -4,7 +4,7 @@
 // from here yet; see adapters/ros2/README.md for what is/isn't validated.
 #include <rclcpp/rclcpp.hpp>
 
-#include "uw/adapters/ros2_holoocean_sonar_bridge.hpp"
+#include "adapters/ros2_holoocean_sonar_bridge.hpp"
 
 int main(int argc, char** argv) {
   rclcpp::init(argc, argv);

@@ -101,8 +101,8 @@ fi
 # 2) build
 step build cmake --build "$BUILD_DIR" -j"$(nproc)"
 
-# 3) C++ tests (L0 contract + per-module L1 units + L2 determinism replay —
-# all registered under tests/ via ctest, see tests/CMakeLists.txt)
+# 3) C++ tests (contract + per-layer unit + integration determinism replay —
+# all registered via ctest, see cmake/Tests.cmake)
 step ctest ctest --test-dir "$BUILD_DIR" --output-on-failure
 
 # 4) Python tests (adapters/holoocean). NOTE: `uv sync`/`uv run` are NOT
@@ -131,12 +131,12 @@ step lint_no_ros_in_core bash tools/lint/check_no_ros_in_core.sh
 
 # 6) synth_bag_gen: generate a synthetic MCAP bag with known ground truth
 BAG="$OUT_DIR/synthetic.mcap"
-step synth_bag_gen "$BUILD_DIR/apps/tools/synth_bag_gen/synth_bag_gen" \
+step synth_bag_gen "$BUILD_DIR/bin/synth_bag_gen" \
   --experiment "$EXPERIMENT" --out "$BAG"
 
 # 7) replay_demo: frontend -> factor builders -> pose graph solve -> ATE
 DEMO_PREFIX="$OUT_DIR/demo"
-step replay_demo "$BUILD_DIR/apps/replay_demo/replay_demo" \
+step replay_demo "$BUILD_DIR/bin/replay_demo" \
   --bag "$BAG" --experiment "$EXPERIMENT" --out "$DEMO_PREFIX"
 REPLAY_LOG="$LAST_LOG"
 
@@ -157,7 +157,7 @@ if [ "$WITH_ROS2" -eq 1 ]; then
     export PATH="$HOME/miniconda3/envs/uw_slam_build/bin:$PATH"
     step configure_ros2 cmake -S . -B "$ROS2_BUILD_DIR" \
       -DCMAKE_PREFIX_PATH="$HOME/miniconda3/envs/uw_slam_build" -DUW_BUILD_ROS2=ON
-    step build_ros2 cmake --build "$ROS2_BUILD_DIR" -j"$(nproc)" --target uw_holoocean_sonar_bridge_node
+    step build_ros2 cmake --build "$ROS2_BUILD_DIR" -j"$(nproc)" --target holoocean_sonar_bridge_node
   else
     echo "==> [--with-ros2] skipped: ~/ros2_ws or /opt/ros/jazzy not found"
     echo "with-ros2               SKIP      -  no ~/ros2_ws/install/setup.bash or /opt/ros/jazzy/setup.bash" >> "$SUMMARY"

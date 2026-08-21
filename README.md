@@ -92,8 +92,8 @@ cat /tmp/uw_slam_verify/readme_smoke/summary.txt
 | `demo_trajectory.tum` | TUM 格式估计轨迹 |
 | `demo_run_manifest.json` | 本次运行实际使用的配置与版本信息 |
 
-当前工作区验证面包含 14 个 CTest 测试和 9 个 Python 测试。数字会随模块增加而变化，
-`summary.txt` 和实际测试命令才是最终依据。
+当前工作区验证面包含 106 个 CTest 测试（按用例展开）和 25 个 Python 测试。数字会随
+模块增加而变化，`summary.txt` 和实际测试命令才是最终依据。
 
 ## 运行端到端 Demo
 
@@ -120,11 +120,11 @@ cmake --build build -j"$(nproc)"
 ### 生成数据并回放
 
 ```bash
-build/apps/tools/synth_bag_gen/synth_bag_gen \
+build/bin/synth_bag_gen \
   --experiment configs/experiment/synthetic_smoke.yaml \
   --out /tmp/synthetic.mcap
 
-build/apps/replay_demo/replay_demo \
+build/bin/replay_demo \
   --bag /tmp/synthetic.mcap \
   --experiment configs/experiment/synthetic_smoke.yaml \
   --out /tmp/demo
@@ -164,30 +164,34 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    SCHEMAS[schemas<br/>跨语言契约] --> CORE[core<br/>领域类型与接口]
-    CORE --> ALGO[algorithms<br/>前端、因子、估计、地图]
+    SCHEMAS[schemas<br/>跨语言契约] --> DOMAIN[domain<br/>领域类型]
+    DOMAIN --> CORE[core<br/>传感器模型 + 前端/因子抽象]
+    CORE --> ALGO["frontends / factor_builders /<br/>estimation / mapping"]
     ALGO --> RUNTIME[runtime<br/>配置、队列、MCAP、Manifest]
+    ALGO --> EVAL[evaluation<br/>ATE/RPE 轨迹指标]
     RUNTIME --> ADAPTERS[adapters<br/>HoloOcean、ROS2、第三方]
     ADAPTERS --> APPS[apps<br/>可执行入口]
 ```
 
-依赖只允许从左向右。特别是 `core/` 和 `algorithms/` 不能包含 ROS2、
-HoloOcean 或第三方 vendor 头文件；`tools/lint/check_no_ros_in_core.sh` 会强制
-检查这一点。Protobuf schema 是 C++ 与 Python 的唯一跨语言事实源。
+依赖只允许从左向右（`domain → core → {frontends, factor_builders, estimation,
+mapping, runtime, evaluation, adapters} → apps`）。`include/`、`src/` 下的生产
+代码不能包含 ROS2、HoloOcean 或第三方 vendor 头文件，也不能使用旧的手写 `uw/...`
+include 路径；`tools/lint/check_no_ros_in_core.sh`（实际实现在
+`tools/lint/check_layer_dependencies.py`）会强制检查这一点。Protobuf schema 是
+C++ 与 Python 的唯一跨语言事实源。
 
 ### 仓库结构
 
 | 目录 | 职责 |
 |---|---|
 | `schemas/proto/` | 领域契约和 C++/Python 代码生成输入 |
-| `core/` | 领域类型、`Pose3`、传感器模型、前端/因子抽象 |
-| `algorithms/` | 声呐前端、因子构建、估计与子图地图 |
-| `runtime/` | MCAP I/O、配置、状态机、队列和 RunManifest |
-| `adapters/` | HoloOcean、ROS2、数据集与第三方系统边界 |
-| `apps/` | `synth_bag_gen` 和 `replay_demo` |
+| `include/`、`src/` | 手写 C++ 公共头文件与实现，按角色分区（`domain`、`sensor_models`、`measurement_api`、`frontends`、`factor_builders`、`estimation`、`mapping`、`runtime`、`evaluation`、`adapters`） |
+| `apps/` | `synth_bag_gen`、`replay_demo` 等可执行入口源码 |
+| `tests/` | 契约（`contracts/`）、按层单元测试和确定性回放（`integration/`） |
+| `cmake/` | 集中式 CMake：`Dependencies.cmake`、`Libraries.cmake`、`Applications.cmake`、`Tests.cmake` |
+| `adapters/` | HoloOcean（Python）、ROS2、数据集与第三方系统边界文档 |
+| `baselines/` | 外部基线（如 `sonar_camera_reconstruction`）运行脚本，不链接进本仓库构建 |
 | `configs/` | `defaults → rig → scenario → experiment` 分层配置 |
-| `evaluation/` | ATE/RPE 等轨迹指标 |
-| `tests/` | L0 契约和 L2 确定性回放；L1 测试随模块放置 |
 | `tools/` | 环境安装、代码生成、lint 和完整验证脚本 |
 | `external_repos/` | 只读参考/移植来源，不纳入本仓库版本控制 |
 
@@ -202,9 +206,9 @@ ctest --test-dir build --output-on-failure
 
 测试分为三层：
 
-- **L0 契约测试**：验证 Protobuf round-trip 和模块边界；
-- **L1 模块测试**：验证前端、因子雅可比、求解器、地图、运行时和评测；
-- **L2 回放测试**：同一 bag/config/seed 运行两次，输出必须逐字节一致。
+- **契约测试**（`contract.*`，源码在 `tests/contracts/`）：验证 Protobuf round-trip 和模块边界；
+- **单元测试**（`unit.<layer>.*`，源码按层放在 `tests/{core,frontends,factor_builders,estimation,mapping,runtime,evaluation,adapters}/`）：验证前端、因子雅可比、求解器、地图、运行时和评测；
+- **集成/回放测试**（`integration.*`，源码在 `tests/integration/`）：同一 bag/config/seed 运行两次，输出必须逐字节一致。
 
 ### Python 适配器测试
 
@@ -273,7 +277,7 @@ ROS2 默认不参与构建。启用 `-DUW_BUILD_ROS2=ON` 前，需要：
   `external_repos/holoocean-ros/holoocean_interfaces`；
 - 将该 workspace 的安装目录加入 `CMAKE_PREFIX_PATH`。
 
-`uw_holoocean_sonar_bridge_node` 已对真实 ROS2 Jazzy 和
+`holoocean_sonar_bridge_node` 已对真实 ROS2 Jazzy 和
 `holoocean_interfaces` 完成编译、链接与独立启动验证，但没有连接真实
 `holoocean_main`/UE5 数据流，也没有接入 `replay_demo` 下游。
 
@@ -285,7 +289,8 @@ ROS2 默认不参与构建。启用 `-DUW_BUILD_ROS2=ON` 前，需要：
 在提交修改前，请遵守这些项目不变量：
 
 1. **不要修改 `external_repos/` 的子仓库。** 它们是只读参考和移植来源。
-2. **保持单向依赖。** `core → algorithms → runtime → adapters → apps`。
+2. **保持单向依赖。** `domain → core → {frontends, factor_builders, estimation,
+   mapping, runtime, evaluation, adapters} → apps`。
 3. **先改 schema。** 新增跨语言领域字段时修改 `schemas/proto/`，不要在 C++ 与
    Python 中维护两套平行结构。
 4. **保留代码出处。** 移植第三方实现前先阅读 [`NOTICE`](./NOTICE)，保留版权头并
@@ -294,15 +299,19 @@ ROS2 默认不参与构建。启用 `-DUW_BUILD_ROS2=ON` 前，需要：
 6. **验证完整路径。** 至少运行相关单元测试和依赖 lint；影响管线时运行
    `tools/verify_pipeline.sh`。
 
-新增 frontend 或 factor builder 时，沿用现有模块的独立
-`CMakeLists.txt + include/src/test` 结构。更多工程约定和已经踩过的坑见
-[`CLAUDE.md`](./CLAUDE.md)。
+新增 frontend 或 factor builder 时，把头文件放进 `include/frontends/`（或
+`include/factor_builders/`）、实现放进 `src/frontends/`（或
+`src/factor_builders/`）、测试放进 `tests/frontends/`（或
+`tests/factor_builders/`），并把新文件加进 `cmake/Libraries.cmake`/
+`cmake/Tests.cmake` 中对应架构层 target 的源文件列表——这些 target 按架构层
+合并，不要为单个实现新建 target 或 `CMakeLists.txt`。更多工程约定和已经踩过的
+坑见 [`CLAUDE.md`](./CLAUDE.md)。
 
 ## 已知边界
 
 - 位姿图估计（`PoseGraphProblem`/求解器/轨迹 ATE）只用声呐、相对位姿和深度证据，
   没有 VIO 前端，也不消费稠密光学深度——声光融合的输出是并行存进 `submap_manager`
-  的地图证据，不参与位姿估计。`apps/replay_demo`/`apps/tools/synth_bag_gen` 在
+  的地图证据，不参与位姿估计。`apps/replay_demo`/`apps/synth_bag_gen` 在
   `--experiment` 加载了带相机的 rig 时，会真正构造并跑
   `StereoOpticalDepthFrontend`/`SonarCfarFrontend`/`AcousticOpticDepthFusionFrontend`
   （详见代码库参考文档 6.12 节，含真实跑出来的数字）；不传 `--experiment`（或 rig

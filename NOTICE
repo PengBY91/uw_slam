@@ -9,7 +9,7 @@ those projects' own licenses. This file is the top-level index of that
 provenance; do not remove the in-file headers even if this NOTICE is edited.
 
 --------------------------------------------------------------------------
-1. algorithms/factor_builders/sonar_range_factor/
+1. include/factor_builders/sonar_range_residual.hpp, src/factor_builders/sonar_range_residual.cpp
 --------------------------------------------------------------------------
 Ported from:
   SVIn (AutonomousFieldRoboticsLab/SVIn), repository license: GPLv3.
@@ -32,10 +32,11 @@ sections 6/21.
 What was NOT ported: SVIn's Ceres SizedCostFunction wiring, its VIO/OKVIS
 internal state representation, or any other SVIn source file. The residual
 math was re-expressed against this repository's own backend-agnostic
-ResidualBlock interface (see core/measurement_api), not against Ceres.
+ResidualBlock interface (see include/measurement_api), not against Ceres.
 
 --------------------------------------------------------------------------
-2. algorithms/frontends/sonar_cfar_frontend/
+2. include/frontends/{cfar_detector,dbscan,sonar_cfar_frontend}.hpp,
+   src/frontends/{cfar_detector,dbscan,sonar_cfar_frontend}.cpp
 --------------------------------------------------------------------------
 Ported from:
   sonar_camera_reconstruction (ivanacollg/sonar_camera_reconstruction),
@@ -68,13 +69,14 @@ and `external_repos/holoocean_bridge/` remain unmodified, independently
 licensed reference repositories consulted for reference/porting; they are not
 part of this repository's build or version history (see .gitignore).
 
-`adapters/third_party/holoocean_ros_bridge/`'s field-mapping (which fields of
-`holoocean_interfaces/msg/ImagingSonar` to use, and the mirror-flip
-correction) was worked out by reading `external_repos/holoocean_bridge/
-holoocean_bridge/sonar_adapter_node.py` (a separate, not-vendored ROS2
-package targeting `sonar_oculus/OculusPing`, MIT-compatible per its own
-package.xml) — this is a "read for reference" case like the rest of this
-section, not a code port: the implementation here is original, targets a
-different message type (`uw::domain::SonarFrame`), and is written in C++
-against this platform's own conventions. See that adapter's own README.md
-for the specifics of what was learned from the reference and why.
+`include/adapters/holoocean_ros_bridge_sonar_frame_provider.hpp`'s
+field-mapping (which fields of `holoocean_interfaces/msg/ImagingSonar` to
+use, and the mirror-flip correction) was worked out by reading
+`external_repos/holoocean_bridge/holoocean_bridge/sonar_adapter_node.py` (a
+separate, not-vendored ROS2 package targeting `sonar_oculus/OculusPing`,
+MIT-compatible per its own package.xml) — this is a "read for reference" case
+like the rest of this section, not a code port: the implementation here is
+original, targets a different message type (`uw::domain::SonarFrame`), and is
+written in C++ against this platform's own conventions. See
+`adapters/holoocean_ros_bridge.md` for the specifics of what was learned from
+the reference and why.

@@ -9,8 +9,9 @@ import "uw/domain/observation.proto";
 // modeled on OculusPing's OculusFire sub-message (fire_msg.speed_of_sound,
 // fire_msg.salinity, fire_msg.range, fire_msg.gain) as read from
 // sonar_camera_reconstruction/sonar_oculus/msg/OculusPing.msg. This is a
-// platform-native type: adapters/third_party translates to/from OculusPing,
-// core code never depends on the vendor message.
+// platform-native type: this platform's adapters (include/adapters/, e.g.
+// holoocean_ros_bridge_sonar_frame_provider.hpp) translate to/from
+// OculusPing, core code never depends on the vendor message.
 //
 // Future 3D sonar gets its own SonarPointFrame message rather than growing
 // optional fields on this one (architecture invariant, section 7.3).
