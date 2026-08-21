@@ -41,8 +41,10 @@
 #include <cmath>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -54,8 +56,12 @@
 #include "uw/factor_builders/depth_factor_builder.hpp"
 #include "uw/factor_builders/relative_pose_factor_builder.hpp"
 #include "uw/factor_builders/sonar_range_factor_builder.hpp"
+#include "uw/frontends/acoustic_optic_depth_fusion_frontend.hpp"
 #include "uw/frontends/sonar_cfar_frontend.hpp"
+#include "uw/frontends/stereo_optical_depth_frontend.hpp"
+#include "uw/mapping/acoustic_optic_map_bridge.hpp"
 #include "uw/mapping/submap_manager.hpp"
+#include "uw/runtime/acoustic_optic_synchronizer.hpp"
 #include "uw/runtime/config.hpp"
 #include "uw/runtime/mcap_io.hpp"
 #include "uw/runtime/run_manifest.hpp"
@@ -121,10 +127,15 @@ int main(int argc, char** argv) {
   // definition, in configs/defaults/platform.yaml).
   uw::runtime::PlatformDefaultsConfig defaults;
   bool write_run_manifest = true;
+  // Only set when --experiment loads a rig with cameras — gates the new
+  // acoustic-optic pass below so the no-experiment path (used by
+  // tests/l2_replay/determinism_test.sh) is provably unchanged.
+  std::optional<uw::domain::RigCalibrationSnapshot> rig;
   if (!opt.experiment_path.empty()) {
     const auto config = uw::runtime::LoadExperimentConfig(opt.experiment_path);
     defaults = config.defaults;
     write_run_manifest = config.write_run_manifest;
+    if (config.rig.cameras_size() > 0) rig = config.rig;
     std::cout << "loaded experiment config: " << opt.experiment_path << " (sonar_frontend="
               << config.sonar_frontend << ", estimator_mode=" << config.estimator_mode << ")\n";
   }
@@ -374,6 +385,116 @@ int main(int argc, char** argv) {
 
     const double timestamp_s = static_cast<double>(i) * kKeyframeIntervalS;
     estimated_trajectory.push_back({timestamp_s, pose});
+  }
+
+  // Acoustic-optic pass (only when --experiment loaded a rig with cameras):
+  // per keyframe, run StereoOpticalDepthFrontend -> SonarCfarFrontend
+  // (reused, same instance as the sonar pass above) ->
+  // AcousticOpticDepthFusionFrontend::Fuse -> BuildMapEvidenceFromFusedDepth,
+  // depositing a THIRD MapEvidence bucket into submap_manager (keyed per
+  // keyframe, alongside the existing "landmarks" bucket) using the pose
+  // ALREADY committed above. This never touches PoseGraphProblem/the solver
+  // /ATE — dense depth does not become a new factor type (see this
+  // integration's own plan doc for why that's explicitly out of scope).
+  int num_keyframes_with_camera = 0;
+  int num_acoustic_optic_accepted = 0;
+  int num_acoustic_optic_ambiguous = 0;
+  int num_acoustic_optic_conflict = 0;
+  int num_acoustic_optic_rejected = 0;
+  int num_map_evidence_points = 0;
+  if (rig.has_value()) {
+    auto keyframe_id_for_time = [&](const uw::domain::Stamp& capture_time) -> std::string {
+      const double t_s = uw::domain::ToSeconds(capture_time);
+      const int index = static_cast<int>(std::lround(t_s / kKeyframeIntervalS));
+      return "kf" + std::to_string(index);
+    };
+
+    std::unordered_map<std::string, uw::domain::ImageFrame> left_by_kf, right_by_kf;
+    std::unordered_map<std::string, uw::domain::SonarFrame> sonar_by_kf;
+    uw::runtime::ReadMcapMessages<uw::domain::ImageFrame>(
+        opt.bag_path, "/raw/camera/left", [&](uint64_t, const uw::domain::ImageFrame& f) {
+          left_by_kf[keyframe_id_for_time(f.header().capture_time())] = f;
+        });
+    uw::runtime::ReadMcapMessages<uw::domain::ImageFrame>(
+        opt.bag_path, "/raw/camera/right", [&](uint64_t, const uw::domain::ImageFrame& f) {
+          right_by_kf[keyframe_id_for_time(f.header().capture_time())] = f;
+        });
+    uw::runtime::ReadMcapMessages<uw::domain::SonarFrame>(
+        opt.bag_path, "/raw/sonar_frame", [&](uint64_t, const uw::domain::SonarFrame& f) {
+          // v1 top-1 rule (see file header): keep the first sonar frame seen
+          // per keyframe if more than one target was in range.
+          const std::string kf_id = f.header().observation_id().value();
+          if (sonar_by_kf.find(kf_id) == sonar_by_kf.end()) sonar_by_kf[kf_id] = f;
+        });
+
+    uw::frontends::StereoOpticalDepthFrontendParams stereo_params;
+    uw::frontends::StereoOpticalDepthFrontend stereo_frontend(stereo_params);
+    uw::frontends::AcousticOpticDepthFusionParams fusion_params;
+    uw::frontends::AcousticOpticDepthFusionFrontend fusion_frontend(fusion_params);
+    uw::mapping::AcousticOpticMapBridgeParams bridge_params;
+
+    for (std::size_t kf_index = 0; kf_index < problem.KeyframeOrder().size(); ++kf_index) {
+      const std::string& kf_id = problem.KeyframeOrder()[kf_index];
+      auto left_it = left_by_kf.find(kf_id);
+      auto right_it = right_by_kf.find(kf_id);
+      if (left_it == left_by_kf.end() || right_it == right_by_kf.end()) continue;
+      ++num_keyframes_with_camera;
+
+      const auto sonar_it = sonar_by_kf.find(kf_id);
+      const uw::domain::SonarFrame empty_sonar;
+      uw::runtime::SynchronizerParams sync_params;
+      const auto sync_bundle = uw::runtime::SynchronizeAcousticOptic(
+          left_it->second, std::optional<uw::domain::ImageFrame>(right_it->second),
+          sonar_it != sonar_by_kf.end() ? sonar_it->second : empty_sonar, *rig, sync_params);
+
+      uw::measurement_api::CameraFrameBundle bundle;
+      bundle.primary = left_it->second;
+      bundle.secondary = right_it->second;
+      const auto optical_evidence = stereo_frontend.Process(bundle, *rig);
+      if (!optical_evidence.has_value()) continue;
+
+      uw::domain::HypothesisSet sonar_hypotheses;
+      if (sonar_it != sonar_by_kf.end()) {
+        sonar_hypotheses = sonar_frontend.ProcessSonarFrame(sonar_it->second);
+      }
+
+      const double time_delta = sync_bundle.has_value() ? sync_bundle->max_pairwise_time_delta_s : 0.0;
+      const auto fused_result = fusion_frontend.Fuse(sonar_hypotheses, *optical_evidence, *rig, time_delta);
+      if (!fused_result.has_value()) continue;
+
+      const auto& fused = uw::domain::GetPayload<uw::domain::FusedDepthMeasurement>(fused_result->fused_evidence);
+      if (fused.associations_size() > 0) {
+        switch (fused.associations(0).status()) {
+          case uw::domain::ACOUSTIC_OPTIC_ASSOCIATION_STATUS_ACCEPTED:
+            ++num_acoustic_optic_accepted;
+            break;
+          case uw::domain::ACOUSTIC_OPTIC_ASSOCIATION_STATUS_AMBIGUOUS:
+            ++num_acoustic_optic_ambiguous;
+            break;
+          case uw::domain::ACOUSTIC_OPTIC_ASSOCIATION_STATUS_CONFLICT:
+            ++num_acoustic_optic_conflict;
+            break;
+          case uw::domain::ACOUSTIC_OPTIC_ASSOCIATION_STATUS_REJECTED:
+            ++num_acoustic_optic_rejected;
+            break;
+          default:
+            break;
+        }
+      }
+
+      const uint64_t state_version = kf_index + 1;
+      const auto map_evidence = uw::mapping::BuildMapEvidenceFromFusedDepth(
+          fused_result->fused_evidence, *rig, bridge_params, kf_id, state_version);
+      if (map_evidence.has_value()) {
+        num_map_evidence_points +=
+            static_cast<int>(map_evidence->geometry_or_occupancy().size() / (3 * sizeof(float)));
+        submap_manager.AddMapEvidence(*map_evidence);
+      }
+    }
+    std::cout << "acoustic-optic: " << num_keyframes_with_camera << " keyframes with camera data, "
+              << num_acoustic_optic_accepted << " accepted, " << num_acoustic_optic_ambiguous
+              << " ambiguous, " << num_acoustic_optic_conflict << " conflict, " << num_acoustic_optic_rejected
+              << " rejected, " << num_map_evidence_points << " map evidence points added\n";
   }
 
   std::vector<uw::evaluation::TrajectoryPose> ground_truth_trajectory;

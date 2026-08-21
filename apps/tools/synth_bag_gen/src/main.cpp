@@ -19,16 +19,24 @@
 //                                 packed float32 xyz — reused as a point-cloud payload; see
 //                                 apps/replay_demo for how this stands in for a real
 //                                 landmark/submap query that v1 does not yet have)
+//   /raw/camera/left             uw.domain.ImageFrame      (only when --experiment loads a rig
+//   /raw/camera/right            uw.domain.ImageFrame       with cameras; see BuildStereoPair —
+//                                 synthetic stereo pair per keyframe, real per-keyframe geometry,
+//                                 for apps/replay_demo's acoustic-optic pass)
 #include <cmath>
 #include <cstdio>
 #include <iostream>
+#include <limits>
+#include <optional>
 #include <random>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "uw/domain/domain.hpp"
 #include "uw/runtime/config.hpp"
 #include "uw/runtime/mcap_io.hpp"
+#include "uw/sensor_models/camera_model.hpp"
 #include "uw/sensor_models/geometry.hpp"
 #include "uw/sensor_models/sonar_beam_model.hpp"
 
@@ -183,10 +191,107 @@ uw::domain::SonarFrame BuildSyntheticSonarFrame(const std::string& kf_id, uint64
   return frame;
 }
 
+// --- Optional per-keyframe stereo images, only emitted when --experiment
+// loads a rig with cameras (see main()'s `rig` capture below). Mirrors
+// apps/tools/acoustic_optic_scenario_matrix/src/scenarios.cpp's proven
+// paint-background-then-paste-target technique (see that file's
+// MakeStereoPair header comment for why the naive per-pixel approach is
+// wrong), simplified: no noise/degradation variants — this app has no
+// depth-accuracy scoring to protect, unlike that scenario matrix, just
+// needs a working, honest scene for apps/replay_demo's acoustic-optic pass
+// to run on.
+constexpr uint32_t kCameraWidth = 640;
+constexpr uint32_t kCameraHeight = 480;
+
+uint8_t StereoTexture(int u, int v) { return static_cast<uint8_t>((u * 131 + v * 67 + 19) % 256); }
+
+Pose3 FindRigEdgePose(const uw::domain::RigCalibrationSnapshot& rig, const std::string& child_frame) {
+  for (const auto& edge : rig.frame_tree()) {
+    if (edge.child_frame().value() == child_frame) return Pose3::FromProto(edge.transform());
+  }
+  return Pose3::Identity();
+}
+
+const uw::domain::CameraIntrinsics* FindRigCamera(const uw::domain::RigCalibrationSnapshot& rig,
+                                                   const std::string& sensor_id) {
+  for (const auto& camera : rig.cameras()) {
+    if (camera.sensor_id().value() == sensor_id) return &camera;
+  }
+  return nullptr;
+}
+
+std::pair<uw::domain::ImageFrame, uw::domain::ImageFrame> BuildStereoPair(
+    const uw::sensor_models::StereoGeometry& stereo_geometry,
+    const std::optional<Eigen::Vector3d>& target_camera_optical, uint64_t t_ns) {
+  constexpr double kBackgroundDepthM = 15.0;
+  constexpr int kPatchHalfSize = 12;
+  const int background_disparity_px = std::max(
+      1, static_cast<int>(std::lround(stereo_geometry.left.fx * stereo_geometry.baseline_m / kBackgroundDepthM)));
+
+  std::string left_pixels(static_cast<std::size_t>(kCameraWidth) * kCameraHeight, '\0');
+  std::string right_pixels(static_cast<std::size_t>(kCameraWidth) * kCameraHeight, '\0');
+  for (uint32_t v = 0; v < kCameraHeight; ++v) {
+    for (uint32_t u = 0; u < kCameraWidth; ++u) {
+      left_pixels[static_cast<std::size_t>(v) * kCameraWidth + u] =
+          static_cast<char>(StereoTexture(static_cast<int>(u), static_cast<int>(v)));
+      right_pixels[static_cast<std::size_t>(v) * kCameraWidth + u] =
+          static_cast<char>(StereoTexture(static_cast<int>(u) + background_disparity_px, static_cast<int>(v)));
+    }
+  }
+
+  if (target_camera_optical.has_value() && target_camera_optical->z() > 0.5) {
+    const Eigen::Vector2d pixel = stereo_geometry.left.Project(*target_camera_optical);
+    const int center_u = static_cast<int>(std::lround(pixel.x()));
+    const int center_v = static_cast<int>(std::lround(pixel.y()));
+    const int target_disparity_px = std::max(
+        1, static_cast<int>(std::lround(stereo_geometry.left.fx * stereo_geometry.baseline_m /
+                                        target_camera_optical->z())));
+    for (int dv = -kPatchHalfSize; dv <= kPatchHalfSize; ++dv) {
+      const int v = center_v + dv;
+      if (v < 0 || v >= static_cast<int>(kCameraHeight)) continue;
+      for (int du = -kPatchHalfSize; du <= kPatchHalfSize; ++du) {
+        const int u_left = center_u + du;
+        const int u_right = u_left - target_disparity_px;
+        if (u_left < 0 || u_left >= static_cast<int>(kCameraWidth) || u_right < 0 ||
+            u_right >= static_cast<int>(kCameraWidth)) {
+          continue;
+        }
+        right_pixels[static_cast<std::size_t>(v) * kCameraWidth + static_cast<std::size_t>(u_right)] =
+            static_cast<char>(StereoTexture(u_left, v));
+      }
+    }
+  }
+
+  auto make_frame = [&](const std::string& frame_name, std::string pixels) {
+    uw::domain::ImageFrame image;
+    image.mutable_header()->mutable_sensor_frame()->set_value(frame_name);
+    image.mutable_header()->mutable_sensor_id()->set_value(
+        frame_name == "camera_left_link" ? "camera_left" : "camera_right");
+    image.mutable_header()->mutable_capture_time()->set_seconds(static_cast<int64_t>(t_ns / 1'000'000'000ULL));
+    image.mutable_header()->mutable_capture_time()->set_nanos(static_cast<int32_t>(t_ns % 1'000'000'000ULL));
+    image.mutable_header()->set_clock_domain(uw::domain::CLOCK_DOMAIN_SIMULATION);
+    image.mutable_header()->set_validity(uw::domain::ObservationHeader::VALIDITY_OK);
+    image.mutable_header()->set_provenance("synth_bag_gen_v1");
+    image.set_width(kCameraWidth);
+    image.set_height(kCameraHeight);
+    image.set_row_stride_bytes(kCameraWidth);
+    image.set_encoding(uw::domain::ImageFrame::IMAGE_ENCODING_MONO8);
+    image.set_pixel_data(std::move(pixels));
+    image.set_is_rectified(true);
+    return image;
+  };
+  return {make_frame("camera_left_link", std::move(left_pixels)),
+          make_frame("camera_right_link", std::move(right_pixels))};
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   ScenarioOptions opt;
+  // Only set when --experiment loads a rig with cameras — gates the new
+  // /raw/camera/left,right emission below so the no-experiment path (used
+  // by tests/l2_replay/determinism_test.sh) is provably unchanged.
+  std::optional<uw::domain::RigCalibrationSnapshot> rig;
 
   // First pass: find --experiment, if any, and layer its scenario config
   // onto opt before any explicit CLI override is applied.
@@ -198,6 +303,7 @@ int main(int argc, char** argv) {
       }
       const auto config = uw::runtime::LoadExperimentConfig(argv[++i]);
       ApplyScenarioConfig(config.scenario, opt);
+      if (config.rig.cameras_size() > 0) rig = config.rig;
     }
   }
 
@@ -305,6 +411,43 @@ int main(int argc, char** argv) {
       const double noisy_bearing = bearing + bearing_noise(rng);
       const auto frame = BuildSyntheticSonarFrame(kf_id, t_ns, noisy_range, noisy_bearing);
       writer.WriteMessage("/raw/sonar_frame", t_ns, frame);
+    }
+
+    // Stereo images (only when a rig with cameras was loaded via
+    // --experiment): find the nearest target actually inside the camera's
+    // — narrower than the sonar's — field of view, and build a real
+    // per-keyframe stereo pair via BuildStereoPair.
+    if (rig.has_value()) {
+      const auto* left_intrinsics = FindRigCamera(*rig, "camera_left");
+      const auto* right_intrinsics = FindRigCamera(*rig, "camera_right");
+      if (left_intrinsics != nullptr && right_intrinsics != nullptr) {
+        const auto stereo_geometry = uw::sensor_models::StereoGeometry::Resolve(
+            *rig, "camera_left", "camera_left_link", "camera_right", "camera_right_link");
+        if (stereo_geometry.valid) {
+          const Pose3 camera_pose = FindRigEdgePose(*rig, "camera_left_link");
+          std::optional<Eigen::Vector3d> nearest_visible_target;
+          double nearest_visible_range = std::numeric_limits<double>::max();
+          for (const auto& target : targets) {
+            const Eigen::Vector3d local_body = trajectory[i].Inverse().Apply(target);
+            const Eigen::Vector3d local_camera_body = camera_pose.Inverse().Apply(local_body);
+            const Eigen::Vector3d local_optical =
+                uw::sensor_models::OpticalFromBodyRotation() * local_camera_body;
+            if (local_optical.z() <= 0.5) continue;  // behind or too close to the camera
+            const Eigen::Vector2d pixel = stereo_geometry.left.Project(local_optical);
+            if (pixel.x() < 0 || pixel.x() >= stereo_geometry.left.width || pixel.y() < 0 ||
+                pixel.y() >= stereo_geometry.left.height) {
+              continue;  // outside the camera's (narrower than sonar) field of view
+            }
+            if (local_optical.z() < nearest_visible_range) {
+              nearest_visible_range = local_optical.z();
+              nearest_visible_target = local_optical;
+            }
+          }
+          auto stereo_pair = BuildStereoPair(stereo_geometry, nearest_visible_target, t_ns);
+          writer.WriteMessage("/raw/camera/left", t_ns, stereo_pair.first);
+          writer.WriteMessage("/raw/camera/right", t_ns, stereo_pair.second);
+        }
+      }
     }
 
     // Depth.

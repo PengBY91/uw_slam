@@ -29,18 +29,18 @@ backend 的实现——这是紧接着的下一步，不应该修改这里定义
 `t_reference = t_sensor_capture + time_offset_seconds[sensor_id]` 的符号约定。
 
 `experiment/*.yaml` 的 `frontends.optical` 已被解析。`stereo_depth_frontend_v1` 现在有真正的
-实现（`algorithms/frontends/stereo_optical_depth_frontend`，`StereoOpticalDepthFrontend`），
-由 `apps/tools/optical_baseline_eval` 独立跑通并用 `uw_l2_optical_baseline_smoke_test` 把关，
-但**没有**被 `apps/replay_demo` 动态构造——`frontends.optical` 仍然只是一个配置选择器，不是
-`replay_demo` 里可切换的运行能力。`runtime/acoustic_optic_synchronizer.hpp`（capture-time
-配对）、`algorithms/frontends/acoustic_optic_associator`（FLS 弧带候选生成 + 几何关联审计）
-和 `algorithms/frontends/acoustic_optic_depth_fusion`（posterior 深度优化，真正产出
-`FusedDepthMeasurement`）都已经落地并有单测覆盖。`apps/tools/acoustic_optic_scenario_matrix`
-现在把这四者接成一条真实跑通的流水线（含真实、非新写的 `SonarCfarFrontend`），覆盖
-架构文档第 10 节的 9 场景矩阵，见代码库参考文档 6.10 节的真实结果表。
-`algorithms/mapping/acoustic_optic_map_bridge` 把 `FusedDepthMeasurement` 转成
-`MapEvidence`（base_link 系），接进既有、未改动的 `submap_manager`，并用真实
-`SubmapManager` 验证了 pose 修正后可重新变换（详见代码库参考文档 6.11 节）——至此
-声光系列六个 plan 全部完成。**但仍然没有任何一个 plan 接进 `apps/replay_demo` 的位姿图
-主循环**——这六个 plan 交付的是一套单测和端到端场景矩阵验证过的组件集合，不是
-`replay_demo` 里能跑起来的产品功能，讨论"声光融合现在能做什么"时不能被这句话掩盖。
+实现（`algorithms/frontends/stereo_optical_depth_frontend`，`StereoOpticalDepthFrontend`）。
+`runtime/acoustic_optic_synchronizer.hpp`（capture-time 配对）、
+`algorithms/frontends/acoustic_optic_associator`（FLS 弧带候选生成 + 几何关联审计）、
+`algorithms/frontends/acoustic_optic_depth_fusion`（posterior 深度优化，真正产出
+`FusedDepthMeasurement`）和 `algorithms/mapping/acoustic_optic_map_bridge`（转成
+`MapEvidence`，base_link 系）都已经落地并有单测覆盖，`apps/tools/acoustic_optic_scenario_matrix`
+把它们接成一条真实跑通的流水线，覆盖架构文档第 10 节的 9 场景矩阵（真实结果见代码库参考
+文档 6.10/6.11 节）——至此声光系列六个 plan 全部完成。
+
+**`apps/replay_demo`/`apps/tools/synth_bag_gen` 现在也真正接了这些组件**（后续独立于六个
+plan 的一次集成，见代码库参考文档 6.12 节和对应 plan 文档）：`--experiment` 加载的 rig
+含相机时，`replay_demo` 会真正构造并跑上述整条流水线，把结果存进 `submap_manager` 的第三个
+`MapEvidence` bucket；没有相机（或没传 `--experiment`）时两个 app 行为逐字节不变
+（`uw_l2_replay_determinism_test` 把关）。**明确没做的事**：稠密深度没有变成位姿图的新
+factor 类型——`PoseGraphProblem`/求解器/轨迹 ATE 完全不受这次集成影响。

@@ -300,8 +300,13 @@ ROS2 默认不参与构建。启用 `-DUW_BUILD_ROS2=ON` 前，需要：
 
 ## 已知边界
 
-- 当前 Demo 使用声呐、相对位姿和深度证据，没有真正运行光学/VIO 前端；“声光融合”
-  是平台目标，不代表现阶段所有传感器链路均已接通。
+- 位姿图估计（`PoseGraphProblem`/求解器/轨迹 ATE）只用声呐、相对位姿和深度证据，
+  没有 VIO 前端，也不消费稠密光学深度——声光融合的输出是并行存进 `submap_manager`
+  的地图证据，不参与位姿估计。`apps/replay_demo`/`apps/tools/synth_bag_gen` 在
+  `--experiment` 加载了带相机的 rig 时，会真正构造并跑
+  `StereoOpticalDepthFrontend`/`SonarCfarFrontend`/`AcousticOpticDepthFusionFrontend`
+  （详见代码库参考文档 6.12 节，含真实跑出来的数字）；不传 `--experiment`（或 rig
+  没有相机）时两个 app 行为逐字节不变。
 - ROS2 HoloOcean 桥接节点的传输层可构建和启动，但尚未经过真实仿真数据流验证，
   也未连接 `SonarFrontend`。
 - SVIn 的非 ROS2 provider 具有注入点单元测试；ROS2 wrapper 仍是文档骨架，未编译。

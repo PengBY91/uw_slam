@@ -1,0 +1,24 @@
+# "怎么跑"：跟 experiment/synthetic_smoke.yaml 结构完全一样，唯一区别是
+# scenario 指向 scenario/acoustic_optic_demo.yaml——一个专门用来演示"相机真的
+# 看得到目标、声光关联真的能 ACCEPTED"的场景（默认 synthetic_smoke.yaml 的
+# 三个目标经真实几何计算都不在相机窄视场内，见对应 plan 文档）。
+
+rig: rig/example_auv.yaml
+scenario: scenario/acoustic_optic_demo.yaml
+defaults: defaults/platform.yaml
+
+frontends:
+  optical: stereo_depth_frontend_v1
+  sonar: sonar_cfar_frontend_v1
+
+factor_builders:
+  - relative_pose_v1
+  - sonar_range_v1
+  - depth_v1
+
+estimator_mode: black_box_vio
+map_backend: submap_point_cloud_v1
+
+output:
+  trajectory_format: tum
+  write_run_manifest: true

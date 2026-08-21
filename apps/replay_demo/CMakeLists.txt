@@ -10,5 +10,8 @@ target_link_libraries(replay_demo PRIVATE
   uw_depth_factor
   uw_submap_manager
   uw_sonar_cfar_frontend
+  uw_stereo_optical_depth_frontend
+  uw_acoustic_optic_depth_fusion
+  uw_acoustic_optic_map_bridge
 )
 target_compile_options(replay_demo PRIVATE -Wall -Wextra)

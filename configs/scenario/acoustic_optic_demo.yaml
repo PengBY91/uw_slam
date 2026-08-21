@@ -1,0 +1,24 @@
+# A dedicated, additive scenario (see docs/superpowers/plans/
+# 2026-08-20-acoustic-optic-replay-demo-integration.md) — the ONE difference
+# from scenario/synthetic_smoke.yaml is the target position: placed directly
+# ahead of kf0's camera (base_link -> camera_left_link translation is
+# (0.15, 0.06, 0) in configs/rig/example_auv.yaml) so it sits inside BOTH
+# the camera's narrow field of view and the sonar's wide one at the start
+# of the trajectory — configs/scenario/synthetic_smoke.yaml's three targets
+# never satisfy the camera FOV constraint, by real geometry (see the plan
+# doc), so this scenario exists purely to demonstrate a real accepted
+# acoustic-optic association, not to replace the default scenario.
+
+seed: 42
+num_keyframes: 12
+radius_m: 8.0
+arc_radians: 1.4
+depth_m: 12.0
+
+noise:
+  relative_pose_noise_m: 0.02
+  sonar_range_noise_m: 0.03
+  sonar_bearing_noise_rad: 0.01
+
+sonar_targets_world:
+  - [5.15, 0.06, -12.0]

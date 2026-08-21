@@ -855,13 +855,45 @@ plan 2-4 的既有 v1 范围一致），位姿修正只需要移动，不需要�
 
 **声光系列六个 plan 到这里全部完成**：contracts/calibration → optical baseline →
 cross-modal geometry → probabilistic fusion → simulation/evaluation → mapping handoff。
-**但没有任何一个 plan 把这些组件接进 `apps/replay_demo` 的位姿图主循环**——`replay_demo`
-仍然只跑声呐 + 相对位姿 + 深度的固定管线，没有构造过
-`StereoOpticalDepthFrontend`/`AcousticOpticDepthFusionFrontend`/
-`BuildMapEvidenceFromFusedDepth` 中的任何一个。六个 plan 交付的是一套经过单测和端到端
-场景矩阵验证过的、可复用的组件集合，不是一个已经跑起来的产品功能——这个边界需要在
-未来任何"声光融合现在能做什么"的讨论里明确说清楚，不能被"六个 plan 都做完了"这句话
-掩盖。
+六个 plan 交付的是一套经过单测和端到端场景矩阵验证过的、可复用的组件集合。见 6.12 节——
+`apps/replay_demo` 现在会在加载了带相机的 rig 时真正构造并调用这些组件，但这是一次
+独立的、后续的集成工作（见下），不是六个 plan 本身自带的。
+
+### 6.12 `apps/replay_demo` 接入声光融合（rig-gated，位姿图本身不受影响）
+
+`replay_demo`/`synth_bag_gen` 现在会在 `--experiment` 加载的 rig 含相机时，真正构造并跑
+`StereoOpticalDepthFrontend` → `SonarCfarFrontend`（复用已有实例，不是新建）→
+`AcousticOpticDepthFusionFrontend::Fuse` → `BuildMapEvidenceFromFusedDepth`，产出结果存进
+`submap_manager` 的**第三个** `MapEvidence` bucket（跟既有的 `"landmarks"` bucket 并列，
+按 keyframe 单独存）。**没有 `--experiment` 时这两个 app 的行为逐字节不变**——新代码全部
+包在 `if (rig.has_value())` 里，`uw_l2_replay_determinism_test`（不传 `--experiment`）在
+改动前后都能过，这是这次改动的硬性回归红线。
+
+**明确没做的事**：稠密深度**没有**变成位姿图的新 factor 类型——`PoseGraphProblem`/
+`GaussNewtonSolver`/轨迹 ATE 完全不受影响，声光输出只是并行存进 submap，不参与位姿估计。
+把稠密深度接成 factor 是一个量级更大、需要新残差模型和信息量标定的工作，不在这次改动
+范围内，也不应该被理解成"顺手就能做"的后续小任务。
+
+**两个真实跑出来的结果，都是如实记录，没有为了好看去调参数**：
+
+1. `configs/experiment/synthetic_smoke.yaml`（既有场景，逐字节未改）：
+   `acoustic-optic: 12 keyframes with camera data, 0 accepted, 0 ambiguous, 0 conflict,
+   12 rejected, 3424176 map evidence points added`，`ATE: rmse=0.213m`（跟改动前 README
+   记录的 ~0.15-0.21m 区间一致，证明位姿图确实没受影响）。0 accepted 不是 bug——直接算过：
+   这个场景的三个目标在整条轨迹上没有一帧的方位角落在相机窄视场（半 FOV ≈0.65 rad）内，
+   只在声呐的宽视场（半 FOV 3.0 rad）里，真实几何决定的，不调整既有 scenario 去凑一个
+   "看起来更好"的数字。即便如此，342 万个稠密立体点仍然被正确地当 `OPTICAL_ONLY` 贡献
+   存进了 submap——这本身就是这次集成的真实产出，不是"什么都没发生"。
+2. 新增、独立于上面那个的 `configs/experiment/acoustic_optic_demo.yaml`
+   （`configs/scenario/acoustic_optic_demo.yaml` 只有一个目标，放在 kf0 相机正前方，
+   两个视场都能看到）：`0 accepted, 3 ambiguous, 0 conflict, 7 rejected`（另外 2 个
+   keyframe 目标连声呐视场都出了，走 `synth_bag_gen` 既有的"frame written background-only"
+   告警路径，不是新代码的问题）。3 个 `ambiguous` 而不是 `accepted`——跟 plan 5 场景矩阵里
+   `clean_textured`/`elevation_stress` 独立发现的同一个现象（局部平坦目标相对弧采样步长
+   偏宽，天然产生多个近似并列的候选）在一个完全不同的场景（真实轨迹驱动，不是
+   `acoustic_optic_scenario_matrix` 的独立 trial）里again被验证了一次——两次独立复现，
+   更说明这是系统的真实属性，不是巧合或者 bug。`ATE: rmse=0.061m`（比默认场景更好，目标
+   更近、约束更紧）。
 
 ---
 
@@ -1458,8 +1490,10 @@ output:
 ```
 
 四层消费程度总结（README 已有，这里复述一遍方便对照代码）：`defaults` 完整接入
-`replay_demo`；`rig` 完整加载但两个 app 都还不用；`scenario` 完整接入
-`synth_bag_gen`；`experiment` 里选算法变体的字段只读取打印，不驱动分支。
+`replay_demo`；`rig` 在两个 app 里已经消费——加载了带相机的 rig 时驱动 6.12 节的声光
+融合分支，没有相机（或没传 `--experiment`）时两个 app 行为逐字节不变；`scenario`
+完整接入 `synth_bag_gen`；`experiment` 里选算法变体的字段（`frontends.optical`/
+`frontends.sonar` 之外的其余字段）只读取打印，不驱动分支。
 
 ---
 
