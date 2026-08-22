@@ -135,3 +135,54 @@ class HoloOceanSession:
         # APIs" in a comment, i.e. the one bit of the exit path actually
         # meant to be called from outside the class.
         self._env.__exit__(None, None, None)
+
+    def spawn_prop(
+        self,
+        prop_type: str,
+        location: Any,
+        rotation: Any = (0.0, 0.0, 0.0),
+        scale: Any = (1.0, 1.0, 1.0),
+        material: str = "white",
+        tag: Optional[str] = None,
+    ) -> None:
+        """Forwards to HoloOceanEnvironment.spawn_prop() (see
+        external_repos/HoloOcean/client/src/holoocean/environments.py,
+        read-only reference). Used by calibrate_camera.py to place a
+        known-size calibration target; not exercised by record_session.py.
+        Spawned props do not persist across env.reset(), so callers must
+        spawn after this session's __init__ (which already reset once) and
+        before closing."""
+        self._env.spawn_prop(
+            prop_type,
+            location=location,
+            rotation=rotation,
+            scale=scale,
+            material=material,
+            tag=tag,
+        )
+
+    def teleport_agent(self, location: Any, rotation: Any, agent_name: Optional[str] = None) -> None:
+        """Forwards to Agent.set_physics_state() (NOT plain teleport()) for
+        the named agent (or the only agent in the scenario if `agent_name`
+        is omitted — most single-AUV scenarios like OpenWater-HoveringCamera
+        only have one). Deliberately zeroes velocity/angular_velocity too —
+        confirmed the hard way against a real HoloOcean install: plain
+        teleport() only sets position/rotation and leaves any existing
+        velocity untouched, so a HoveringAUV that picked up drift from
+        gravity/buoyancy between two calibrate_camera.py poses (no thruster
+        command is ever sent — session.step() is called with no action)
+        carried that momentum straight through the next teleport, and by
+        the ~4th-9th pose had drifted meters off target during the
+        settle/wait ticks, taking the calibration checkerboard clean out of
+        frame. HoloOcean has no public API to move a sensor independently
+        of its agent, so this moves the whole rig; the camera moves with it
+        via its fixed mounting extrinsic."""
+        agents = self._env.agents
+        if agent_name is None:
+            if len(agents) != 1:
+                raise ValueError(
+                    f"scenario has {len(agents)} agents ({sorted(agents)}); "
+                    "pass agent_name explicitly to disambiguate"
+                )
+            agent_name = next(iter(agents))
+        agents[agent_name].set_physics_state(location, rotation, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0))

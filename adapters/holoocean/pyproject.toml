@@ -7,7 +7,13 @@ dependencies = [
     "protobuf>=4.21",
     "mcap>=1.0",
     "numpy>=1.24",
+    "opencv-python-headless>=4.8",
+    "pyyaml>=6.0",
 ]
+# opencv-python-headless/pyyaml are here (not the 'holoocean' extra) because
+# calibrate_camera.py's calibration math (compute_intrinsics,
+# compute_stereo_extrinsics) and its test coverage need cv2/yaml on any
+# machine, independent of whether a real HoloOcean install is present.
 # 'holoocean' is intentionally NOT listed here: it is only needed by
 # holoocean_driver.py's HoloOceanSession, imported lazily and guarded (see
 # that module's docstring). Making it a hard dependency would break

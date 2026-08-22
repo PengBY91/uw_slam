@@ -1,5 +1,15 @@
 # RigCalibrationSnapshot 的人可读来源（唯一标定事实源，架构文档第 7.1 节）。
-# v1 尚未被 apps/ 消费；字段名对应 schemas/proto/uw/domain/calibration.proto。
+# 字段名对应 schemas/proto/uw/domain/calibration.proto；apps/replay_demo 等已经在消费这份文件。
+#
+# 注意：这份文件被 apps/synth_bag_gen.cpp 同时用作"合成相机图像的生成参数"
+# ——cameras 块的 width/height/k_matrix_row_major 不只是"标定结果"，还直接
+# 决定合成 demo 怎么渲染左右相机帧，換掉这里的数字会改变
+# synthetic_smoke/synthetic_smoke_vo 的合成图像和下游 ATE 数字（见 README
+# 「运行端到端 Demo」）。2026-08-21 用 calibrate_camera.py 对真实
+# OpenWater-HoveringCamera 场景标定出了一组真实值（512x512 分辨率，
+# fx≈250，立体基线≈0.231m，17/16 视角，rms 0.46px/0.43px）——先不直接覆盖
+# 这里的合成占位值，等有专门的"真实数据 rig"文件或者确认要不要拆分
+# 合成/真实两份 rig 配置再处理，避免顺手带偏已经在跟踪的合成 demo 数字。
 
 calibration_version: "example_auv_v2"
 

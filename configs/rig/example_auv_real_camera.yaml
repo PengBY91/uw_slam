@@ -1,0 +1,104 @@
+# RigCalibrationSnapshot 变体：跟 example_auv.yaml 结构完全一致，唯一区别是
+# cameras 块换成了真实标定值，供真实 HoloOcean 数据管线（adapters/holoocean/
+# record_session.py 录制的真实 bag、以后接真实数据的 apps/replay_demo 运行）
+# 使用——不要在合成 demo（synthetic_smoke*.yaml）里引用这份文件，
+# apps/synth_bag_gen.cpp 会用 cameras 块的 width/height/k_matrix_row_major
+# 生成合成图像，换成这份文件会改变合成 demo 已经在跟踪的 ATE 数字（见
+# example_auv.yaml 头部注释和 README「运行端到端 Demo」）。
+#
+# cameras 块是 2026-08-21 用 adapters/holoocean/uw_holoocean_adapter/
+# calibrate_camera.py 对真实 OpenWater-HoveringCamera 场景（HoloOcean
+# 2.3.0，Windows 原生渲染）跑棋盘格标定得到的：7x9 棋盘格（0.25m 方格）、
+# 每 15 个 pose 重启一次 HoloOcean session（绕过长会话检测率塌陷的问题，
+# 见 calibrate_camera.py 的 run_calibration_session 文档字符串）、迭代剔除
+# 重投影误差最大的视角、用 90° FOV 假设做优化器初值并固定 fx=fy。
+# 左相机 17 个有效视角 rms=0.46px，右相机 16 个有效视角 rms=0.43px，
+# 立体基线 rms=0.51px——都是亚像素级，数字本身可信。原始报告：
+# C:\Users\pengb\calib_debug\calib_full5.yaml（Windows 主机本地，未拷进本仓库）。
+#
+# frame_tree 里 camera_right_link 相对 camera_left_link 的平移量已经在
+# 2026-08-21（同一天，稍后）用标定报告里的 left_to_right_transform_row_major
+# （R 接近单位阵，最大偏差 0.0061，满足 StereoGeometry::Resolve 要求的纯平移
+# 假设）套 calibrate_camera.py 新增的 stereo_translation_to_body_frame()
+# 算出来了——这个函数把 OpenCV 立体外参（相机光学系：X-right/Y-down/Z-forward）
+# 转换到这里 frame_tree 用的机体系（x前/y左/z上），跟
+# include/sensor_models/camera_model.cpp 的 OpticalFromBodyRotation() 严格保持
+# 一致，见该函数的单元测试（tests/test_calibrate_camera.py，已知变换往返验证）。
+# 结果不是纯 y 轴偏移：右相机相对左相机的机体系偏移是
+# (x=+0.0386m, y=-0.2272m, z=-0.0135m)（模长 0.2308m，匹配标定测出的基线量级），
+# 说明真实双目基线不是像占位值假设的那样只沿 y 轴——x/z 分量约占基线的 15-17%，
+# 不是可以忽略的噪声。
+#
+# 【仍然未验证、没有跟着这次标定更新的】：camera_left_link 自己相对 base_link
+# 的绝对平移（这里沿用占位值 x=0.15,y=0.06,z=0）——这次标定只测出了左右相机之间
+# 的*相对*基线，没有测出任一相机相对 AUV body 原点的绝对安装位置（那需要在
+# Unreal Editor 里量 HoveringAUV 骨架网格的 CameraLeftSocket 相对 body 原点的
+# 偏移，不是这次标定管线能做的）。同理，两个相机的旋转子矩阵仍然保持跟
+# example_auv.yaml 一致的单位阵——测出的 R 偏差（最大 0.0061）当作标定噪声/
+# 忽略不计的安装倾斜处理，不是刻意设计的机体系旋转。sonar_link/imu_link 的
+# frame_tree、imu_noise、sonar_beam_models、depth_models 跟 example_auv.yaml
+# 完全一致（这次标定没碰这些）。
+
+calibration_version: "example_auv_real_camera_v1"
+
+frame_tree:
+  - parent_frame: base_link
+    child_frame: imu_link
+    transform_row_major:
+      [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]
+  - parent_frame: base_link
+    child_frame: camera_left_link
+    transform_row_major:
+      [1,0,0,0.15, 0,1,0,0.06, 0,0,1,0, 0,0,0,1]
+  - parent_frame: base_link
+    child_frame: camera_right_link
+    transform_row_major:
+      [1,0,0,0.188643, 0,1,0,-0.16716, 0,0,1,-0.013495, 0,0,0,1]
+  - parent_frame: base_link
+    child_frame: sonar_link
+    transform_row_major:
+      [1,0,0,0.1, 0,1,0,0, 0,0,1,-0.05, 0,0,0,1]
+
+cameras:
+  - sensor_id: camera_left
+    width: 512
+    height: 512
+    k_matrix_row_major:
+      [249.934680,0,256.018067, 0,249.934680,254.908930, 0,0,1]
+    distortion: [0.017961,-0.042131,-0.000550,0.001529,0.023008]
+    distortion_model: plumb_bob
+  - sensor_id: camera_right
+    width: 512
+    height: 512
+    k_matrix_row_major:
+      [246.516300,0,257.906832, 0,246.516300,255.042977, 0,0,1]
+    distortion: [-0.022177,0.026051,0.001799,-0.000271,-0.017737]
+    distortion_model: plumb_bob
+
+time_offset_seconds:
+  camera_left: 0.0
+  camera_right: 0.0
+  sonar0: 0.0
+  imu0: 0.0
+  depth0: 0.0
+
+imu_noise:
+  sigma_gyro_c: 1.6968e-4
+  sigma_accel_c: 2.0e-3
+  sigma_gyro_bias: 1.9393e-5
+  sigma_accel_bias: 3.0e-3
+  rate_hz: 200
+  gravity_mps2: 9.80665
+
+sonar_beam_models:
+  - sensor_id: sonar0
+    horizontal_fov_rad: 2.09
+    elevation_aperture_rad: 0.19
+    range_resolution_m: 0.02
+    nominal_speed_of_sound_mps: 1500.0
+    sonar_enabled: true
+
+depth_models:
+  - sensor_id: depth0
+    noise_sigma_m: 0.05
+    depth_enabled: true
