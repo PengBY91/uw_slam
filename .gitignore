@@ -7,6 +7,7 @@
 # Build artifacts
 /build/
 /build-*/
+/build_*/
 **/CMakeFiles/
 **/CMakeCache.txt
 **/*.o

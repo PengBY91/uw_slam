@@ -71,9 +71,12 @@ holoocean/`）→ lint。**端到端 demo 也值得实际跑一遍**，不要只
 ```bash
 build/bin/synth_bag_gen --experiment configs/experiment/synthetic_smoke.yaml --out /tmp/synthetic.mcap
 build/bin/replay_demo --bag /tmp/synthetic.mcap --experiment configs/experiment/synthetic_smoke.yaml --out /tmp/demo
-# 期望：6~7 次迭代内收敛，ATE rmse ~0.15-0.21m（跨 seed 有波动；不是 ~3cm 了，
+# 期望：6~7 次迭代内收敛，ATE rmse ~0.06-0.07m（跨 seed 有波动；不是 ~3cm 了，
 # 见 README「运行端到端 demo」一节——sonar_range_factor 的路标关联换成真实
-# SubmapManager 在线发现之后，v1 没有联合路标估计的 elevation 误差会摊到 x/y 上）
+# SubmapManager 在线发现之后，v1 没有联合路标估计的 elevation 误差会摊到 x/y 上）。
+# 换成 configs/experiment/synthetic_smoke_vo.yaml 可以跑 estimator_mode:
+# stereo_landmark_vo 变体（相对位姿从左右相机帧实时算，而不是从桩读取），
+# ATE 量级相当。
 ```
 
 ## 代码约定
@@ -144,6 +147,12 @@ build/bin/replay_demo --bag /tmp/synthetic.mcap --experiment configs/experiment/
 - **`configs/experiment/*.yaml` 里 `rig`/`scenario`/`defaults` 路径是相对 `configs/`
   的**，不是相对 experiment 文件自己所在目录——第一次实现时按后者算漏了一层
   `parent_path()`，读文件报错才发现。
+- **相机 optical frame 和 body frame 的旋转方向容易搞反**：`stereo_landmark_vo_frontend`
+  从相机坐标系解出的相对位姿要用 rig 标定的 camera→body 外参做共轭
+  （`T_body = T_cam_body * T_cam * T_cam_body^-1`）才能喂给以 body frame 定义的
+  相对位姿因子；第一版把方向搞反，单元测试全绿但实跑 demo 时 ATE 停在 6.67m 不收敛，
+  修对之后降到 0.061m——这也是**实跑 demo** 而非单元测试才发现的问题，同一类坑见
+  上面的 z 轴 anchor bug。
 
 ## 目录速查
 

@@ -1,0 +1,46 @@
+name: CI
+
+# Mirrors tools/verify_pipeline.sh (README's "一键验证" / CLAUDE.md's build
+# order: configure -> build -> ctest -> pytest -> lint -> synth_bag_gen ->
+# replay_demo) instead of duplicating those steps here, so this workflow
+# and local dev stay a single source of truth. Uses a conda-forge toolchain
+# (not apt) because that is the flow actually exercised and known to work
+# in this project's own sandboxed dev environment (see CLAUDE.md's
+# "已经踩过的坑") — apt is untested here for this repo's exact dependency
+# set (in particular Ubuntu's `libgtest-dev` package needs an extra manual
+# build step this repo's own tools/setup_dev_env.sh does not perform).
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up conda-forge toolchain (Eigen, Protobuf, GTest, yaml-cpp, CMake)
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          miniforge-version: latest
+          environment-name: uw_slam_build
+          channels: conda-forge
+          channel-priority: strict
+
+      - name: Install C++ dependencies
+        shell: bash -l {0}
+        run: conda install -y eigen libprotobuf protobuf gtest yaml-cpp cmake
+
+      - name: Run full verification pipeline (build, ctest, pytest, lint, synth_bag_gen, replay_demo)
+        shell: bash -l {0}
+        run: |
+          export CMAKE_PREFIX_PATH="$CONDA_PREFIX"
+          export PATH="$CONDA_PREFIX/bin:$PATH"
+          tools/verify_pipeline.sh --out-dir "$RUNNER_TEMP/verify"
+
+      - name: Upload verification summary and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-pipeline-logs
+          path: ${{ runner.temp }}/verify

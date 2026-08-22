@@ -12,8 +12,9 @@
 回放统一使用 MCAP，算法核心不依赖 ROS2 或 HoloOcean。
 
 当前仓库处于“架构骨架 + 可运行垂直切片”阶段：合成数据可以完整经过
-`声呐前端 → 因子图 → 位姿估计 → 地图 → 轨迹评测`，并有确定性回放测试保护。
-它还不是生产可部署的完整声光融合系统；光学前端、实时多传感器闭环和真实
+`声呐/光学前端 → 因子图 → 位姿估计 → 地图 → 轨迹评测`，并有确定性回放测试保护。
+它还不是生产可部署的完整声光融合系统；光学前端（稠密深度融合、立体特征点 VO）
+已有可运行实现，但都只在合成数据上验证过——实时多传感器闭环和真实
 HoloOcean 数据流仍在后续范围内。
 
 ## 导航
@@ -35,6 +36,7 @@ HoloOcean 数据流仍在后续范围内。
 | 领域契约 | Protobuf 定义观测、量测证据、因子、状态、地图、健康状态和标定 | 已实现并有跨模块 round-trip 测试 |
 | 声呐前端 | CFAR 检测、极坐标转换、DBSCAN 聚类 | 已实现并有固定 fixture 回归测试 |
 | 因子构建 | 相对位姿、深度、声呐距离因子，声呐残差含解析雅可比 | 已实现并有数值验证 |
+| 光学相对位姿 | 立体特征点 VO：blob/Harris 检测 + NCC 匹配 + RANSAC 刚体拟合，从左右相机帧实时算相对位姿 | 已实现并接入 Demo（`estimator_mode: stereo_landmark_vo`），可替代默认的 ground-truth+noise 桩 `black_box_vio` |
 | 状态估计 | Eigen 实现的 Gauss-Newton/LM 位姿图求解器 | 已实现；后端接口可替换 |
 | 地图与评测 | `SubmapManager`、ATE/RPE 轨迹指标 | 已实现并接入 Demo |
 | 可复现实验 | 四层 YAML 配置、不可变 `RunManifest`、确定性 MCAP 回放 | 已实现 |
@@ -133,11 +135,16 @@ cat /tmp/demo_trajectory.tum
 ```
 
 在默认合成场景中，求解器通常在 6–7 次迭代内收敛，ATE RMSE 约为
-0.15–0.22 m；不同 seed 会产生波动，这不是验收阈值。声呐只有距离而没有仰角，
+0.06–0.07 m；不同 seed 会产生波动，这不是验收阈值。声呐只有距离而没有仰角，
 且当前版本不联合优化路标，首次观测的 elevation 误差会影响 x/y 估计。算法与
 误差来源详见[代码库参考文档](./docs/uw-slam-codebase-reference-2026-08-18.md)。
 
-命令行参数会覆盖 `--experiment` 中的同名配置，适合快速做单变量试验。
+命令行参数会覆盖 `--experiment` 中的同名配置，适合快速做单变量试验。把
+`--experiment` 换成 `configs/experiment/synthetic_smoke_vo.yaml` 可以跑同一场景
+的 `estimator_mode: stereo_landmark_vo` 变体——相对位姿因子改由
+`stereo_landmark_vo_frontend` 从合成的左右相机帧实时计算，而不是从 bag 里读取
+`synth_bag_gen` 写入的 ground-truth+noise 证据；ATE 量级与默认桩相当（约
+0.06 m）。
 
 ## 架构
 
@@ -151,7 +158,7 @@ flowchart LR
 
     PB[Protobuf 领域契约] --- MCAP
     MCAP --> FE[声呐 CFAR 前端]
-    MCAP --> ODO[相对位姿 / 深度证据]
+    MCAP --> ODO["相对位姿 / 深度证据<br/>(black_box_vio 桩 或 stereo_landmark_vo 实算)"]
     FE --> FACTOR[声呐距离因子]
     ODO --> FACTOR
     FACTOR --> EST[位姿图求解]
@@ -310,9 +317,12 @@ ROS2 默认不参与构建。启用 `-DUW_BUILD_ROS2=ON` 前，需要：
 ## 已知边界
 
 - 位姿图估计（`PoseGraphProblem`/求解器/轨迹 ATE）只用声呐、相对位姿和深度证据，
-  没有 VIO 前端，也不消费稠密光学深度——声光融合的输出是并行存进 `submap_manager`
-  的地图证据，不参与位姿估计。`apps/replay_demo`/`apps/synth_bag_gen` 在
-  `--experiment` 加载了带相机的 rig 时，会真正构造并跑
+  不消费稠密光学深度——声光融合的输出是并行存进 `submap_manager` 的地图证据，
+  不参与位姿估计。相对位姿证据默认来自 `black_box_vio`（bag 里 ground-truth+noise
+  的桩）；`estimator_mode: stereo_landmark_vo` 会改用 `stereo_landmark_vo_frontend`
+  从左右相机帧实时算相对位姿（blob/Harris 检测 + NCC 匹配 + RANSAC 刚体拟合），
+  但它是纯视觉里程计，不融合 IMU，也不是完整的 VIO 前端。`apps/replay_demo`/
+  `apps/synth_bag_gen` 在 `--experiment` 加载了带相机的 rig 时，会真正构造并跑
   `StereoOpticalDepthFrontend`/`SonarCfarFrontend`/`AcousticOpticDepthFusionFrontend`
   （详见代码库参考文档 6.12 节，含真实跑出来的数字）；不传 `--experiment`（或 rig
   没有相机）时两个 app 行为逐字节不变。
@@ -341,6 +351,7 @@ ROS2 默认不参与构建。启用 `-DUW_BUILD_ROS2=ON` 前，需要：
 | 想了解的内容 | 文档 |
 |---|---|
 | 不确定应该先读哪份文档 | [文档中心](./docs/README.md) |
+| 作为新贡献者第一次读代码、理清调用链 | [新人上手指南](./docs/uw-slam-newcomer-guide.md) |
 | 长期模块边界、状态机、可靠性和 Gate 设计 | [声光 SLAM 平台架构](./docs/acoustic-optic-slam-platform-architecture-2026-08-17.md) |
 | 当前代码里实际存在的类型、算法和数据流 | [代码库参考](./docs/uw-slam-codebase-reference-2026-08-18.md) |
 | 第一阶段工程方案及既有代码审计 | [HoloOcean 到声光 SLAM 管线](./docs/holoocean-to-acoustic-optic-slam-pipeline-2026-08-05.md) |

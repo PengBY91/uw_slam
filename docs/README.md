@@ -8,6 +8,9 @@
 
 - **第一次接触项目**：先读根目录 [README](../README.md)，运行合成数据 Demo，再回到
   本页选择专题资料。
+- **准备作为新贡献者动手改代码**：读[新人上手指南](./uw-slam-newcomer-guide.md)，
+  它按调用链把 `synth_bag_gen → replay_demo` 整条流程串起来，并给出"改某类代码该看
+  哪个文件、对应哪类测试"的速查表。
 - **准备修改或调试代码**：读[代码库参考](./uw-slam-codebase-reference-2026-08-18.md)，
   它只记录当前实现中可以从代码确认的事实。
 - **准备改变模块边界或长期技术路线**：读
@@ -21,6 +24,7 @@
 
 | 任务 | 首选文档 | 补充材料 |
 |---|---|---|
+| 新贡献者第一次读代码、搞清楚整条调用链 | [新人上手指南](./uw-slam-newcomer-guide.md) | [代码库参考](./uw-slam-codebase-reference-2026-08-18.md) |
 | 查找类型、接口、算法或 CMake target | [代码库参考](./uw-slam-codebase-reference-2026-08-18.md) | [根 README](../README.md) |
 | 理解领域契约、依赖 DAG、状态机与 Gate | [长期架构设计](./acoustic-optic-slam-platform-architecture-2026-08-17.md) | [代码库参考](./uw-slam-codebase-reference-2026-08-18.md) |
 | 配置或复现实验 | [配置说明](../configs/README.md) | [根 README](../README.md#运行端到端-demo) |
@@ -35,11 +39,12 @@
 
 | 文档 | 状态 | 权威范围 | 最后核对 |
 |---|---|---|---|
-| [根 README](../README.md) | 当前入口 | 项目定位、快速开始、已验证能力与限制 | 2026-08-19 |
-| [代码库参考](./uw-slam-codebase-reference-2026-08-18.md) | 当前事实 | 当前类型、函数、参数、数据流、测试与工具 | `919e1f0`，2026-08-19 |
+| [根 README](../README.md) | 当前入口 | 项目定位、快速开始、已验证能力与限制 | `f285e0d`，2026-08-21 |
+| [新人上手指南](./uw-slam-newcomer-guide.md) | 当前说明 | 调用链、目录职责速查、常见误解边界 | 2026-08-21 |
+| [代码库参考](./uw-slam-codebase-reference-2026-08-18.md) | 当前事实 | 当前类型、函数、参数、数据流、测试与工具 | `f285e0d`，2026-08-21 |
 | [长期架构设计](./acoustic-optic-slam-platform-architecture-2026-08-17.md) | 已批准设计 | 长期目标、模块边界、不变量与阶段决策 | 2026-08-19 |
 | [Pipeline 工程方案](./holoocean-to-acoustic-optic-slam-pipeline-2026-08-05.md) | 演进中/历史参考 | 第一阶段 baseline、方案演进与代码审计修订 | `919e1f0`，2026-08-19 |
-| [测试与验证指南](./testing-and-verification-guide-2026-08-20.md) | 当前说明 | 分功能验证命令、判定标准与运行环境要求 | `90b7752`，2026-08-20 |
+| [测试与验证指南](./testing-and-verification-guide-2026-08-20.md) | 当前说明 | 分功能验证命令、判定标准与运行环境要求 | `f285e0d`，2026-08-21 |
 | [配置说明](../configs/README.md) | 组件当前说明 | 四层配置字段、覆盖顺序和消费范围 | 随配置代码维护 |
 | [HoloOcean 适配器](../adapters/holoocean/README.md) | 组件当前说明 | Python 网关安装、代码生成和验证边界 | 随适配器维护 |
 | [ROS2 适配器](../adapters/ros2/README.md) | 组件当前说明 | ROS2 构建、目标状态和未接通边界 | 随适配器维护 |

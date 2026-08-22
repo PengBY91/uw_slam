@@ -38,11 +38,12 @@ PASS：编译 → 23 项 ctest → 11 项 pytest → lint → `synth_bag_gen` �
 | 因子构建（雅可比数值验证） | `ctest --test-dir build -L factor_builders` | 同上 | 通过 |
 | 状态估计（Gauss-Newton/LM） | `ctest --test-dir build -L estimation` | 同上 | 通过 |
 | 地图 + 轨迹评测 | `ctest --test-dir build -L "mapping\|evaluation"` | 同上 | 通过 |
-| 端到端声呐 pipeline demo | 见下方「手动跑端到端 Demo」 | 同上 | 6~7 次迭代收敛，ATE rmse 0.15~0.22m |
+| 端到端声呐 pipeline demo（`estimator_mode: black_box_vio`，默认） | 见下方「手动跑端到端 Demo」 | 同上 | 6 次迭代收敛，ATE rmse 约 0.06~0.07m |
+| 端到端声呐 pipeline demo（`estimator_mode: stereo_landmark_vo`） | 同上，`--experiment` 换成 `configs/experiment/synthetic_smoke_vo.yaml`，见下方「手动跑端到端 Demo」 | 同上 | 7 次迭代收敛，ATE rmse 与 `black_box_vio` 路径量级相当（约 0.06m） |
 | 光学立体深度 baseline（acoustic-optic plan 2） | `build/bin/synth_stereo_gen --out /tmp/stereo.mcap`，再 `build/bin/optical_baseline_eval --bag /tmp/stereo.mcap --experiment configs/experiment/synthetic_smoke.yaml --max-rmse-m 0.05 --min-coverage 0.9` | 同上 | 打印一行 `rmse_m=... coverage=... OK`；退出码 0 |
 | 声光融合场景矩阵（plan 5） | `build/bin/acoustic_optic_scenario_matrix --experiment configs/experiment/synthetic_smoke.yaml --seed 4242 --trials-per-scenario N` | 同上 | 每个 scenario 打印一行统计；**退出码非 0 是正常的**——反映的是场景本身触发的 MVP gate 结果，不是命令执行失败，见 `tests/integration/acoustic_optic_scenario_matrix_determinism_test.sh` 顶部注释 |
 | 确定性回放（集成测试） | 已含在 ctest 里：`integration.replay_determinism`、`integration.optical_baseline_smoke`、`integration.acoustic_optic_scenario_matrix_determinism`（`ctest --test-dir build -L integration`）；也可单独 `bash tests/integration/<name>.sh <对应二进制路径...>` | 同上 | 同 seed 两次运行输出逐字节一致（scenario matrix 一项排除 `p95_latency_ms`，因为它是真实墙钟耗时，本来就不该要求确定性） |
-| HoloOcean Python 网关（坐标变换 / MCAP writer / 场景随机化，不含真实仿真器调用） | `cd adapters/holoocean && .venv/bin/pytest`（首次需要 `.venv/bin/pip install -e ".[dev]"`，见 [HoloOcean 适配器 README](../adapters/holoocean/README.md)） | `adapters/holoocean/.venv`，**不能**用 conda env 里的 `pytest`——会解析到 base conda 环境，既缺 `uw_holoocean_adapter` 包，又会因为 protobuf gencode/runtime 版本不一致直接报 `VersionError` | 25/25 通过 |
+| HoloOcean Python 网关（坐标变换 / 相机与状态转换 / MCAP writer / 场景随机化 / `record_session.py` 录制拼装逻辑，不含真实仿真器调用） | `cd adapters/holoocean && .venv/bin/pytest`（首次需要 `.venv/bin/pip install -e ".[dev]"`，见 [HoloOcean 适配器 README](../adapters/holoocean/README.md)） | `adapters/holoocean/.venv`，**不能**用 conda env 里的 `pytest`——会解析到 base conda 环境，既缺 `uw_holoocean_adapter` 包，又会因为 protobuf gencode/runtime 版本不一致直接报 `VersionError` | 25/25 通过 |
 | ROS2 桥接节点（传输层） | 编译：`cmake -S . -B build_ros2 -DCMAKE_PREFIX_PATH="$HOME/miniconda3/envs/uw_slam_build" -DUW_BUILD_ROS2=ON && cmake --build build_ros2 --target holoocean_sonar_bridge_node`；独立启动：`source /opt/ros/jazzy/setup.bash && source ~/ros2_ws/install/setup.bash && ./build_ros2/bin/holoocean_sonar_bridge_node` | `uw_slam_build` env + 已 source 的 ROS2 Jazzy + 已 colcon build 好 `holoocean_interfaces` 的 `~/ros2_ws` | 编译链接成功；节点启动后常驻不退出/不崩溃即算正常——它是纯传输层，没有真实 `holoocean_main` 喂话题、也没接 `SonarFrontend`，安静地空转就是预期行为，见 [ROS2 适配器 README](../adapters/ros2/README.md) |
 | Protobuf schema 改动后重新生成 Python 绑定 | `tools/codegen/gen_py.sh` | `adapters/holoocean/.venv` | 生成/更新 `schema_pb2/`；跑完之后 pytest 应仍然全过 |
 | 依赖方向不变量（`include`/`src` 生产代码不许 include ROS/HoloOcean，也不许用旧 `uw/...` 手写头路径） | `tools/lint/check_no_ros_in_core.sh`（等价于 `tools/lint/check_layer_dependencies.py .`） | 无特殊环境 | 打印 `OK: ...` |
@@ -65,9 +66,31 @@ cat /tmp/demo_trajectory.tum
 ```
 
 期望输出里能看到 `solver: N iterations, cost ... -> ... (converged)` 和一行
-`ATE: rmse=...m ...`；不同 seed 下 rmse 会在 0.15~0.22m 之间波动，这不是验收阈值
-（原因见根 README「运行端到端 Demo」一节：sonar_range_factor 目前不联合优化路标，
-首次观测的 elevation 误差会摊到 x/y 上）。
+`ATE: rmse=...m ...`；默认合成场景（seed 固定为 42）求解器通常 6 次迭代收敛，
+ATE rmse 约 0.06~0.07m，不同 seed/配置下会有波动，这不是验收阈值（原因见根
+README「运行端到端 Demo」一节：sonar_range_factor 目前不联合优化路标，首次观测的
+elevation 误差会摊到 x/y 上）。
+
+把 `--experiment`/`--bag`/`--out` 换成 `synthetic_smoke_vo.yaml` 对应的路径，可以
+验证 `estimator_mode: stereo_landmark_vo` 路径——相对位姿因子改由
+`include/frontends/stereo_landmark_vo_frontend.hpp` 从 `synth_bag_gen` 写入的合成
+左右相机帧实时计算（角点/blob 检测 + NCC 匹配 + RANSAC 刚体拟合），而不是从 bag
+里直接读 ground-truth+noise 证据：
+
+```bash
+build/bin/synth_bag_gen \
+  --experiment configs/experiment/synthetic_smoke_vo.yaml \
+  --out /tmp/synthetic_vo.mcap
+
+build/bin/replay_demo \
+  --bag /tmp/synthetic_vo.mcap \
+  --experiment configs/experiment/synthetic_smoke_vo.yaml \
+  --out /tmp/demo_vo
+```
+
+期望能看到一行 `stereo_landmark_vo_frontend: computed relative-pose evidence
+from camera frames ...`，求解器 7 次迭代收敛，ATE rmse 与默认路径量级相当
+（约 0.06m）。
 
 ## 目前测不了的部分（不是环境配置问题，是仓库当前阶段本来没做）
 

@@ -3,13 +3,13 @@ title: uw_slam 代码库参考文档
 type: codebase-reference
 status: current
 scope: "what the code does today, file-by-file/type-by-type — not a design proposal"
-updated: 2026-08-19
-verified_commit: 919e1f0
+updated: 2026-08-21
+verified_commit: f285e0d
 ---
 
 # uw_slam 代码库参考文档
 
-本文是 `uw_slam` 的代码级参考文档：基于 commit `919e1f0` 逐层、逐目录、逐类型地记录当前代码库里
+本文是 `uw_slam` 的代码级参考文档：基于 commit `f285e0d` 逐层、逐目录、逐类型地记录当前代码库里
 实际存在的东西，真实的类名/函数签名/字段名/算法参数，以及它们如何连接成
 一条可运行的端到端管线。它的权威范围是“代码现在做什么”，不是目标架构或未来计划。
 
@@ -59,9 +59,14 @@ verified_commit: 919e1f0
 
 ## 1. 现状速览
 
-骨架 + 每层至少一条真实可跑的垂直切片，14/14 CTest、9/9 Python 测试通过，
+骨架 + 每层至少一条真实可跑的垂直切片，106 个 CTest case、25 个 Python 测试通过，
 有一条端到端可跑的合成数据 demo（`synth_bag_gen` → `replay_demo`，通常 6–7 次迭代
-收敛，ATE RMSE 约 0.15–0.22 m，随 seed 波动且不作为验收阈值）。不是空骨架，也不是
+收敛，ATE RMSE 约 0.07–0.18 m，随 seed 波动且不作为验收阈值——本次复核实测 6 个
+seed 落在这个区间内）。`replay_demo` 现在有两条独立验证过的相对位姿 evidence 来源，
+由 `estimator_mode` 选择：默认 `black_box_vio`（bag 里 `synth_bag_gen` 写入的
+ground-truth+noise 黑盒证据）和 `stereo_landmark_vo`（`StereoLandmarkVoFrontend`
+从左右相机帧实时算出来的真实立体路标视觉里程计，见 6.13 节和
+[9.2 节](#92-appsreplay_demo--端到端主流程)）。不是空骨架，也不是
 生产系统，具体缺什么见第 15 节。
 
 ---
@@ -120,7 +125,9 @@ include/                     手写公共头文件，按角色分区（物理 uw
   sensor_models/             Pose3、声呐 beam 几何、PinholeCamera/StereoGeometry
   measurement_api/           Frontend/FactorBuilder/ResidualBlock/Provider 抽象（纯头文件）
   frontends/                 sonar_cfar_frontend / stereo_optical_depth_frontend /
-                              stereo_landmark_vo_frontend / acoustic_optic_associator /
+                              stereo_landmark_vo_frontend（+ 其内部用到的 harris_corner_detector /
+                              landmark_blob_detector / patch_matcher / rigid_transform_fit） /
+                              acoustic_optic_associator /
                               acoustic_optic_depth_fusion_frontend 等全部前端头文件
   factor_builders/           sonar_range_residual（移植自 SVIn，雅可比独立重导）、
                               relative_pose_residual（原生）、depth_residual（原生）
@@ -316,6 +323,14 @@ double ToSeconds(const Stamp&);
 Stamp FromSeconds(double);
 
 bool IsAzimuthAscending(const SonarFrame&);   // sonar.proto 不变量的实现
+
+// b2c19e1 新增：RGB8/BGR8 -> MONO8（ITU-R BT.601 亮度加权 0.299R+0.587G+0.114B，
+// 逐像素取整），失败（校验不过、非 RGB8/BGR8/MONO8 编码）时返回 std::nullopt；
+// 输入已是 MONO8 时原样返回（no-op）。存在的原因：真实 HoloOcean 相机是 RGB8
+// （camera_conversion.py），但 StereoLandmarkVoFrontend（6.13 节）/
+// StereoOpticalDepthFrontend（6.7 节）硬性要求 MONO8 输入，这个转换在消费点
+// （apps/replay_demo）而不是录制点（record_session.py）做，颜色信息不在采集时就丢弃。
+std::optional<ImageFrame> ConvertToMono8(const ImageFrame& frame);
 ```
 
 `PayloadTraits<T>` 模板是 `MeasurementEvidence` oneof 的类型安全访问点：没有通用
@@ -901,26 +916,129 @@ cross-modal geometry → probabilistic fusion → simulation/evaluation → mapp
 把稠密深度接成 factor 是一个量级更大、需要新残差模型和信息量标定的工作，不在这次改动
 范围内，也不应该被理解成"顺手就能做"的后续小任务。
 
-**两个真实跑出来的结果，都是如实记录，没有为了好看去调参数**：
+**两个真实跑出来的结果，都是如实记录，没有为了好看去调参数**（本次复核在当前 HEAD
+`f285e0d` 重新实跑过一遍，数字比 26c8b26 刚接线时的记录小了不少——原因见下方注解，
+不是这次复核引入的新问题）：
 
 1. `configs/experiment/synthetic_smoke.yaml`（既有场景，逐字节未改）：
    `acoustic-optic: 12 keyframes with camera data, 0 accepted, 0 ambiguous, 0 conflict,
-   12 rejected, 3424176 map evidence points added`，`ATE: rmse=0.213m`（跟改动前 README
-   记录的 ~0.15-0.21m 区间一致，证明位姿图确实没受影响）。0 accepted 不是 bug——直接算过：
-   这个场景的三个目标在整条轨迹上没有一帧的方位角落在相机窄视场（半 FOV ≈0.65 rad）内，
-   只在声呐的宽视场（半 FOV 3.0 rad）里，真实几何决定的，不调整既有 scenario 去凑一个
-   "看起来更好"的数字。即便如此，342 万个稠密立体点仍然被正确地当 `OPTICAL_ONLY` 贡献
-   存进了 submap——这本身就是这次集成的真实产出，不是"什么都没发生"。
+   12 rejected, 3418897 map evidence points added`，`ATE: rmse=0.0666m`。0 accepted 不是
+   bug——直接算过：这个场景的三个目标在整条轨迹上没有一帧的方位角落在相机窄视场（半 FOV
+   ≈0.65 rad）内，只在声呐的宽视场（半 FOV 3.0 rad）里，真实几何决定的，不调整既有
+   scenario 去凑一个"看起来更好"的数字。即便如此，342 万个稠密立体点仍然被正确地当
+   `OPTICAL_ONLY` 贡献存进了 submap——这本身就是这次集成的真实产出，不是"什么都没发生"。
 2. 新增、独立于上面那个的 `configs/experiment/acoustic_optic_demo.yaml`
    （`configs/scenario/acoustic_optic_demo.yaml` 只有一个目标，放在 kf0 相机正前方，
-   两个视场都能看到）：`0 accepted, 3 ambiguous, 0 conflict, 7 rejected`（另外 2 个
+   两个视场都能看到）：`0 accepted, 0 ambiguous, 0 conflict, 10 rejected`（另外 2 个
    keyframe 目标连声呐视场都出了，走 `synth_bag_gen` 既有的"frame written background-only"
-   告警路径，不是新代码的问题）。3 个 `ambiguous` 而不是 `accepted`——跟 plan 5 场景矩阵里
-   `clean_textured`/`elevation_stress` 独立发现的同一个现象（局部平坦目标相对弧采样步长
-   偏宽，天然产生多个近似并列的候选）在一个完全不同的场景（真实轨迹驱动，不是
-   `acoustic_optic_scenario_matrix` 的独立 trial）里again被验证了一次——两次独立复现，
-   更说明这是系统的真实属性，不是巧合或者 bug。`ATE: rmse=0.061m`（比默认场景更好，目标
-   更近、约束更紧）。
+   告警路径，不是新代码的问题）。`ATE: rmse=0.178m`。
+
+   > **数字为什么跟本节最初写下时不一样**：26c8b26 刚接线时这两个场景分别记录的是
+   > `rmse=0.213m`/`3424176` 个地图点 和 `3 ambiguous`/`rmse=0.061m`；本次复核实测
+   > 变成了 `rmse=0.0666m`/`3418897` 和 `0 ambiguous`/`rmse=0.178m`。根因不在声光融合
+   > 本身，而是 b2c19e1（6.13 节）
+   > 改了 `synth_bag_gen.cpp` 的 `BuildVisualLandmarks`（"按 keyframe 而不是散布在整条
+   > 轨迹上放置视觉路标"），而这个函数消费的是跟 `relative_pose_noise`/`sonar_range_noise`/
+   > `sonar_bearing_noise` 同一个种子为 42 的 `std::mt19937_64 rng`、且在它们之前调用——
+   > draw 序列一变，后面所有噪声采样全部跟着偏移，即使这两个 experiment/scenario yaml
+   > 文件本身字节未改。`acoustic_optic_demo.yaml` 场景下 `ambiguous` 从 3 降到 0 意味着
+   > 本节原先"两次独立复现同一个 DBSCAN 多候选现象"的说法不再被当前代码路径支持，
+   > 此处如实更正而不是保留一个不再成立的结论；plan 5 场景矩阵（6.10 节）本身的
+   > `clean_textured`/`elevation_stress` 结论不受影响，因为 `acoustic_optic_scenario_matrix`
+   > 是独立 trial，不经过 `synth_bag_gen` 这条共享 RNG 流。
+
+### 6.13 `include/frontends/stereo_landmark_vo_frontend.hpp`（声光系列之外：真实相对位姿 VO，b2c19e1）
+
+commit `b2c19e1` 新增，独立于第 6.1–6.12 节的声光 plan 1–6 系列，也不移植自任何
+external repo（原创实现，无需 NOTICE 条目）。目的：把 `synth_bag_gen` 写进 bag 的
+ground-truth+noise "black-box VIO" 相对位姿证据换成从左右相机帧真正算出来的相对
+位姿，供 `apps/replay_demo` 在 `estimator_mode: stereo_landmark_vo` 时消费（见
+[9.2 节](#92-appsreplay_demo--端到端主流程)）。五个新文件，全部合并进既有的
+`frontends`（`uw::frontends`）target，测试合并进既有的 `frontends` GTest
+executable（`tests/frontends/{harris_corner_detector,landmark_blob_detector,
+patch_matcher,rigid_transform_fit,stereo_landmark_vo_frontend}_test.cpp`）：
+
+- `include/frontends/landmark_blob_detector.hpp`（`LandmarkBlobDetector`）：固定阈值
+  （`intensity_threshold=140`）连通域检测——高于阈值的像素做 4-连通 flood fill，每个
+  连通域归约成质心 + 固定尺寸外观 patch（`patch_half_size=6`，从原始未阈值化图像采样）。
+  `min_blob_pixels=4`/`max_blob_pixels=400` 分别滤掉单像素噪声和大片饱和区域。原创
+  实现，是为 `synth_bag_gen.cpp` 的 `BuildVisualLandmarks` 合成高亮方块场景调的参数，
+  默认检测器（`frontends.landmark_detector` 未设置或设为 `bright_blob` 时使用）。
+- `include/frontends/harris_corner_detector.hpp`（`HarrisCornerDetector`）：Sobel 梯度
+  → 窗口化结构张量（`window_radius=2`）→ `R = det(M) - k*trace(M)^2`（`k=0.04`）→
+  相对阈值（`quality_level=0.01`，乘以本图最强响应，不是绝对量级，因为 Harris 响应
+  单位是梯度的 4 次方，不同曝光/内容下没有固定意义的绝对刻度）→ 非极大值抑制
+  （`nms_radius=5` 邻域内只留最强响应）→ 按响应强度取前 `max_corners=60` 个。输出复用
+  `LandmarkBlobDetector` 同一个 `LandmarkBlob` 类型（`pixel_count` 对点特征无意义，
+  恒为 1，只是为了跟 `PatchMatcher`/`StereoLandmarkVoFrontend` 共用一套下游类型）。
+  是给真实相机画面用的检测器——没有理由假设真实场景里存在孤立高亮色块，通过
+  `frontends.landmark_detector: harris_corner` 选择。原创实现，同 `dbscan.hpp`/
+  `landmark_blob_detector.hpp` 一样的先例（见 NOTICE）。
+- `include/frontends/patch_matcher.hpp`（`PatchMatcher`）：在两组 `LandmarkBlob` 的
+  外观 patch 之间做贪心最优匹配，用归一化互相关（NCC，`min_ncc_score=0.6` 阈值）——
+  纯外观匹配，不看位置。确定性：所有候选对按固定 `(a-index, b-index)` 顺序打分一次，
+  然后反复取当前剩余候选里分数最高的一对（打平按 index 顺序），直到没有候选
+  ≥ `min_ncc_score` 或一侧耗尽为止，不依赖 hash/map 迭代顺序。`StereoLandmarkVoFrontend`
+  用同一个类做两种匹配：立体（左右目）和时序（上一帧左目 vs 当前帧左目）。**注意跟
+  6.7 节 `block_matcher.hpp` 的 `BlockMatcher` 区分**：`BlockMatcher` 是逐像素固定窗口
+  SAD 稠密视差搜索（`StereoOpticalDepthFrontend` 用），`PatchMatcher` 是离散路标之间的
+  NCC 匹配（`StereoLandmarkVoFrontend` 用）——两个名字相近但是两套独立实现，`block_matcher`
+  预先于 b2c19e1 就存在，不是这次新增的。
+- `include/frontends/rigid_transform_fit.hpp`（`FitRigidTransform`/
+  `FitRigidTransformRansac`）：`FitRigidTransform` 是闭式 Kabsch/Procrustes SVD 解，
+  求 `T` 使 `Σ||b[i] - T.Apply(a[i])||²` 最小，至少需要 3 个点，SVD 不收敛或点数不足时
+  返回 `std::nullopt` 而不是给一个数值垃圾的变换。`FitRigidTransformRansac` 是它的
+  RANSAC 鲁棒化版本：反复从对应点里随机采样 3 点拟合候选变换，用
+  `inlier_threshold_m=0.3` 统计每个候选能解释多少全体对应点，保留最优候选的 inlier
+  集合后再对整个 inlier 集合做一次 `FitRigidTransform` 精修（标准 RANSAC 流程）；
+  `max_iterations=200`，最优候选 inlier 数不足 `min_inliers=3` 时整体返回
+  `std::nullopt`；恰好 3 个点时直接退化成 `FitRigidTransform`（没什么可鲁棒化的）。
+  要求调用方传入一个显式播种、构造后不再重新播种的 `std::mt19937_64&`（CLAUDE.md 的
+  RNG 纪律/确定性回放测试的直接要求），`StereoLandmarkVoFrontend` 在构造时用
+  `params.rng_seed`（默认 12345）播种一个自己的实例专用 RNG，正是为此。
+- `include/frontends/stereo_landmark_vo_frontend.hpp`
+  （`StereoLandmarkVoFrontend : VisualOdometryFrontend`）：有状态（跨 `Process()` 调用
+  保存上一帧三角化出的路标：3D 点 + 外观 patch），流程：① 用 `params_.detector_kind`
+  选定的检测器（默认 `bright_blob`）分别检测左右图路标 ② `PatchMatcher`（`stereo_matcher`
+  参数）做左右目匹配，视差 `disparity = left.centroid_u - right.centroid_u`，
+  `disparity < min_disparity_px`（默认 1.0，跟 `BlockMatcher` 同一个约定：视差 0 意味着
+  无穷远）的匹配丢弃，用跟 `StereoOpticalDepthFrontend` 一样的公式
+  `depth_m = fx·baseline/disparity` 反投影出相机系 3D 点 ③ 首帧（没有"上一帧"）直接
+  返回 `std::nullopt` ④ 非首帧：`PatchMatcher`（`temporal_matcher` 参数）把当前帧路标
+  和上一帧路标再做一次外观匹配（真实前端没有任何外部给的路标 id，只能靠外观重新
+  关联），少于 `min_landmarks_for_pose`（默认 3）对匹配则放弃这一帧 ⑤
+  `FitRigidTransformRansac(current, previous, ransac, rng_)` 拟合两组三角化点之间的
+  刚体变换，失败（RANSAC 内点不足/SVD 不收敛）则放弃 ⑥ 相机光学系变换转体坐标系
+  变换（见下方"踩过的坑"）⑦ 包装成 `RelativePoseMeasurement`
+  （`from_keyframe`=上一帧 id，`to_keyframe`=当前帧 `ImageFrame.header.observation_id`），
+  经 `MakeEvidence(..., "stereo_landmark_vo_frontend_v1")` 返回。硬性前提：两张图必须都是
+  `MONO8`（`ConvertToMono8`，见第 8.1 节新增内容）、尺寸一致，`bundle.secondary` 缺失或
+  `StereoGeometry::Resolve` 失败（同 6.7 节的纯平移基线假设）直接拒绝整个 bundle。
+  `Health()`：`frames_processed_>0 && frames_rejected_==frames_processed_` 时报告
+  `STATUS_SUSPECT`，否则 `STATUS_HEALTHY`。
+
+**camera-optical vs. body 坐标系混淆 bug（实跑 demo 才发现，单元测试测不出来）**：
+`FitRigidTransformRansac` 返回的变换是在左相机的**光学系**（`PinholeCamera::Project`/
+`Unproject` 的约定）里算出来的，但 `RelativePoseMeasurement.relative_pose`（
+`RelativePoseFactorBuilder`、`PoseGraphProblem` 的 keyframe 位姿、`synth_bag_gen` 的
+真值生成器）在管线其余各处全部按**body 系**语义消费。`src/frontends/
+stereo_landmark_vo_frontend.cpp`（约 150–171 行）用 rig 的 camera→body 外参对光学系
+变换做共轭：`body_T_camera_optical * cam_from_T_cam_to * body_T_camera_optical⁻¹`
+（外参在两个 keyframe 上是同一个固定标定值，所以这个共轭在数学上是精确的，不是近似）。
+漏掉这一步是真实踩过的坑：本模块自己的单元测试测不出来（测试直接在"相机系"里构造
+合成点，从不构造 body/optical 不一致的场景），平移量级看起来是对的（约 1m/step，
+匹配真实每步位移），但几乎全部落在光学系 z 轴（前向）而不是载具实际运动的 body
+x/y 平面——一个纯旋转误差，量级上不可见，一旦复合进位姿图就是灾难性的：修复前
+ATE 卡在 6.67m 不收敛，修复后收敛到 0.061m（跟 `black_box_vio` 同量级）。
+
+**已验证的运行结果**：`configs/experiment/synthetic_smoke_vo.yaml`（跟
+`synthetic_smoke.yaml` 基本一样，关键差别是 `estimator_mode: stereo_landmark_vo`，
+见第 11 节）本次复核实跑：`stereo_landmark_vo_frontend: computed relative-pose evidence from camera
+frames`，`added 10 relative-pose factors, 11 keyframes`（比 `black_box_vio` 路径少
+一个——首帧没有"上一帧"可比，`Process()` 对 kf0 恒返回 `std::nullopt`，`kf0` 因此
+从未通过这条路径被 `AddKeyframe` 过第二次，其余 11 个 keyframe 各产生一条相对位姿
+证据），`solver: 7 iterations, cost 65.9557 -> 9.3534 (converged)`，
+`ATE: rmse=0.060835m mean=0.0543098m max=0.0925716m`。
 
 ---
 
@@ -1161,9 +1279,44 @@ C++ 侧读不出来。这保证了 Python 写的 bag 能被 `replay_demo` 零转
   播种的 `numpy.random.Generator`（不做全局 `np.random.seed()` 中途重新播种，
   这是修复 `ocean_t` 一个确定性 bug 的直接产物：`svin2_pipeline.py` 每帧不带
   参数调 `np.random.seed()`，破坏了 L2 回放确定性）。`apply_randomization()`
-  是 `NotImplementedError`，明确未完成，等真机 HoloOcean 环境再补。本机没有
-  HoloOcean/Unreal 安装，`HoloOceanSession` 本身未被真实跑过，包里其余部分都
-  有测试覆盖。
+  是 `NotImplementedError`，明确未完成，等真机 HoloOcean 环境再补。
+  **更新（`b2c19e1`）**：本机（本仓库所在的开发沙箱）依然没有 HoloOcean/Unreal
+  安装；但项目里另一台机器（同事 pengb 的原生 Windows，WSL2 因缺少 Vulkan
+  光线追踪支持没法渲染）已经真实装了 HoloOcean 2.3.0 并跑过。那次真实运行（一部分
+  通过一个一次性脚本、一部分通过 `record_session.py` 的首次真实录制尝试）发现并
+  修掉了 `HoloOceanSession` 里 4 个真实 bug（`step()` 误把 `env.tick(action)` 当成
+  应用动作的调用，应该是 `env.step(action)`；`__init__` 从没调用 `env.reset()`，
+  HoloOcean 要求首次 tick/step 前必须 reset；`step()` 读了不存在的公开属性
+  `env.ticks_per_sec`，只能读私有的 `env._ticks_per_sec`；`close()` 调用了不存在的
+  `env.close()`，`HoloOceanEnvironment` 只通过上下文管理器协议
+  `__exit__(None,None,None)` 暴露清理逻辑）。模块自己的文档字符串对状态给出的评价
+  很诚实："fixed against known issues, not yet proven"——这个类本身还没有被完整
+  端到端跑通验证过一次，只是这几个具体 bug 有真实复现+修复的记录，不代表已经
+  被证明可靠。本仓库这次复核未重新验证（本机仍没有 HoloOcean 环境），只核对了
+  代码和该文档字符串的一致性。
+- `camera_conversion.py`（`b2c19e1` 新增）：`holoocean_camera_to_image_frame()`，把
+  HoloOcean `RGBCamera` 的一次读数转成 canonical `uw.domain.ImageFrame`。通道顺序
+  是实测确认的，不是照抄 HoloOcean 官方文档——文档写的是 RGBA，但对着真实 HoloOcean
+  2.3.0（`OpenWater-HoveringCamera` 场景，原生 Windows）抓一帧、把前三通道原样看
+  和反转后看对比：不反转是一片看起来不对的琥珀/橙色，反转后是物理正确的蓝色水下
+  场景（沙地、珊瑚、沉船）——所以实际运行时是 BGR(A)，转换时丢弃可能存在的 alpha
+  通道，反转前三通道，输出 `IMAGE_ENCODING_RGB8`。
+- `state_conversion.py`（`b2c19e1` 新增）：`pose_sensor_to_state_snapshot()`
+  （`PoseSensor` 读数 → `/gt/state` 的 `StateSnapshot`，明确是仿真真值不是估计）、
+  `depth_sensor_to_evidence()`（`DepthSensor` 读数 → `/evidence/depth` 的
+  `MeasurementEvidence`，跟 `synth_bag_gen` 一样的 positive-down 深度约定，
+  `depth_m` 由下游取负号消费，例如 `replay_demo` 的 `kf0_z = -depth_m`）。
+- `record_session.py`（`b2c19e1` 新增）：`apps/synth_bag_gen.cpp` 的真实传感器
+  对应物，把 `HoloOceanSession` + `camera_conversion` + `state_conversion` +
+  `CanonicalMcapWriter` 接成一个能跑的录制入口（`python -m
+  uw_holoocean_adapter.record_session --out bag.mcap`）。只在相机传感器实际发布的
+  tick 上写一个 keyframe（相机以自己配置的 Hz 运行，比仿真 tick 率慢），非相机 tick
+  照常 step 但不产出任何 bag 消息——跟 `synth_bag_gen` 把每条消息都挂到一个 keyframe
+  上而不是挂到裸 tick 上是同一个约定。`record_frames()` 是可测的核心（吃手写的
+  `RawSensorFrame` 序列，不需要真实 HoloOcean 安装），`record_session()` 包一层真实
+  `HoloOceanSession` 供 CLI 用。按 MEMORY 记录，已经在真机上录制过一次 78MB 的真实
+  bag（真实相机帧转换正常，`HarrisCornerDetector` 能在真实画面上找到足够多的真实
+  角点）——这次复核未重新验证这份 bag，只核对了转换代码本身。
 - `canonical_writer.py`：见 [7.5 节](#75-mcap-io-封装-mcap_iohpp)。
 - `scenario_randomization.py`：类型化、可采样的 `ScenarioRandomization`
   dataclass（嵌套 `VisualDegradation`/`SonarDegradation`/
@@ -1179,8 +1332,14 @@ C++ 侧读不出来。这保证了 Python 写的 bag 能被 `replay_demo` 零转
 
 依赖（`pyproject.toml`）：`protobuf>=4.21`、`mcap>=1.0`、`numpy>=1.24`，`pytest`
 是 dev extra，`holoocean` 是可选 extra（保证没装 HoloOcean 的机器也能装/测其余
-部分）。9 个测试覆盖 `coordinates`/`canonical_writer`/`scenario_randomization`，
-`HoloOceanSession` 本身因缺少仿真环境未被测试覆盖。
+部分）。本次复核实跑
+`cd adapters/holoocean && pip install -e ".[dev]" && pytest tests -q`：25 个测试
+全过，覆盖 `coordinates`/`canonical_writer`/`scenario_randomization`/
+`camera_conversion`/`state_conversion`/`record_session`（后三个是 `b2c19e1` 新增，
+`record_session` 的测试跑的是不需要真实 HoloOcean 安装的 `record_frames()`）——
+`adapters/holoocean/README.md` 里若仍写着旧的 "9/9 passing"，那是没跟上这次新增
+测试的过时数字。`HoloOceanSession` 本身仍然没有一个针对它自己（而不是它调用的
+转换函数）的自动化测试，因为需要真实仿真环境；见上面 `holoocean_driver.py` 条目。
 
 ### 8.2 `adapters/ros2` —— `UW_BUILD_ROS2` 开关保护
 
@@ -1297,6 +1456,22 @@ range/bearing 各加噪声后调 `BuildSyntheticSonarFrame`：固定传感器几
 xyz）。只依赖 `uw::domain`/`uw::core`/`uw::runtime`，不依赖
 `uw::estimation`，纯数据合成。
 
+相机（`/raw/camera/left`、`/raw/camera/right`，`uw.domain.ImageFrame`，`MONO8`）：
+只在 `--experiment` 加载的 rig 带相机时才写（`config.rig.cameras_size() > 0`），
+每个 keyframe 一对，`BuildStereoPair` 用真实的每 keyframe 相机几何把
+`BuildVisualLandmarks`（`b2c19e1` 新增，`rig` 加载时才调用）撒出的视觉路标画成
+固定 640×480 灰度图上的亮块（背景 0，路标位置一个基于路标 id 的 hash 图案），
+喂给 6.13 节 `StereoLandmarkVoFrontend`/`LandmarkBlobDetector`。**`BuildVisualLandmarks`
+用的是跟 `relative_pose_noise`/`sonar_range_noise`/`sonar_bearing_noise` 同一个种子
+为 42 的 `std::mt19937_64 rng`，且在它们之前被调用**——`b2c19e1` 把这个函数从"路标
+散布在整条轨迹上"改成"按 keyframe 各自锚定"（为了让路标密度在窄视场时序匹配下
+沿全程都够用），这改变了它消费的随机数抽取次数，从而连带偏移了后面所有噪声
+采样——即使 experiment/scenario yaml 文件本身字节未改，同一个 seed 现在也会生成
+一份不同的 bag（6.12 节末尾的数字更正就是这个偏移的直接后果）。没有 `--experiment`
+或 rig 不带相机时，`BuildVisualLandmarks` 完全不被调用，相机相关代码路径不执行，
+这是 `tests/integration/determinism_test.sh`（不传 `--experiment`）能保持逐字节
+不变的前提。
+
 ### 9.2 `apps/replay_demo` —— 端到端主流程
 
 CLI：`--bag <path>`（必填）、`--experiment <yaml>`（可选）、
@@ -1322,12 +1497,24 @@ CLI：`--bag <path>`（必填）、`--experiment <yaml>`（可选）、
    `Pose3::Identity()`，但 z 用它自己真实的深度证据种下，而不是留在 0，因为一旦
    图里有深度因子，z 就不再是 gauge freedom。
 5. `PoseGraphProblem problem`；`AddKeyframe("kf0", kf0_pose, fixed=true)`。
-6. 相对位姿一遍：读 `/evidence/relative_pose`；若 `from` keyframe 已存在，
-   航位推算出 `to` 的初始猜测
-   `problem.GetKeyframePose(from) * measured_relative`，
-   `AddKeyframe(to, guess)`，用
-   `RelativePoseFactorBuilder::Build(...)`（`proposed_noise =
-   relative_pose_sqrt_info`）构建残差块，绑定 `{from, to}`。
+6. 相对位姿一遍（`b2c19e1` 起真的按 `estimator_mode` 分支，见下方"文件头注释里
+   明确列出的 v1 限制"段落的更正）：
+   - `estimator_mode == "black_box_vio"`（默认，或没传 `--experiment`）：读
+     `/evidence/relative_pose`；若 `from` keyframe 已存在，航位推算出 `to` 的初始猜测
+     `problem.GetKeyframePose(from) * measured_relative`，`AddKeyframe(to, guess)`，用
+     `RelativePoseFactorBuilder::Build(...)`（`proposed_noise = relative_pose_sqrt_info`）
+     构建残差块，绑定 `{from, to}`。
+   - `estimator_mode == "stereo_landmark_vo"` 且 `rig.has_value()`（两个条件都要满足，
+     否则回退到上面 `black_box_vio` 的分支）：改读 `/raw/camera/left,right`，按
+     `capture_time` 换算出 keyframe id（复用跟下面第 14 步声光 pass 相同的
+     `keyframe_id_for_time` lambda），按 `kf0..kfN` 顺序（不是 bag 流顺序，因为前端
+     跨调用有状态）依次喂进 6.13 节的 `StereoLandmarkVoFrontend::Process()`，两张图先经
+     `uw::domain::ConvertToMono8`（`synth_bag_gen` 写的已经是 MONO8，这里是 no-op；真实
+     HoloOcean 录制是 RGB8，这里才是真正需要转换的地方）。后续 `AddKeyframe`/`Build`/
+     `AddResidualBlock` 跟 `black_box_vio` 分支完全一样，只是 evidence 来自前端实时计算
+     而不是 bag 里预存的证据。`landmark_detector` 字段（`config.landmark_detector`，
+     yaml 里 `frontends.landmark_detector`，默认 `bright_blob`）只在这个分支下被消费，
+     选 `StereoLandmarkVoFrontendParams::detector_kind`。
 7. 声呐一遍：配置 `SonarCfarFrontend`
    （`num_training_cells=16, num_guard_cells=4, pfa=1e-2,
    detector_threshold=50`，与 `sonar_cfar_frontend_test` 的合成 fixture 参数
@@ -1360,9 +1547,15 @@ CLI：`--bag <path>`（必填）、`--experiment <yaml>`（可选）、
 
 文件头注释里明确列出的 v1 限制：没有真实的可靠性调度器（sqrt-information
 常数是固定值，不是标定出来的）；路标来自在线 submap 查询但不会作为变量联合优化，
-首次发现时还要用当前 pose 和零 elevation 初始化；只消费 top-1 声呐假设；
-分层配置驱动求解器/噪声参数，但不驱动 frontend/factor_builder/map_backend 的
-*选择*（管线写死为 `relative_pose_v1 + sonar_range_v1 + depth_v1`）。
+首次发现时还要用当前 pose 和零 elevation 初始化；只消费 top-1 声呐假设；分层配置
+驱动求解器/噪声参数，且 `estimator_mode`（`b2c19e1` 起）也真的驱动上面第 6 步
+相对位姿证据来源的分支，但 `config.sonar_frontend`（yaml 里 `frontends.sonar`）和
+`config.map_backend`（`map_backend`）仍然只被读取和打印，不驱动任何分支——声呐
+前端和地图后端管线仍然写死为 `sonar_cfar_frontend_v1` + `submap_point_cloud_v1`。
+文件头注释原文用的措辞是"experiment's frontend/estimator/map-backend selection
+fields didn't actually dispatch on anything"——`estimator_mode` 是第一个变成假话的
+字段，`frontends.sonar`/`map_backend` 这句话依然成立，参见
+[configs/README.md](../configs/README.md) 里同一个更正。
 
 链接（见 `cmake/Applications.cmake` 里 `replay_demo` 的 `target_link_libraries`）：
 `uw::domain, uw::core, uw::runtime, uw::estimation, uw::evaluation,
@@ -1420,7 +1613,12 @@ replay_demo --bag synthetic.mcap --experiment configs/experiment/synthetic_smoke
   ├─ LoadExperimentConfig（同一份 experiment yaml，同一套 defaults/rig/scenario）
   ├─ kf0 anchor：从 /evidence/depth 找 kf0 自己的深度，种 kf0 的 z
   ├─ PoseGraphProblem：AddKeyframe("kf0", fixed=true)
-  ├─ 相对位姿一遍：/evidence/relative_pose → 航位推算初值 → RelativePoseFactorBuilder
+  ├─ 相对位姿一遍：estimator_mode=black_box_vio（默认）时 /evidence/relative_pose →
+  │                航位推算初值 → RelativePoseFactorBuilder；estimator_mode=
+  │                stereo_landmark_vo 且 rig 带相机时改成 /raw/camera/left,right →
+  │                StereoLandmarkVoFrontend（6.13 节，检测+匹配+RANSAC Kabsch 拟合）→
+  │                同一个 RelativePoseFactorBuilder（见 configs/experiment/
+  │                synthetic_smoke_vo.yaml）
   ├─ 声呐一遍：/raw/sonar_frame → SonarCfarFrontend::ProcessSonarFrame（真跑 CFAR+DBSCAN）
   │              → top-1 假设 → SubmapManager 查询/发现路标 → SonarRangeFactorBuilder
   ├─ 深度一遍：/evidence/depth → DepthFactorBuilder
@@ -1431,12 +1629,19 @@ replay_demo --bag synthetic.mcap --experiment configs/experiment/synthetic_smoke
   └─ 写 demo_trajectory.tum（TUM 格式）+ demo_run_manifest.json（RunManifest）
 ```
 
-典型结果：6–7 次迭代内收敛，ATE RMSE 约 0.15–0.22 m（随 seed 波动，不是验收
-阈值）。早期约 3 cm 的结果依赖直接使用真值路标；改为在线路标发现后，声呐缺少
-elevation 且路标不参与联合优化，初始化误差会分摊到 x/y 估计。
+典型结果（`estimator_mode=black_box_vio`，本次复核在当前 HEAD `f285e0d` 实测 seed
+1/2/3/7/42/100 六个种子）：6–7 次迭代内收敛，ATE RMSE 约 0.07–0.18 m（随 seed 波动，
+不是验收阈值；默认 seed=42 的 `configs/scenario/synthetic_smoke.yaml` 本身实测
+rmse=0.0666m）。早期约 3 cm 的结果依赖直接使用真值路标；改为在线路标发现后，声呐
+缺少 elevation 且路标不参与联合优化，初始化误差会分摊到 x/y 估计。`estimator_mode=
+stereo_landmark_vo`（`configs/experiment/synthetic_smoke_vo.yaml`，见 6.13 节）
+实测 7 次迭代收敛，`ATE rmse=0.060835m`——量级上不比 `black_box_vio` 差，尽管相对
+位姿证据是真算出来的、不是从 bag 里读预先造好的证据。
 `tests/integration/determinism_test.sh` 就是把这整条流程跑两遍、diff
 `_trajectory.tum`，验证其中没有藏着全局可变随机状态（见
-[第 12 节](#12-测试体系-tests)）。
+[第 12 节](#12-测试体系-tests)）——它不传 `--experiment`，所以只覆盖
+`estimator_mode=black_box_vio` 这条默认路径，`stereo_landmark_vo` 分支目前没有
+专门的确定性回归测试。
 
 ---
 
@@ -1525,11 +1730,29 @@ output:
   write_run_manifest: true
 ```
 
-四层消费程度总结（README 已有，这里复述一遍方便对照代码）：`defaults` 完整接入
-`replay_demo`；`rig` 在两个 app 里已经消费——加载了带相机的 rig 时驱动 6.12 节的声光
-融合分支，没有相机（或没传 `--experiment`）时两个 app 行为逐字节不变；`scenario`
-完整接入 `synth_bag_gen`；`experiment` 里选算法变体的字段（`frontends.optical`/
-`frontends.sonar` 之外的其余字段）只读取打印，不驱动分支。
+`configs/experiment/synthetic_smoke_vo.yaml`（`b2c19e1` 新增，见 6.13 节）：跟上面
+`synthetic_smoke.yaml` 基本一样（`rig`/`scenario`/`defaults`/`factor_builders`/
+`map_backend`/`output` 全同），差别只有两处：多了一行 `frontends.optical:
+stereo_depth_frontend_v1`（跟 `frontends.sonar` 一样只读取打印，不驱动分支），
+以及把 `estimator_mode` 换成 `stereo_landmark_vo`，用来触发 `apps/replay_demo` 里
+真正会分支的那条路径。
+
+四层消费程度总结（`configs/README.md` 已有，这里复述一遍方便对照代码）：`defaults`
+完整接入 `replay_demo`；`rig` 在两个 app 里已经消费——加载了带相机的 rig 时驱动
+6.12 节的声光融合分支（以及 6.13 节 `stereo_landmark_vo` 分支，如果 `estimator_mode`
+也选了它），没有相机（或没传 `--experiment`）时两个 app 行为逐字节不变；`scenario`
+完整接入 `synth_bag_gen`；`experiment` 里选算法变体的字段（`frontends`/
+`estimator_mode`/`map_backend`）大多只被读取和打印——`frontends.optical` 对应一个
+真实实现（`StereoOpticalDepthFrontend`），但这个字段本身并不驱动 `replay_demo`/
+`synth_bag_gen` 的分支，两个 app 是否跑声光融合流水线看的是 rig 有没有相机，不是
+读这个字符串去选择实现；`frontends.sonar`/`map_backend` 同样只读取打印，管线仍
+写死为 `sonar_cfar_frontend_v1`/`submap_point_cloud_v1`。**一个例外**：`b2c19e1`
+起，`apps/replay_demo` 真的会按 `estimator_mode` 分支（`stereo_landmark_vo` 需要
+`rig` 带相机，用 6.13 节的 `StereoLandmarkVoFrontend` 从相机帧实时算相对位姿，
+见 `configs/experiment/synthetic_smoke_vo.yaml`）；**同一分支下的第二个例外**：
+`frontends.landmark_detector`（`bright_blob`/`harris_corner`）也真的会被消费，选
+`StereoLandmarkVoFrontend` 内部用哪个 landmark 检测器，但只在 `estimator_mode ==
+stereo_landmark_vo` 时才读取。
 
 ---
 
@@ -1578,6 +1801,7 @@ diff -q "$WORKDIR/run1_trajectory.tum" "$WORKDIR/run2_trajectory.tum"
 | `factor_builders`（depth） | 残差公式与雅可比模式 |
 | `estimation` | 三 keyframe 链收敛到真值（用真实 factor_builders，不是 test double） |
 | `frontends`（sonar_cfar_frontend） | 合成声呐图上的 CFAR+DBSCAN（构造数据，非 fixture 文件） |
+| `frontends`（harris_corner_detector/landmark_blob_detector/patch_matcher/rigid_transform_fit/stereo_landmark_vo_frontend，6.13 节） | 手造图像/点集：检测器的 NMS/阈值行为、`PatchMatcher` 的确定性贪心匹配、`FitRigidTransformRansac` 对已知刚体变换+离群点的恢复、`StereoLandmarkVoFrontend` 端到端的证据产出（不包含真实相机图像） |
 | `mapping`（submap_manager） | `TRANSFORM_ONLY` vs `FULL_REFUSE` 的 stale 行为 |
 | `runtime`（config） | 直接读真实 `configs/experiment/synthetic_smoke.yaml` 逐字段断言 |
 | `runtime`（mcap_io） | protobuf 消息经 MCAP 写入/读回的 round-trip |
@@ -1700,9 +1924,29 @@ build-essential`，60s 超时专门用来探测卡住/被限速的镜像（对�
   `SonarFrontend`/`replay_demo` 下游，它是纯传输层。`ros2_adapters (uw::ros2_adapters)` 是全
   注释骨架，从未编译。
 - `--experiment` 目前完整接入 `defaults`/`scenario`（分别驱动求解器参数和
-  `synth_bag_gen`），`rig` 完整加载但两个 app 都不消费，`experiment` 层里
-  `frontends`/`estimator_mode`/`map_backend` 只读取打印，不驱动分支，两个 app
-  各自只有一条写死的固定管线。
+  `synth_bag_gen`）；`rig` 在两个 app 里都已被消费，但只在"有没有相机"这个粗粒度
+  上——加载了带相机的 rig 会打开 6.12 节的声光融合 pass 和（如果 `estimator_mode`
+  也选了）6.13 节的 `stereo_landmark_vo` 分支，没有相机（或没传 `--experiment`）
+  时行为逐字节不变；`rig` 里更细的字段（`imu_noise`、`sonar_beam_models` 的具体
+  数值等）目前没有被这两个 app 用到。`experiment` 层里 `frontends.sonar`/
+  `map_backend` 仍然只读取打印，不驱动分支，声呐前端/地图后端管线仍写死为
+  `sonar_cfar_frontend_v1`/`submap_point_cloud_v1`；`estimator_mode`
+  是**唯一**真的驱动分支的字段（`b2c19e1` 起，见 9.2/6.13 节），选
+  `stereo_landmark_vo` 且 rig 带相机时把相对位姿证据来源从 bag 里的
+  `/evidence/relative_pose` 换成 `StereoLandmarkVoFrontend` 实时计算的结果；
+  `frontends.landmark_detector` 只在这个分支下被消费，选具体用哪个路标检测器。
+- `StereoLandmarkVoFrontend`（6.13 节）验证方式跟仓库其余部分不太一样：单元测试
+  用手造的合成点/图像，`configs/experiment/synthetic_smoke_vo.yaml` 在
+  `synth_bag_gen` 的合成场景上实测收敛（ATE 0.061m），但 `determinism_test.sh` 不传
+  `--experiment`，所以这条分支没有专门的确定性回归测试；在真实 HoloOcean 录制的
+  bag（`record_session.py`）上还没有跑过完整的 `replay_demo`（只验证过
+  `HarrisCornerDetector` 在真实画面上能找到角点，见第 8.1 节），端到端在真实数据上
+  是否收敛未知。
+- `adapters/holoocean` 的 `HoloOceanSession`（`holoocean_driver.py`）本身仍然没有
+  被完整驱动过一次并证明可靠——`b2c19e1` 修的 4 个 bug 是真实运行中发现的，但模块
+  自己的文档字符串明确写"fixed against known issues, not yet proven"；本仓库
+  开发沙箱机器没有 HoloOcean/Unreal 安装，这条路径只在同事的原生 Windows 机器上
+  跑过。
 - `runtime/bounded_queue.hpp`/`state_machines.hpp` 的原语已经实现，但没有任何
   app 真正实例化四车道队列或驱动状态机转换，这层运行时基础设施是"已搭、未接线"。
 - 求解器是 Eigen 手写 LM，不是 Ceres/GTSAM（架构第 20 节延后决策），且直接在原始
