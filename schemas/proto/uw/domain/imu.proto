@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+package uw.domain;
+
+import "uw/domain/observation.proto";
+
+// Raw IMU sample: one accelerometer + gyroscope tick, following the same
+// "raw sensor frame" pattern as ImageFrame (image.proto) and SonarFrame
+// (sonar.proto) — header first, then the physical reading, nothing
+// pre-processed. Distinct from ImuPreintegrationMeasurement
+// (measurement.proto): that message is a FRONTEND-PRODUCED preintegrated
+// summary between two keyframes (delta pose/velocity/covariance/bias) —
+// this message is the raw, unprocessed per-tick reading a preintegration
+// frontend would consume to build that summary. No such frontend exists in
+// this repo yet (see docs/uw-slam-production-readiness-and-roadmap-
+// 2026-08-21.md P1/P2); this message exists so a real IMU stream can be
+// recorded now and consumed once one does.
+//
+// Field provenance: shape matches HoloOcean's IMUSensor output
+// (holoocean.sensors.IMUSensor — a 2D array of
+// [accel_xyz, angular_velocity_xyz, (optional) accel_bias_xyz, (optional)
+// angular_velocity_bias_xyz], accel in m/s^2, angular velocity in rad/s;
+// the bias rows are only emitted when that sensor's own `ReturnBias`
+// config option is set).
+message ImuSample {
+  ObservationHeader header = 1;
+
+  // Linear acceleration, m/s^2, in the sensor's own frame (header.
+  // sensor_frame) — includes gravity (NOT gravity-compensated), matching
+  // HoloOcean IMUSensor's raw output convention. 3 entries [x, y, z].
+  repeated double linear_acceleration_mps2 = 2;
+
+  // Angular velocity, rad/s, in the sensor's own frame. 3 entries [x, y, z].
+  repeated double angular_velocity_radps = 3;
+
+  // True only when the producing sensor was configured to report its own
+  // internal bias estimate alongside the raw reading (HoloOcean IMUSensor's
+  // ReturnBias option). bias_* fields below are unset/empty and must not be
+  // read as meaningful when this is false.
+  bool has_bias = 4;
+  repeated double bias_linear_acceleration_mps2 = 5;   // 3 entries, same units as above
+  repeated double bias_angular_velocity_radps = 6;     // 3 entries, same units as above
+}

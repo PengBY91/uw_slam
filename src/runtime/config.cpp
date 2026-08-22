@@ -242,4 +242,37 @@ ExperimentConfig LoadExperimentConfig(const std::string& path) {
   return config;
 }
 
+std::optional<std::string> ValidateExperimentConfigSelections(const ExperimentConfig& config) {
+  // Known-good identifiers, one per field, matching the single
+  // implementation each currently has: the algorithm_version literals
+  // written by src/frontends/sonar_cfar_frontend.cpp and
+  // src/frontends/stereo_optical_depth_frontend.cpp, and SubmapManager
+  // (the only MapEvidence consumer — always MAP_REPRESENTATION_POINT_CLOUD).
+  // estimator_mode and landmark_detector are genuinely dispatched on in
+  // apps/replay_demo.cpp; the other three fields are not dispatched (there
+  // is nothing else to switch to yet), but an unrecognized value must still
+  // fail loudly instead of the app silently running its one pipeline anyway.
+  if (config.sonar_frontend != "sonar_cfar_frontend_v1") {
+    return "unrecognized sonar_frontend '" + config.sonar_frontend +
+           "' (only sonar_cfar_frontend_v1 is implemented)";
+  }
+  if (config.optical_frontend != "stereo_depth_frontend_v1") {
+    return "unrecognized optical_frontend '" + config.optical_frontend +
+           "' (only stereo_depth_frontend_v1 is implemented)";
+  }
+  if (config.map_backend != "submap_point_cloud_v1") {
+    return "unrecognized map_backend '" + config.map_backend +
+           "' (only submap_point_cloud_v1 is implemented)";
+  }
+  if (config.estimator_mode != "black_box_vio" && config.estimator_mode != "stereo_landmark_vo") {
+    return "unrecognized estimator_mode '" + config.estimator_mode +
+           "' (must be black_box_vio or stereo_landmark_vo)";
+  }
+  if (config.landmark_detector != "bright_blob" && config.landmark_detector != "harris_corner") {
+    return "unrecognized landmark_detector '" + config.landmark_detector +
+           "' (must be bright_blob or harris_corner)";
+  }
+  return std::nullopt;
+}
+
 }  // namespace uw::runtime

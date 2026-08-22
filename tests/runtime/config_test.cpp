@@ -104,3 +104,60 @@ TEST(Config, RejectsCameraIntrinsicMatrixThatIsNotThreeByThree) {
   EXPECT_THROW(uw::runtime::LoadRigConfig(path.string()), std::runtime_error);
   std::remove(path.string().c_str());
 }
+
+TEST(Config, ValidateExperimentConfigSelectionsAcceptsDefaults) {
+  // Default-constructed ExperimentConfig must always validate — every
+  // configs/experiment/*.yaml either uses these defaults or overrides them
+  // with an equally-recognized value (see the loaded-from-file test below).
+  const uw::runtime::ExperimentConfig config;
+  EXPECT_EQ(uw::runtime::ValidateExperimentConfigSelections(config), std::nullopt);
+}
+
+TEST(Config, ValidateExperimentConfigSelectionsAcceptsRealExperimentFiles) {
+  for (const std::string name : {"synthetic_smoke.yaml", "synthetic_smoke_vo.yaml", "acoustic_optic_demo.yaml",
+                                  "real_holoocean_vo.yaml"}) {
+    const auto config =
+        uw::runtime::LoadExperimentConfig(std::string(UW_REPO_ROOT) + "/configs/experiment/" + name);
+    EXPECT_EQ(uw::runtime::ValidateExperimentConfigSelections(config), std::nullopt) << "experiment file: " << name;
+  }
+}
+
+TEST(Config, ValidateExperimentConfigSelectionsRejectsUnknownSonarFrontend) {
+  uw::runtime::ExperimentConfig config;
+  config.sonar_frontend = "does_not_exist_v1";
+  const auto error = uw::runtime::ValidateExperimentConfigSelections(config);
+  ASSERT_NE(error, std::nullopt);
+  EXPECT_NE(error->find("sonar_frontend"), std::string::npos);
+}
+
+TEST(Config, ValidateExperimentConfigSelectionsRejectsUnknownOpticalFrontend) {
+  uw::runtime::ExperimentConfig config;
+  config.optical_frontend = "does_not_exist_v1";
+  const auto error = uw::runtime::ValidateExperimentConfigSelections(config);
+  ASSERT_NE(error, std::nullopt);
+  EXPECT_NE(error->find("optical_frontend"), std::string::npos);
+}
+
+TEST(Config, ValidateExperimentConfigSelectionsRejectsUnknownMapBackend) {
+  uw::runtime::ExperimentConfig config;
+  config.map_backend = "does_not_exist_v1";
+  const auto error = uw::runtime::ValidateExperimentConfigSelections(config);
+  ASSERT_NE(error, std::nullopt);
+  EXPECT_NE(error->find("map_backend"), std::string::npos);
+}
+
+TEST(Config, ValidateExperimentConfigSelectionsRejectsUnknownEstimatorMode) {
+  uw::runtime::ExperimentConfig config;
+  config.estimator_mode = "does_not_exist";
+  const auto error = uw::runtime::ValidateExperimentConfigSelections(config);
+  ASSERT_NE(error, std::nullopt);
+  EXPECT_NE(error->find("estimator_mode"), std::string::npos);
+}
+
+TEST(Config, ValidateExperimentConfigSelectionsRejectsUnknownLandmarkDetector) {
+  uw::runtime::ExperimentConfig config;
+  config.landmark_detector = "does_not_exist";
+  const auto error = uw::runtime::ValidateExperimentConfigSelections(config);
+  ASSERT_NE(error, std::nullopt);
+  EXPECT_NE(error->find("landmark_detector"), std::string::npos);
+}

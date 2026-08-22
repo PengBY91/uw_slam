@@ -9,7 +9,7 @@
 (`docs/acoustic-optic-slam-platform-architecture-2026-08-17.md`) 的代码落地。**不是**在
 `ocean_t`/`SVIn`/`sonar_camera_reconstruction` 上小修小补，是独立重建的新仓库，
 允许把后两者的具体实现移植进来（已经移植了两处，见下）。当前是"骨架 + 每层至少
-一条真实可跑的垂直切片"阶段，不是生产系统。
+一条真实可跑的端到端链路"阶段，不是生产系统。
 
 ## 硬性规则
 
@@ -44,9 +44,10 @@
     极坐标转换 + DBSCAN 来自 `sonar_camera_reconstruction`，但**没有**移植它
     `merge.py` 里丢弃 pitch、直接烘焙到 `map` frame 的部分——前端只应输出声呐
     局部坐标系下的证据，不应该自己决定全局位姿。
-- **除非用户明确要求，不要 `git commit`**。当前仓库只做过 `git init`，历史上没有
-  任何提交；不要主动创建第一个提交。
-- Protobuf（`schemas/proto/`）是跨语言领域契约的唯一事实源。需要新字段时改
+- **除非用户明确要求，不要 `git commit`**。保留用户已有改动；提交、变基、清理
+  工作树都必须在授权范围内进行。
+- Protobuf（`schemas/proto/`）是跨语言规范化消息模型的唯一来源。需要新增跨语言
+  规范化消息字段时改
   `.proto`，不要在 C++/Python 任一侧另建一套平行 struct 去绕过它——`rig` 配置层
   直接解析进 `RigCalibrationSnapshot` protobuf 消息就是照这个原则做的。
 
@@ -57,9 +58,9 @@
 export PATH="$HOME/miniconda3/envs/uw_slam_build/bin:$PATH"
 cmake -S . -B build -DCMAKE_PREFIX_PATH="$HOME/miniconda3/envs/uw_slam_build"
 cmake --build build -j"$(nproc)"
-ctest --test-dir build --output-on-failure   # 应该全过（当前 106 个 case，随代码增长会变，实跑为准）
+ctest --test-dir build --output-on-failure   # 当前工作树 136 个 case；会变化，以实跑为准
 
-cd adapters/holoocean && pytest              # 应该全过（当前 25 个 case）
+(cd adapters/holoocean && .venv/bin/pytest -q)  # 当前 35 个 case；先按 README 安装 dev extra
 
 tools/lint/check_no_ros_in_core.sh           # 依赖不变量检查（兼容入口，实际跑 tools/lint/check_layer_dependencies.py）
 ```
@@ -77,6 +78,13 @@ build/bin/replay_demo --bag /tmp/synthetic.mcap --experiment configs/experiment/
 # 换成 configs/experiment/synthetic_smoke_vo.yaml 可以跑 estimator_mode:
 # stereo_landmark_vo 变体（相对位姿从左右相机帧实时算，而不是从桩读取），
 # ATE 量级相当。
+```
+
+`integration.acoustic_optic_scenario_matrix_determinism` 不只比较同 seed 输出：它也保留
+矩阵程序第一次运行的退出码，因此最低有效覆盖 gate 失败会让 CTest 失败。可单独运行：
+
+```bash
+ctest --test-dir build -R integration.acoustic_optic_scenario_matrix_determinism --output-on-failure
 ```
 
 ## 代码约定
@@ -102,6 +110,13 @@ build/bin/replay_demo --bag /tmp/synthetic.mcap --experiment configs/experiment/
   `include/runtime/config.hpp`）：`experiment/*.yaml` 里的 `rig`/
   `scenario`/`defaults` 三个 key 是相对 `configs/` 目录（不是相对 experiment 文件
   自己所在目录）写的路径，加新 experiment 文件时注意这一点。
+- `PressureDepthMeasurement.depth_m` 是**正向下**的水深量；仓库 world/body frame 是
+  Z-up，所以位姿 z 使用 `-depth_m`。`OpticalDepthPriorMeasurement`、
+  `FusedDepthMeasurement` 和关联记录中的 `depth_m` 则是相机 optical frame 的
+  **正向前**距离。字段同名但坐标与符号语义不同，不要直接混用。
+- `ValidateExperimentConfigSelections()` 会拒绝未知的 frontend/map backend/estimator/
+  detector 标识符。`estimator_mode` 和 `landmark_detector` 已真正分支；sonar/optical
+  frontend 与 map backend 当前只有一个被接受的实现，fail-fast 不等于已有多后端切换。
 
 ## 已经踩过的坑（省得重新踩一遍)
 
@@ -113,7 +128,10 @@ build/bin/replay_demo --bag /tmp/synthetic.mcap --experiment configs/experiment/
   ——静态库链接会报 "DSO missing from command line"。`domain_proto` 已经显式
   `PUBLIC` 链接了一组 absl 组件，新增用到 protobuf 生成类型的 target 通常不需要
   再手动处理，但如果遇到类似链接错误，先检查是不是漏了某个 absl 组件而不是怀疑
-  protobuf 本身坏了。
+  protobuf 本身坏了——2026-08-22 开 `UW_COVERAGE=ON`（`--coverage` 改变链接顺序）
+  时就实测触发过一次新的缺口（`absl::log_internal_check_op` 的
+  `MakeCheckOpString`），加进 `cmake/UwProtobuf.cmake` 那份显式链接列表后修复；
+  平时不开这些少见的编译选项组合不会碰到，但说明这份列表并不能保证已经穷尽。
 - **MCAP C++ SDK 没有自己的 CMakeLists.txt**，`FetchContent_MakeAvailable` 用不了，
   要用 `FetchContent_Populate` 手动接（见 `cmake/UwMcap.cmake`）。
 - **z 轴不是规范自由度**：x/y/yaw 对"相对位姿 + 声呐 range-only"的图确实是 gauge
@@ -153,13 +171,38 @@ build/bin/replay_demo --bag /tmp/synthetic.mcap --experiment configs/experiment/
   相对位姿因子；第一版把方向搞反，单元测试全绿但实跑 demo 时 ATE 停在 6.67m 不收敛，
   修对之后降到 0.061m——这也是**实跑 demo** 而非单元测试才发现的问题，同一类坑见
   上面的 z 轴 anchor bug。
+- **声光关联的并列几何分数不必然表示两个真实假设**：近 boresight 时 elevation 对
+  bearing 无影响、对 range 只有二阶影响，同一平面上的弧采样点会合理打平。关联器只有
+  在前两名深度也不满足 `depth_agreement_sigma` 合并方差门时才返回 `AMBIGUOUS`；不要
+  删除这条深度一致性判定，也不要靠放宽 `ambiguity_margin` 让场景矩阵变绿。
+- **场景矩阵中的预期拒绝不是回归**：`time_offset_fault`、
+  `extrinsic_perturbation`、`sonar_dropout`、`optical_invalid_region` 都刻意验证
+  fail-closed/回退语义。最低有效覆盖 gate 排除这些场景；其他场景出现 0 accepted
+  才应失败。`--min-fusion-improvement-fraction` 和延迟 gate 仍是 opt-in。
+- **`camera_rectifier` 目前是有限去畸变原语，不是通用 stereo rectifier**：它支持
+  plumb-bob 0/4/5 个系数和 MONO8/RGB8/BGR8，在 `StereoGeometry` 的平行基线前提下
+  去除镜头畸变；不处理任意相机相对旋转。它尚未接入 `replay_demo`，因为对现有真实
+  bag 的双线性重采样会削弱细纹理、让 VO 跟踪从 50/50 降到 8/50，后续需要联合调参。
+- **ThreadSanitizer（`-DUW_SANITIZER=thread`）在本机沙箱里有两层坑**：(1) 不先关
+  ASLR 会直接 `FATAL: ThreadSanitizer: unexpected memory mapping`——连二进制都跑不
+  起来，跟代码无关；构建（`gtest_discover_tests` 会在构建期跑一次二进制枚举用例）
+  和运行都要套 `setarch $(uname -m) -R`。(2) 即使绕过 (1)，TSan 也会在完全单线程的
+  测试体里报 `heap-use-after-free`（比如
+  `DomainContract.ImageFrameRoundTripsWithCanonicalHeader`）——根因是这个 conda-forge
+  工具链的 `libprotobuf.so`/`libgtest.so` 是预编译的动态库，没有用
+  `-fsanitize=thread` 重新编译，TSan 看不到库内部的同步操作，会在 protobuf 自己的
+  atomic/arena 分配上报假阳性；同一段代码在 `UW_SANITIZER=address` 下（对真实
+  use-after-free 至少一样敏感）跑得干干净净，佐证了这是工具链问题不是真 bug。
+  `tools/run_quality_checks.sh` 因此只跑 `address`（ASan+UBSan）不跑 `thread`——要
+  让 TSan 真正可信，得从源码重新编译一套开 `-fsanitize=thread` 的
+  protobuf/gtest，目前没有这么做。
 
 ## 目录速查
 
 不复述 `README.md` 已有的表格，只列会话中容易忘记具体在哪的：
 
-- 领域契约 protobuf 定义：`schemas/proto/uw/domain/*.proto`
-- Pose3、声呐 beam 模型：`include/sensor_models/`
+- 规范化 Protobuf 消息定义：`schemas/proto/uw/domain/*.proto`
+- Pose3、相机/去畸变与声呐 beam 模型：`include/sensor_models/`
 - Frontend/FactorBuilder/ResidualBlock 抽象接口：`include/measurement_api/`
 - 分层配置加载：`include/runtime/config.hpp` + `src/runtime/config.cpp`
 - RunManifest：`include/runtime/run_manifest.hpp`
@@ -169,3 +212,4 @@ build/bin/replay_demo --bag /tmp/synthetic.mcap --experiment configs/experiment/
 - lint 脚本：`tools/lint/check_no_ros_in_core.sh`（兼容入口）/
   `tools/lint/check_layer_dependencies.py`（实际实现）
 - 确定性回放测试：`tests/integration/determinism_test.sh`
+- 声光场景矩阵 gate：`tests/integration/acoustic_optic_scenario_matrix_determinism_test.sh`

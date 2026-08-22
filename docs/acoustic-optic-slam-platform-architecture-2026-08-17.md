@@ -1,7 +1,7 @@
 ---
 title: 水下声光融合 SLAM 平台长期架构设计
 created: 2026-08-17
-updated: 2026-08-19
+updated: 2026-08-22
 type: engineering-design
 tags: [acoustic-optic-fusion, sonar, camera, slam, multi-modal-slam, calibration, 3d-reconstruction, deep-learning]
 status: approved-design
@@ -16,14 +16,14 @@ implementation_reference: ./uw-slam-codebase-reference-2026-08-18.md
 > [代码库参考](./uw-slam-codebase-reference-2026-08-18.md)为准。第 22 节是后续逐文件
 > 审计附录，其中对上游版本、接口和风险的修正优先于正文里的早期事实假设。
 
-> 本文定义从 HoloOcean 水下实时仿真到声光融合 SLAM、三维重建和可视化演示的长期平台架构。SVIn、`sonar_camera_reconstruction` 以及未来论文代码均作为可替换 baseline 或 adapter，不拥有平台的数据契约、状态、地图和运行时控制权。
+> 本文定义从 HoloOcean 水下实时仿真到声光融合 SLAM、三维重建和可视化演示的长期平台架构。SVIn、`sonar_camera_reconstruction` 以及未来论文代码均作为可替换 baseline 或 adapter，不拥有平台的规范化消息模型、算法接口、状态、地图和运行时控制权。
 
 > 顶层定位：以可观测性和概率状态为核心，以几何方法保证下限，以学习方法提高测量与地图上限，以分层地图隔离实时性和展示质量，以数据证据闭环支持长期迭代的研究型可部署平台。
 
 ## 核心决策摘要
 
 - 算法核心与 ROS2、仿真器和第三方消息隔离，外部系统只通过 adapter 接入。
-- Protobuf 是跨语言领域契约的唯一事实源，原始观测、证据、因子、状态和地图语义分层。
+- `schemas/proto/` 中的 Protobuf 是跨语言规范化消息模型的唯一事实源；算法的进程内接口定义于 `include/measurement_api/`。原始观测、量测结果、因子、状态和局部地图数据语义分层。
 - 几何/概率估计器拥有权威状态，学习模型只能在校准、信息上限和 Gate 约束下增强测量。
 - 地图保存局部证据及其状态版本，允许轨迹修正后重定位或重融合，而不是一次性烘焙到世界系。
 - 录制、配置、随机 seed、模型与代码版本必须可追溯，确定性回放是平台级验收面。
@@ -33,9 +33,9 @@ implementation_reference: ./uw-slam-codebase-reference-2026-08-18.md
 
 | 状态 | 架构内容 |
 |---|---|
-| 已落地垂直切片 | Protobuf 契约、ROS 无关 core、声呐 CFAR、三类因子、pose graph、SubmapManager、MCAP、分层配置、RunManifest、确定性回放与轨迹评测 |
-| 部分落地 | HoloOcean Python 数据网关、ROS2 ImagingSonar 桥接、第三方 provider 边界 |
-| 仍是目标设计 | 实时光学/VIO 前端、原生紧耦合、多路自适应 reliability cap、完整三层地图、学习模型生命周期、神经地图与真实数据闭环 |
+| 已落地端到端链路 | Protobuf 规范化消息模型、ROS 无关 core、声呐 CFAR、双目 VO/稠密深度、声光关联与后验融合、三类位姿图因子、SubmapManager、MCAP、分层配置校验、基础 RunManifest、确定性回放与 ATE；合成闭环 136 项 CTest/35 项 Python 测试全绿 |
+| 部分落地 | HoloOcean Python 录制网关和真实双目+深度+GT 离线 VO 回放（50 keyframe、对齐 ATE RMSE 0.5596 m，但 solver stalled、无 sonar/IMU/DVL）；ROS2 ImagingSonar 纯传输桥；plumb-bob same-K 去畸变原语尚未接入 replay；声光稠密局部地图数据进入 submap 但不参与位姿图；点云地图指标已有小点集 API/单测；ASan+UBSan、gcov/cppcheck 已有 CI/脚本但后两者仅报告 |
+| 仍是目标设计 | 全传感器真实数据闭环、实时 VIO/SLAM 与在线调度、原生紧耦合、多路自适应 reliability cap、正式 TSDF/surfel/occupancy 地图、RPE/地图 reference 与质量门禁、学习模型生命周期与神经地图 |
 
 ## 阅读导航
 
@@ -45,7 +45,7 @@ implementation_reference: ./uw-slam-codebase-reference-2026-08-18.md
 4. [顶层逻辑](#4-顶层逻辑数据面控制面与证据面)
 5. [模块依赖 DAG](#5-模块依赖-dag)
 6. [推荐仓库边界](#6-推荐仓库边界)
-7. [领域契约](#7-领域契约)
+7. [核心消息与接口](#7-核心消息与接口)
 8. [估计骨架与相关性治理](#8-估计骨架与相关性治理)
 9. [三层地图](#9-三层地图)
 10. [AI 模型生命周期](#10-ai-模型生命周期)
@@ -280,7 +280,7 @@ uw_slam/
 
 建议算法核心采用 C++17，以兼容 ROS2 Humble；训练、数据处理和评测使用 Python。ROS2 package 与算法 library 不强制一一对应，避免 package 数量代替真实模块化。
 
-## 7. 领域契约
+## 7. 核心消息与接口
 
 ### 7.1 ID、时间与标定
 
@@ -400,7 +400,7 @@ StateSnapshot {
 }
 ~~~
 
-系统只有一个权威 `StateStore`，采用单写多读和版本化机制。Mapping、TF、evaluation 和 visualization 都消费它，不能维护各自的“最终位姿”。真值只进入 evidence/evaluation plane。
+系统只有一个权威 `StateStore`，采用单写多读和版本化机制。Mapping、TF、evaluation 和 visualization 都消费它，不能维护各自的“最终位姿”。真值只进入证据面/评测面。
 
 ### 7.8 MapEvidence
 
@@ -418,7 +418,7 @@ MapEvidence {
 }
 ~~~
 
-第一阶段支持 stereo surface samples、sonar range/free-space evidence、local point cloud 和 semantic mask。地图证据保留局部坐标和原始观测引用，避免永久转换并固定到旧世界位姿、导致后续无法回溯。
+第一阶段支持 stereo surface samples、sonar range/free-space 局部地图证据、local point cloud 和 semantic mask。局部地图证据保留局部坐标和原始观测引用，避免永久转换并固定到旧世界位姿、导致后续无法回溯。
 
 ### 7.9 HealthReport
 
@@ -445,7 +445,7 @@ Pose/Submap Graph + Sonar + Depth
 ~~~text
 Visual tracks ──────┐
 IMU preintegration ─┼─→ Local Factor Graph
-Sonar evidence ─────┘
+声呐量测结果 ─────┘
 ~~~
 
 该模式中 SVIn 位姿只用于初始化、回退或 shadow 对比，不能作为并行强约束。配置校验器必须拒绝“黑盒 VIO factor + 同源 IMU factor + 同源 visual factor”的非法组合，除非后续显式实现相关性建模。
@@ -462,9 +462,9 @@ Sonar evidence ─────┘
 
 在线标定不是常开变量。运动激励不足或 Jacobian/Hessian 条件不支持时应冻结外参、时间偏移和声呐参数，避免估计器把环境误差吸收到标定变量。
 
-### 8.4 AI information cap
+### 8.4 学习模型信息量上限
 
-学习模型输出的 confidence 不等于概率协方差。模型建议的信息量需要经过校准和确定性上限：
+学习模型输出的 confidence 不是自动校准的协方差或信息量。模型建议的信息量需要经过校准和确定性上限：
 
 ~~~text
 final_information = min(
@@ -595,7 +595,7 @@ ROS callback 只做 adapter 转换和 bounded queue 入队。内部 time-aware s
 - IMU 短时间内不随机丢样；持续溢出触发异常；
 - camera 可丢弃非关键旧帧，但保留最近完整 stereo pair；
 - sonar 优先保留 keyframe/submap 所需帧；
-- mapping 可按策略丢低价值 evidence，并记录原因；
+- mapping 可按策略丢弃低价值局部地图数据，并记录原因；
 - state consumer 使用最新版本，不堆积历史 TF。
 
 GPU 预算等级：
@@ -613,7 +613,7 @@ GPU 预算等级：
 
 - Replay：单进程、确定性时间驱动、固定线程数；
 - Single-machine demo：sensor/recorder、localization/graph、mapping、visualization 分离，定位与建图至少进程隔离；
-- Two-host simulation：Windows 运行 HoloOcean 和 raw bridge，Linux 运行 canonical adapter、SLAM、mapping 和 evaluation。必要时先落 bag 再回放，以区分仿真、网络和算法问题。
+- Two-host simulation：Windows 运行 HoloOcean 和 raw bridge，Linux 运行规范化消息 adapter、SLAM、mapping 和 evaluation。必要时先落 bag 再回放，以区分仿真、网络和算法问题。
 
 ### 14.2 配置层级
 
@@ -635,9 +635,9 @@ Rig config 是标定唯一事实源；scenario config 记录 world、控制、�
 
 | 层级 | 内容 | 关键验收 |
 |---|---|---|
-| L0 数据契约 | 单位、frame、时间、FLS schema、跨平台转换 | 输入错误在边界被检测 |
+| L0 核心消息与接口 | 单位、frame、时间、FLS schema、跨平台转换 | 输入错误在边界被检测 |
 | L1 算法单元 | 投影、预积分、factor Jacobian、partial DoF、submap transform | 数值与解析结果在容差内 |
-| L2 确定性回放 | 同 bag/config/seed 重跑 | 关键帧、factor 决策、轨迹和 evidence 数量可重复 |
+| L2 确定性回放 | 同 bag/config/seed 重跑 | 关键帧、factor 决策、轨迹和量测结果数量可重复 |
 | L3 算法质量 | frontend、AI、trajectory、factor、map | 分层指标完整，不只 ATE/FPS |
 | L4 故障注入 | 连续浑浊、多径、丢帧、时偏、外参、错误回环、GPU 过载 | 有序降级、恢复和原因日志 |
 | L5 Sim-to-real | synthetic/real 分层 holdout | 报告 domain gap 和 claim 边界 |
@@ -660,7 +660,7 @@ CI 分为 per-commit L0/L1/小回放、nightly 全仿真与故障注入、milest
 
 ~~~text
 HoloOcean
-  → Canonical Sensor Adapter
+  → 规范化传感器适配器
   → Recorder + GT Isolation
        ├─→ VIO Adapter → RelativePoseEvidence ─────┐
        ├─→ FLS Frontend → Partial-DoF Factor ─────┤
@@ -685,7 +685,7 @@ HoloOcean
 最低交付：
 
 1. Windows/Linux sonar conformance report；
-2. camera/sonar/IMU/depth/GT 可回放 canonical bag；
+2. 统一 MCAP 录制格式可回放，并包含 camera/sonar/IMU/depth/GT；
 3. 黑盒 VIO 模式且无同源 IMU 重复融合；
 4. 至少一种 2D FLS typed measurement 和 partial-DoF factor；
 5. versioned StateStore 和 submap correction；
@@ -707,7 +707,7 @@ HoloOcean
 
 ### Gate 2：真正声学约束有效
 
-通过条件：sonar factor 在可观测维度降低退化段 drift，错误接受率、残差和消融能够解释贡献。未通过时 sonar 只用于 mapping evidence。
+通过条件：sonar factor 在可观测维度降低退化段 drift，错误接受率、残差和消融能够解释贡献。未通过时 sonar 只用于局部地图数据。
 
 ### Gate 3：原生紧耦合值得实施
 
@@ -769,7 +769,7 @@ HoloOcean
 - 2D FLS 第一种 registration 算法；
 - presentation map 是否在第一版使用 3DGS。
 
-这些延后项不改变领域契约和依赖方向，应通过 benchmark 和决策门选择，不能由单个论文仓库反向决定平台结构。
+这些延后项不改变核心消息与接口的边界，也不改变依赖方向；应通过 benchmark 和决策门选择，不能由单个论文仓库反向决定平台结构。
 
 ## 21. 架构不变量摘要
 
@@ -824,9 +824,9 @@ HoloOcean
 | 随机化维度过窄 | `water_control_panel.py` 只暴露 water_color/water_fog 两个 GUI 滑块和 4 个预设 | 远未覆盖第 11 节要求的 turbidity/attenuation/backscatter/sonar speckle/range noise/time offset/extrinsic perturbation 等维度，且不可脚本化批量生成 | 需要包装成可编程随机化 API，供 scenario config 驱动，GUI 面板保留作为人工调试工具 |
 | 简化针孔近似 | `main.py` `CAM_K` 用 `fx=fy=width/2` | 与真实标定内参不符，影响几何精度评估 | 相机内参必须来自标定快照，不使用近似值 |
 
-可直接复用（重构掉模块级全局状态后）：`CoordTransformer` 的 UE/body/world 坐标转换与 SE3 工具；`recorder.py` 的 CSV/NPY 落盘可作为 evidence-plane 录制的过渡形态，补齐 `observation_id`/`receive_time`/`clock_domain` 字段即可升级为规范化 bag 的前身。`SVIn2Backend`/`GlobalMapManager` 的滑窗 BA、边缘化先验、自适应关键帧、回环触发逻辑是有价值的算法原型，可用于验证 `FactorBuilder`/`StateStore` 契约的设计合理性，但生产实现应替换为 Ceres/GTSAM 等成熟优化库，且需去除硬编码噪声参数。
+可直接复用（重构掉模块级全局状态后）：`CoordTransformer` 的 UE/body/world 坐标转换与 SE3 工具；`recorder.py` 的 CSV/NPY 落盘可作为证据面录制的过渡形态，补齐 `observation_id`/`receive_time`/`clock_domain` 字段即可升级为统一 MCAP 录制格式的前身。`SVIn2Backend`/`GlobalMapManager` 的滑窗 BA、边缘化先验、自适应关键帧、回环触发逻辑是有价值的算法原型，可用于验证规范化消息模型到 `FactorBuilder`/`StateStore` 组件的映射是否合理，但生产实现应替换为 Ceres/GTSAM 等成熟优化库，且需去除硬编码噪声参数。
 
-### 22.4 契约字段细化：真实标定/消息字段到领域契约的映射
+### 22.4 核心消息字段细化：真实标定/消息字段到跨语言规范化消息模型的映射
 
 第 7.1 节 `RigCalibrationSnapshot` 和 7.3 节 `SonarFrame` 此前是抽象结构，现基于两个第三方仓库的真实字段补充具体映射，避免实现时重新发明字段命名：
 

@@ -1,8 +1,9 @@
-# "怎么跑"：选择 frontend/estimator/reliability policy/map backend/算力预算
+# "怎么跑"：选择 frontend/相对位姿输入模式/reliability policy/map backend/算力预算
 # （架构文档第 14.2 节）。可通过 --experiment 传给 apps/synth_bag_gen.cpp 和
-# apps/replay_demo；rig/scenario/defaults 三层已被完整加载，frontends/
-# estimator_mode/map_backend 目前只读取和打印，还没有真正驱动算法选择，见
-# configs/README.md。
+# apps/replay_demo；rig/scenario/defaults 三层已被完整加载。frontends/
+# map_backend 目前仍只对应一条固定管线（还没有第二条实现可切换），但下面这些
+# 值必须精确匹配那条实现的标识符——写错会在 replay_demo 启动时直接报错退出，
+# 不会被静默忽略；estimator_mode 选择相对位姿输入来源，见 configs/README.md。
 
 rig: rig/example_auv.yaml
 scenario: scenario/synthetic_smoke.yaml
@@ -17,7 +18,10 @@ factor_builders:
   - sonar_range_v1
   - depth_v1
 
-estimator_mode: black_box_vio     # 对应架构文档第 8.1 节；紧耦合模式需另开 experiment 文件
+# estimator_mode 是历史字段名，当前选择相对位姿输入来源，不切换求解器。
+# black_box_vio 读取 bag 中外部/预生成量测；stereo_landmark_vo 从双目图像计算量测。
+estimator_mode: black_box_vio     # 对应架构文档第 8.1 节；原生紧耦合尚未实现，不能通过此字段选择
+# map_backend 是预留的地图实现选择，目前只有 submap_point_cloud_v1。
 map_backend: submap_point_cloud_v1
 
 output:

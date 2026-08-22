@@ -13,6 +13,7 @@ add_library(core STATIC
   src/sensor_models/geometry.cpp
   src/sensor_models/sonar_beam_model.cpp
   src/sensor_models/camera_model.cpp
+  src/sensor_models/camera_rectifier.cpp
   src/sensor_models/sonar_arc_projector.cpp
 )
 add_library(uw::core ALIAS core)
@@ -66,6 +67,7 @@ uw_apply_library_defaults(estimation)
 add_library(mapping STATIC
   src/mapping/submap_manager.cpp
   src/mapping/acoustic_optic_map_bridge.cpp
+  src/mapping/surfel_map.cpp
 )
 add_library(uw::mapping ALIAS mapping)
 target_include_directories(mapping PUBLIC "${PROJECT_SOURCE_DIR}/include")
@@ -77,6 +79,7 @@ add_library(runtime STATIC
   src/runtime/mcap_io.cpp
   src/runtime/config.cpp
   src/runtime/acoustic_optic_synchronizer.cpp
+  src/runtime/bag_audit_checks.cpp
 )
 add_library(uw::runtime ALIAS runtime)
 target_include_directories(runtime PUBLIC "${PROJECT_SOURCE_DIR}/include")
@@ -89,6 +92,7 @@ add_library(evaluation STATIC
   src/evaluation/trajectory_metrics.cpp
   src/evaluation/depth_metrics.cpp
   src/evaluation/fusion_metrics.cpp
+  src/evaluation/map_metrics.cpp
 )
 add_library(uw::evaluation ALIAS evaluation)
 target_include_directories(evaluation PUBLIC "${PROJECT_SOURCE_DIR}/include")

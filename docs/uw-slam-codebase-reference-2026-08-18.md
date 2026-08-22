@@ -3,15 +3,17 @@ title: uw_slam 代码库参考文档
 type: codebase-reference
 status: current
 scope: "what the code does today, file-by-file/type-by-type — not a design proposal"
-updated: 2026-08-21
-verified_commit: f285e0d
+updated: 2026-08-22
+verified_commit: 8df083b
+verified_worktree: "2026-08-22 P1 config validation and camera_rectifier changes"
 ---
 
 # uw_slam 代码库参考文档
 
-本文是 `uw_slam` 的代码级参考文档：基于 commit `f285e0d` 逐层、逐目录、逐类型地记录当前代码库里
-实际存在的东西，真实的类名/函数签名/字段名/算法参数，以及它们如何连接成
-一条可运行的端到端管线。它的权威范围是“代码现在做什么”，不是目标架构或未来计划。
+本文是 `uw_slam` 的代码级参考文档：基于 commit `8df083b` 及 2026-08-22 当前工作树
+逐层、逐目录、逐类型地记录实际存在的类型、函数、字段、参数和数据流。工作树中的
+P1 配置校验与 `camera_rectifier` 已用干净构建验证，但尚未提交，不能当作发布基线。
+本文的权威范围是“当前代码做什么”，不是目标架构或未来计划。
 
 这份文档和仓库里已有的三份文档分工不同，互不重复：
 
@@ -29,7 +31,7 @@ verified_commit: f285e0d
 
 ## 常用任务入口
 
-- 查 Protobuf 与领域类型：[第 4 节](#4-领域契约层schemasproto)。
+- 查 Protobuf 与核心消息类型：[第 4 节](#4-跨语言规范化消息模型schemasproto)。
 - 查 core 接口和传感器模型：[第 5 节](#5-core-层)。
 - 查前端、因子、求解器和地图：[第 6 节](#6-algorithms-层)。
 - 查完整 Demo 数据流：[第 10 节](#10-端到端运行时序)。
@@ -42,7 +44,7 @@ verified_commit: f285e0d
 1. [现状速览](#1-现状速览)
 2. [架构总览：分层与依赖方向](#2-架构总览分层与依赖方向)
 3. [目录结构地图](#3-目录结构地图)
-4. [领域契约层：schemas/proto/](#4-领域契约层schemasproto)
+4. [跨语言规范化消息模型：schemas/proto/](#4-跨语言规范化消息模型schemasproto)
 5. [core/ 层](#5-core-层)
 6. [algorithms/ 层](#6-algorithms-层)
 7. [runtime/ 层](#7-runtime-层)
@@ -59,15 +61,16 @@ verified_commit: f285e0d
 
 ## 1. 现状速览
 
-骨架 + 每层至少一条真实可跑的垂直切片，106 个 CTest case、25 个 Python 测试通过，
-有一条端到端可跑的合成数据 demo（`synth_bag_gen` → `replay_demo`，通常 6–7 次迭代
-收敛，ATE RMSE 约 0.07–0.18 m，随 seed 波动且不作为验收阈值——本次复核实测 6 个
-seed 落在这个区间内）。`replay_demo` 现在有两条独立验证过的相对位姿 evidence 来源，
-由 `estimator_mode` 选择：默认 `black_box_vio`（bag 里 `synth_bag_gen` 写入的
-ground-truth+noise 黑盒证据）和 `stereo_landmark_vo`（`StereoLandmarkVoFrontend`
-从左右相机帧实时算出来的真实立体路标视觉里程计，见 6.13 节和
-[9.2 节](#92-appsreplay_demo--端到端主流程)）。不是空骨架，也不是
-生产系统，具体缺什么见第 15 节。
+骨架 + 每层至少一条真实可跑的端到端链路。2026-08-22 干净构建实跑 136/136 个 CTest、
+35/35 个 Python 测试通过；默认 `synth_bag_gen → replay_demo` 在 6 次迭代收敛，ATE
+RMSE `0.0665821 m`（12 个匹配位姿）。`estimator_mode` 是为兼容保留的历史字段名，只选择
+相对位姿量测结果来源，不选择求解器：默认 `black_box_vio` 读取 bag 里
+`synth_bag_gen` 写入的 ground-truth+noise 黑盒量测结果，`stereo_landmark_vo` 则由
+`StereoLandmarkVoFrontend` 从左右相机帧实时计算立体路标视觉里程计量测（见 6.13 节和
+[9.2 节](#92-appsreplay_demo--端到端主流程)）。后者还在一份真实 HoloOcean 双目 bag
+上完成了离线回放；两条路径最终都进入同一个 `GaussNewtonSolver`。该样本的求解器
+`stalled`、对齐 ATE RMSE `0.5596 m`，因此只能证明真实
+数据链可达，不能作为生产精度声明。不是空骨架，也不是生产系统，具体缺口见第 15 节。
 
 ---
 
@@ -83,9 +86,9 @@ core → algorithms → runtime → adapters → apps
 再用旧的 `uw/...` 手写头路径，由 `tools/lint/check_layer_dependencies.py`（
 `tools/lint/check_no_ros_in_core.sh` 是它的兼容入口，[第 14 节](#14-工具链-tools)）
 静态检查这条不变量。
-跨语言（C++/Python）领域契约的唯一事实源是 `schemas/proto/`；canonical 的录制/回放
-格式是 MCAP（未压缩，因为 C++ 构建关掉了 zstd/lz4 后端，保证 Python 写的 bag 能被
-C++ 直接读）。
+跨语言（C++/Python）规范化消息模型的唯一事实源是 `schemas/proto/`；
+`include/measurement_api/` 定义算法的 C++ 进程内接口。统一 MCAP 录制格式也用于回放
+（未压缩，因为 C++ 构建关掉了 zstd/lz4 后端，保证 Python 写的 bag 能被 C++ 直接读）。
 
 > **2026-08-21 布局重构**：C++ 源码从"每个细粒度实现一个 package"（`core/domain/`、
 > `algorithms/frontends/sonar_cfar_frontend/` 这类多层嵌套目录，各自带独立
@@ -100,9 +103,9 @@ C++ 直接读）。
 
 | 层 | 源码目录 | CMake target（`uw::` alias） | 依赖 | 作用 |
 |---|---|---|---|---|
-| `schemas/` | `schemas/proto/` | `domain_proto`（生成） | 无 | 领域消息定义（protobuf），C++/Python 绑定的共同来源 |
+| `schemas/` | `schemas/proto/` | `domain_proto`（生成） | 无 | 核心消息定义（protobuf），C++/Python 绑定的共同来源 |
 | domain | `include/domain`、`src/domain` | `domain` | `domain_proto` | 生成类型的 C++ 人体工学层（Stamp 转换、oneof payload 访问器） |
-| core（sensor_models + measurement_api） | `include/sensor_models`、`include/measurement_api`、`src/sensor_models` | `core` | `domain`, Eigen3 | `Pose3`、声呐 beam 几何、`SonarFrontend`/`FactorBuilder`/`ResidualBlock`/`*Provider` 抽象接口 |
+| core（sensor_models + measurement_api） | `include/sensor_models`、`include/measurement_api`、`src/sensor_models` | `core` | `domain`, Eigen3 | `Pose3`、相机/去畸变、声呐 beam 几何、`SonarFrontend`/`FactorBuilder`/`ResidualBlock`/`*Provider` 抽象接口 |
 | frontends（合并全部前端实现，含 CFAR、立体深度、立体 VO、声光关联/融合） | `include/frontends`、`src/frontends` | `frontends` | `core` | 声呐与光学前端 |
 | factor_builders（合并三种残差/因子构建） | `include/factor_builders`、`src/factor_builders` | `factor_builders` | `core` | 三种残差 + 雅可比 |
 | estimation | `include/estimation`、`src/estimation` | `estimation` | `core`, Eigen3 | Gauss-Newton/LM 求解器、`PoseGraphProblem`、`StateStore` |
@@ -111,18 +114,18 @@ C++ 直接读）。
 | adapters/holoocean（Python，独立包） | `adapters/holoocean/` | Python `uw_holoocean_adapter` | protobuf, mcap, numpy | 直连 HoloOcean Python API |
 | adapters/ros2（可选，`UW_BUILD_ROS2`） | `adapters/ros2/include`、`adapters/ros2/src` | `ros2_adapters`（INTERFACE）+ `holoocean_sonar_bridge_node`（可执行） | ROS2 Jazzy, `holoocean_interfaces`, `adapters` | ROS2 话题 → `SonarFrame` 的传输层桥接 |
 | adapters（合并 svin_bridge + holoocean_ros_bridge 两个无 ROS provider） | `include/adapters`、`src/adapters`（文档：`adapters/svin_bridge.md`、`adapters/holoocean_ros_bridge.md`） | `adapters` | `core` | 两个具体 provider 实现（第三个 baseline 现在是独立执行边界，见 `baselines/`） |
-| apps | `apps/synth_bag_gen.cpp`, `apps/replay_demo.cpp` 等 | 各自独立可执行文件 | 上述所有层 | 唯一目前真实跑通的端到端管线 |
-| evaluation | `include/evaluation`、`src/evaluation` | `evaluation` | `core` | ATE 轨迹指标（没有 RPE） |
+| apps | `apps/synth_bag_gen.cpp`, `apps/replay_demo.cpp` 等 | 各自独立可执行文件 | 上述所有层 | 合成生成、离线回放与评测入口 |
+| evaluation | `include/evaluation`、`src/evaluation` | `evaluation` | `core` | ATE、深度、融合和点云地图指标（没有 RPE） |
 
 ---
 
 ## 3. 目录结构地图
 
 ```
-schemas/proto/uw/domain/     12 个 .proto 文件，领域契约唯一事实源
+schemas/proto/uw/domain/     12 个 .proto 文件，跨语言规范化消息模型唯一事实源
 include/                     手写公共头文件，按角色分区（物理 uw/ 层已去掉，C++ namespace 不变）
   domain/                    domain.hpp：Stamp 助手、oneof payload 访问器模板
-  sensor_models/             Pose3、声呐 beam 几何、PinholeCamera/StereoGeometry
+  sensor_models/             Pose3、声呐 beam、PinholeCamera/StereoGeometry、camera_rectifier
   measurement_api/           Frontend/FactorBuilder/ResidualBlock/Provider 抽象（纯头文件）
   frontends/                 sonar_cfar_frontend / stereo_optical_depth_frontend /
                               stereo_landmark_vo_frontend（+ 其内部用到的 harris_corner_detector /
@@ -141,7 +144,7 @@ include/                     手写公共头文件，按角色分区（物理 uw
     run_manifest.hpp          RunManifest（一次运行的不可变记录）
     mcap_io.hpp                MCAP 读写的 protobuf 封装
     acoustic_optic_synchronizer.hpp  纯函数：capture-time 声光配对/拒绝（声光 plan 3）
-  evaluation/                trajectory_metrics / depth_metrics / fusion_metrics
+  evaluation/                trajectory_metrics / depth_metrics / fusion_metrics / map_metrics
   adapters/                  svin_bridge_local_odometry_provider、
                               holoocean_ros_bridge_sonar_frame_provider（均无 ROS2 依赖）
 src/                         对应 include/ 分区的实现（.cpp），结构镜像 include/
@@ -166,12 +169,12 @@ configs/                       defaults/rig/scenario/experiment 四层 YAML
 tests/
   core/、frontends/、factor_builders/、estimation/、mapping/、runtime/、
   evaluation/、adapters/       按架构层分组的单元测试源码
-  contracts/                   protobuf round-trip 契约测试（原 l0_contracts/）
+  contracts/                   protobuf round-trip 消息格式与接口一致性测试（原 l0_contracts/）
   integration/
     determinism_test.sh                两次跑 replay_demo 逐字节比对
     optical_baseline_smoke_test.sh     synth_stereo_gen + optical_baseline_eval 端到端阈值门禁
     acoustic_optic_scenario_matrix_determinism_test.sh
-                                        两次跑 scenario matrix 逐字节比对（延迟字段除外）
+                                        两次跑矩阵逐字节比对（延迟除外）+ 最低有效覆盖 gate
   lint/                        check_layer_dependencies_test.py
 tools/
   lint/check_no_ros_in_core.sh       依赖不变量检查（兼容入口）
@@ -193,7 +196,7 @@ cmake/
 
 ---
 
-## 4. 领域契约层：schemas/proto/
+## 4. 跨语言规范化消息模型：schemas/proto/
 
 `package uw.domain;`，proto3。11 个文件，导入关系：`time.proto`/`ids.proto` 是叶子；
 `observation.proto` 依赖两者；`sonar.proto` 依赖 `observation.proto`；
@@ -220,7 +223,7 @@ protoc 因此为每一个生成独立的 C++/Python 类，类型系统直接阻�
 `receive_time`（Stamp，capture/receive 分离，见第 8.1 节 `time_utils.py`）
 `clock_domain` `sensor_frame` `calibration_version`
 `validity`（嵌套 enum：`OK/DEGRADED/REJECTED`）`provenance`（string，core 不解析）。
-每条 raw/measurement/evidence 消息都携带一个，只在 adapter 边界产生一次，下游不
+每条原始观测、量测和量测结果消息都携带一个，只在 adapter 边界产生一次，下游不
 重新推导。
 
 ### `sonar.proto`
@@ -233,12 +236,14 @@ protoc 因此为每一个生成独立的 C++/Python 类，类型系统直接阻�
 `OculusPing`/`OculusFire`。
 
 ### `image.proto`
-`ImageFrame`：canonical camera raw observation。`header`（`ObservationHeader`，与
+`ImageFrame`：规范化相机原始观测。`header`（`ObservationHeader`，与
 `SonarFrame` 共用同一套 capture/receive time、frame、calibration version、provenance
 语义）`width` `height` `row_stride_bytes` `encoding`（嵌套 enum：`MONO8/RGB8/BGR8`）
 `pixel_data`（bytes）`is_rectified` `exposure_seconds`。每个物理相机各自发出自己的
 `ImageFrame`；左右目配对由 runtime 按 capture time 和 rig 配置重建，不通过 topic 名
-隐式推断。
+隐式推断。`is_rectified` 是 producer 的声明：合成生成器写 `true`，真实录制保留 raw
+语义。当前 stereo frontends 仍假定输入满足极线几何而不检查该 flag；
+`camera_rectifier` 能生成有限去畸变结果，但尚未接进 `replay_demo`。
 
 ### `measurement.proto` —— 带物理语义的 typed payload
 - `SonarRangeBearing`：`range_m` `bearing_rad` `range_sigma_m` `bearing_sigma_rad`
@@ -246,16 +251,20 @@ protoc 因此为每一个生成独立的 C++/Python 类，类型系统直接阻�
 - `RelativePoseMeasurement`：`from_keyframe` `to_keyframe` `relative_pose`
   （语义 `from_T_to`）`covariance_6x6_row_major`（36 个 double，顺序
   `[tx,ty,tz,rx,ry,rz]`）。
-- `PressureDepthMeasurement`：`depth_m` `sigma_m`。
+- `PressureDepthMeasurement`：`depth_m` 是正向下的水深量，world/body frame 是 Z-up，
+  因此位姿消费者用 `pose_z = -depth_m`；`sigma_m` 与该量同单位。
 - `VisualTrackMeasurement`/`SonarRegistrationMeasurement`/`ImuPreintegrationMeasurement`：
   占位消息，暂无对应的 factor_builder 消费。
 - `OpticalDepthPriorMeasurement`/`FusedDepthMeasurement`：已落地 wire contract、C++ validation
   和 C++/Python round-trip tests。`OpticalDepthPriorMeasurement` 由
   `StereoOpticalDepthFrontend`（6.7）真正产出；`FusedDepthMeasurement` 由
-  `AcousticOpticDepthFusionFrontend::Fuse`（6.9）真正产出——两者都还没被任何 app 调用。
+  `AcousticOpticDepthFusionFrontend::Fuse`（6.9）真正产出；它是融合模块，保留在
+  `frontends` 路径只是历史命名。带相机 rig 的
+  `replay_demo` 和场景矩阵都会调用。两者的 `depth_m` 都是相机 optical frame
+  z-forward 距离，不是 `PressureDepthMeasurement` 的世界水深。
 - `StereoDepthMeasurement`：保留的早期占位 payload，新代码不再以它作为通用 optical
   frontend 输出。
-- `MeasurementEvidence`：`evidence_id` `source_observations`（repeated）
+- 带来源、有效域和不确定度描述的量测结果（`MeasurementEvidence`）：`evidence_id` `source_observations`（repeated）
   `estimated_noise_scale`（**只是前端建议值，绝不是最终 information**）
   `quality_features`（map）`observable_subspace` `valid_domain`
   `algorithm_version` `model_version`，然后一个覆盖上述 9 种 payload 的 `oneof`。
@@ -275,7 +284,7 @@ protoc 因此为每一个生成独立的 C++/Python 类，类型系统直接阻�
 （single-writer/multi-reader，见 [6.5](#65-includeestimation--gauss-newtonlm-求解器)），真值永不进入这个消息。
 
 ### `map.proto`
-`MapEvidence`：`evidence_id` `keyframe_id` `state_version` `local_frame`
+保存在局部坐标系中的局部地图数据（`MapEvidence`）：`evidence_id` `keyframe_id` `state_version` `local_frame`
 `representation_type`（`POINT_CLOUD/OCCUPANCY/TSDF/SURFEL/SEMANTIC_MASK`）
 `geometry_or_occupancy`（bytes；POINT_CLOUD 时是紧凑小端 float32 xyz 三元组）
 `uncertainty` `source_observations` `reintegration_policy`（`TRANSFORM_ONLY`/
@@ -395,6 +404,29 @@ std::vector<Eigen::Vector3d> ExpandElevationFan(double range_m, double bearing_r
 // sonar_camera_reconstruction 的 get_extended_coordinates）
 ```
 
+相机模型（`camera_model.hpp`/`.cpp`）提供 `PinholeCamera`、`StereoGeometry` 和
+`SonarArcProjector` 使用的 optical-frame 几何。`StereoGeometry::Resolve()` 只接受
+朝向一致、基线可按当前约定解析的平行双目，不是通用 stereo calibration。
+
+2026-08-22 工作树新增 `camera_rectifier.hpp`/`.cpp`，已经编进 `core` 并通过 9 个
+`PlumbBobDistortionTest`/`UndistortImageTest`：
+
+```cpp
+struct PlumbBobDistortion {
+  double k1, k2, p1, p2, k3;
+  bool IsIdentity() const;
+  static std::optional<PlumbBobDistortion> FromIntrinsics(const CameraIntrinsics&);
+};
+Eigen::Vector2d ApplyPlumbBobDistortion(const PlumbBobDistortion&, const Eigen::Vector2d&);
+std::optional<ImageFrame> UndistortImage(const ImageFrame&, const CameraIntrinsics&);
+```
+
+它接受 plumb-bob 0/4/5 个系数以及 MONO8/RGB8/BGR8，按同一 K 反向 remap、双线性采样，
+非零畸变时输出 `is_rectified=true`；identity 畸变原样返回，保留原 flag。它只在平行
+rig 前提下完成镜头去畸变，不处理任意相机相对旋转。`replay_demo` 尚未调用它：对现有
+真实 bag 的实测 warp 几何正确，但纹理 Laplacian variance 下降约 43%，VO 跟踪从
+50/50 降到 8/50，需要先联合重调 Harris/matcher。
+
 ### 5.3 `include/measurement_api` —— 纯头文件，现已并入 `core`（`uw::core`）
 
 `frontend.hpp`：
@@ -425,11 +457,12 @@ class OpticalDepthFrontend {
   virtual uw::domain::HealthReport Health() const = 0;
 };
 ```
-`CameraFrameBundle` 是进程内值类型，不是新的录包消息——canonical bag 只保留独立
+`CameraFrameBundle` 是进程内值类型，不是新的录包消息——统一 MCAP 录制格式只保留独立
 `ImageFrame`，配对由 runtime 按 capture time 和 rig 配置重建。L0 contract test 里仍保留
 一个 fake stereo、一个 fake monocular metric 实现，用来验证接口没有写死双目；
 `include/frontends/stereo_optical_depth_frontend.hpp/` 现在提供了真正的
-`StereoOpticalDepthFrontend`（见 6.x 节），但它还没有被 `apps/replay_demo` 构造或调用。
+`StereoOpticalDepthFrontend`（见 6.7 节）；带相机 rig 的 `replay_demo` 会在并行声光
+pass 中构造并调用它，但其输出不会成为位姿图因子。
 
 `factor_builder.hpp`：
 ```cpp
@@ -561,7 +594,7 @@ range/bearing 端点而非地标均值，且没有 `residual = measured - comput
 `±1e-6` 中心差分，与解析雅可比逐列比对（容差 `1e-5`），并且精确断言（`EXPECT_EQ`
 而非 `NEAR`）朝向列恒为 0。
 
-Builder：`kResidualModel = "sonar_range_v1"`；要求 evidence 携带
+Builder：`kResidualModel = "sonar_range_v1"`；要求量测结果携带
 `SonarRangeBearing` 且 `context.nearby_points_W` 非空；
 `sqrt_information = proposed_noise > 0 ? proposed_noise : 1.0`，builder 信任
 已经被上游 cap 过的噪声值，不再自行判断（架构文档 8.4 节）。v1 限制：估计器
@@ -664,7 +697,7 @@ struct GaussNewtonSummary {
 
 设计原则（对应架构 7.8/9/21 节）：`MapEvidence` 始终保存在局部坐标系并引用
 源观测，插入时绝不转换并固定进全局位姿。这是对 `sonar_camera_reconstruction`
-`merge.py` 的刻意反模式（呼应 [4](#4-领域契约层schemasproto) 的 `map.proto`
+`merge.py` 的刻意反模式（呼应 [4](#4-跨语言规范化消息模型schemasproto) 的 `map.proto`
 注释）。世界系坐标是按需从 keyframe 当前已知位姿现算的。
 
 - `AddMapEvidence(evidence)`：追加到对应 keyframe 的 evidence 列表。
@@ -711,9 +744,9 @@ struct GaussNewtonSummary {
   （640x480，`fx=420`，`baseline=0.12m`）上实测 `rmse_m=0`、`coverage≈0.93`——场景是无噪声的
   单一深度平面，这证明的是几何管线本身正确，不是真实纹理下的匹配鲁棒性（那是 plan 5 的
   场景矩阵要验证的）。`uw_l2_optical_baseline_smoke_test` 把这套流程接成 CI 门禁
-  （`--max-rmse-m 0.05 --min-coverage 0.9`）。**没有改动** `synth_bag_gen`/`replay_demo`
-  本身——立体前端目前完全独立于位姿图 replay 路径，`frontends.optical` 仍只是一个配置
-  选择器，没有被 `replay_demo` 构造。
+  （`--max-rmse-m 0.05 --min-coverage 0.9`）。最初它独立于位姿图回放；当前带相机 rig
+  的 `synth_bag_gen`/`replay_demo` 也会构造它用于并行声光融合，但不会把稠密深度加成
+  新的位姿图因子。`frontends.optical` 目前只有这一种被配置校验接受的实现。
 
 ### 6.8 `include/frontends/acoustic_optic_associator.hpp`（声光 plan 3：cross-modal geometry）
 
@@ -753,17 +786,18 @@ struct GaussNewtonSummary {
   归一化残差平方和打分；**同一个像素被多个弧采样命中时会先去重**（保留最优分数）再判
   ambiguity margin——这是单元测试才发现的坑：`elevation_aperture_rad=0` 时全部
   `arc_samples` 采样会退化成同一个点，去重前会被误判成"多个互相竞争的候选"而错误标成
-  `AMBIGUOUS`。`candidate_pixel_indices`/`best_score`/`second_best_score`/`prior_depth_m`/
-  `prior_variance_m2` 都是这一层就能算出来的几何量。
-- 全部三个组件都还没被 `apps/replay_demo` 或任何新 app 调用——plan 3 只交付经过单测验证
-  的组件；plan 4（见 6.9）在这些组件之上第一次产出真正的 `FusedDepthMeasurement`，但同样
-  还没接进任何 app——端到端跑一遍看真实产物是 plan 5（scenario matrix + 评测 harness）的
-  范围。
+  `AMBIGUOUS`。几何最优两项仍落在 `ambiguity_margin` 内时，再比较两者深度差与
+  `depth_agreement_sigma * sqrt(var_a + var_b)`：深度一致说明只是同一点的冗余弧采样，
+  继续接受最优项；深度不一致才保留真正的 `AMBIGUOUS`。`candidate_pixel_indices`/
+  `best_score`/`second_best_score`/`prior_depth_m`/`prior_variance_m2` 都是这一层就能
+  算出来的几何量。
+- plan 5 场景矩阵和带相机 rig 的 `replay_demo` 现已实际调用这三个组件；plan 3/4 的
+  “只交付组件”是历史实施阶段，不再是当前接线状态。
 
 ### 6.9 `include/frontends/acoustic_optic_depth_fusion_frontend.hpp`（声光 plan 4：probabilistic fusion）
 
-第一次真正产出 `FusedDepthMeasurement`（wire evidence，不只是进程内类型）。"不能证明一致，
-就不融合"（架构文档第 9 节）：`Fuse()` 只要 optical evidence 有有效的
+第一次真正产出 `FusedDepthMeasurement`（wire 量测结果，不只是进程内类型）。"不能证明一致，
+就不融合"（架构文档第 9 节）：`Fuse()` 只要光学量测结果有有效的
 `OpticalDepthPriorMeasurement` payload，就一定返回一个完整分辨率的 `FusedDepthMeasurement`
 ——**每个像素默认 `DEPTH_CONTRIBUTION_OPTICAL_ONLY`**（optical prior 原样透传），最多有
 **一个**像素（plan 3 top-1 声呐假设选中的那个，且几何关联 `ACCEPTED`）可能被升级成
@@ -771,7 +805,7 @@ struct GaussNewtonSummary {
 实质改善、且残差通过 innovation gate；任何一步没过，那个像素照样保持 optical prior 原值，
 不是部分应用的"半融合"结果。`HypothesisSet` 为空（声呐掉线）时优雅降级成全图
 optical-only、`associations` 为空——这是文档化的正常行为，不是错误路径
-（架构文档第 10 节场景 8 sonar_dropout）。只有 optical evidence 完全没有
+（架构文档第 10 节场景 8 sonar_dropout）。只有光学量测结果完全没有
 `OpticalDepthPriorMeasurement` payload 时才返回 `std::nullopt`（没有可以融合的东西）。
 
 - `posterior_depth_optimizer.hpp`（`OptimizePosteriorDepth`）：对 plan 3 选中的那个像素，
@@ -794,9 +828,10 @@ optical-only、`associations` 为空——这是文档化的正常行为，不�
   `ACOUSTIC_OPTIC`。单元测试里用一个 boresight 退化配置（`range(d)=d`、`bearing(d)=0`
   恒成立）把整个 cost function 收敛成闭式加权最小二乘，可以直接断言优化器数值上收敛到
   手算的精确解，而不只是"往对的方向挪动了"。
-- 三个模块（plan 2 stereo frontend、plan 3 associator、plan 4 fusion）都还没被任何 app
-  调用——`apps/replay_demo` 的位姿图 loop 完全没变。plan 5（scenario matrix + 评测
-  harness）是第一个会实际调用 `Fuse()` 产出真实数据的地方。
+- 三个模块都被 plan 5 场景矩阵调用；带相机 rig 的 `replay_demo` 也会运行同一套
+  optical/sonar/fusion pass 并把点云局部地图数据交给 `SubmapManager`。后者是按 keyframe
+  索引的局部地图数据存储，不是完整的 submap 生命周期管理器。位姿图 loop 仍不消费稠密
+  深度，因此定位因子集合不会因这条并行 pass 改变。
 
 ### 6.10 `apps/acoustic_optic_scenario_matrix.cpp`（声光 plan 5：simulation/replay/evaluation）
 
@@ -830,41 +865,25 @@ plan 的退化场景是整张图均匀退化，一个"局部退化区" mask 会�
    贴上去覆盖背景"——RIGHT 因此完全由自己的坐标决定内容来源，不再依赖"用哪个视差"
    这个尚待判定的量来判定自己的坐标属于哪个区域。
 
-**修复后 20-trial/scenario 的真实结果（`--seed` 默认值下的一次跑）**，即使经过上述修复，
-数字本身仍然值得如实记录，不因为"看起来不够漂亮"就继续调参掩盖：
+**P0 复核与关联器修复（`8df083b`）**：上面两个合成器 bug 修复后，矩阵进一步暴露
+`clean_textured`/`elevation_stress` 的并列候选会被 100% 判为 `AMBIGUOUS`。根因不是
+必须保留的物理歧义：近 boresight 时 bearing 与 elevation 无关、range 只有二阶变化，
+同一平面 patch 上多个弧采样点会几何打平，但可能只是同一深度的冗余估计。
+`AcousticOpticAssociator` 现在先比较前两名 `depth_m`：在
+`depth_agreement_sigma=3.0` 倍联合标准差内一致就接受最优项，只有深度也明显不一致才
+保留 `AMBIGUOUS`。两个回归测试分别锁定同意/不同意路径；固定 seed、20 trial 下
+`clean_textured` 与 `elevation_stress` 均从 0/20 恢复到 20/20 accepted。
 
-| 场景 | accepted | ambiguous | rejected | 备注 |
-|---|---|---|---|---|
-| `clean_textured` | 0/20 | 20/20 | 0/20 | 见下方"为什么 clean 反而总是 ambiguous"说明 |
-| `low_texture_sonar_visible` | 17/20 | 0/20 | 3/20 | 噪声打破了候选间的精确并列 |
-| `turbid_sonar_visible` | 2/20 | 0/20 | 18/20 | 重噪声下大部分帧几何残差直接超 gate |
-| `repeated_structure` | 20/20 | 0/20 | 0/20 | 本次参数下没有触发预期的走样 |
-| `elevation_stress` | 0/20 | 20/20 | 0/20 | 同 clean_textured 的机制 |
-| `time_offset_fault` | — | — | — | `sync_rejected=20/20`，同步阶段整体拒绝 |
-| `extrinsic_perturbation`（+1.0m 扰动） | 0/20 | 0/20 | 20/20 | `NO_CANDIDATE`——几何残差超 gate，拒绝而非误融合 |
-| `sonar_dropout` | 0/20 | 0/20 | 0/20 | 无 association record；`fused_full_rmse==optical_full_rmse`，纯 passthrough |
-| `optical_invalid_region` | 0/20 | 0/20 | 20/20 | `NO_CANDIDATE`——目标区域整体标 invalid，没有可用像素 |
+九场景的 gate 语义必须分开理解：`time_offset_fault`、`extrinsic_perturbation`、
+`sonar_dropout`、`optical_invalid_region` 刻意构造为同步拒绝、几何 fail-closed 或
+光学回退，0 accepted 是预期结果并被最低覆盖 gate 排除；其余五个有效场景必须至少
+产生一个 accepted。`tests/integration/acoustic_optic_scenario_matrix_determinism_test.sh`
+以 `--seed 4242 --trials-per-scenario 8` 运行两次，比较去掉真实墙钟
+`p95_latency_ms` 后的输出，并保留第一次矩阵进程的退出码；coverage gate 非零会让
+CTest 失败。`--min-fusion-improvement-fraction` 已实现但仍 opt-in，校准后的质量收益、
+NLL 和真实调度器 P95 延迟门仍是后续工作。
 
-**为什么"干净"场景反而总是 `AMBIGUOUS`，而不是本来期望的 `ACCEPTED`**：这不是
-bug，是架构文档第 14 节风险表第一条列出的真实现象——弧投影在
-`elevation_aperture_rad=0.19`（真实 rig 值）、`arc_samples=16` 默认值下，采样步长
-约 5px；只要目标 patch 比这个步长宽，就会有 2-3 个弧样本落在同一块深度均匀的区域内，
-它们对同一个 sonar 读数给出几乎完全相同（噪声为零时精确相同）的残差，触发
-`ambiguity_margin` 判定为并列。反直觉但可解释的是：`low_texture`/`turbid` 这些"更难"
-的退化场景反而 `accepted` 更多——因为噪声打破了这种精确并列，让某一个候选明显胜出。
-这恰恰验证了几何only关联在无噪声、局部平坦目标上的固有局限，也正是
-`AMBIGUOUS`（宁可不融合也不瞎选）这个状态存在的意义。**没有为了让 `clean_textured`
-显示 `accepted` 而去调 `ambiguity_margin` 或调小 patch 到不安全的尺寸**——那样只是
-把这个真实现象藏起来，不是修复。
-
-`uw_l2_acoustic_optic_scenario_matrix_determinism_test` 把整个二进制重跑两遍
-（跳过 `p95_latency_ms`——那是真实 wall-clock 测量，本来就不该要求逐字节相同）
-diff 输出确认可复现。降低的 MVP gate 集合（只有 accepted≥5 时的 false-fusion-rate
-≤5%）在当前参数下全部通过（进程退出码 0）；架构文档第 12.2 节其余门槛（posterior
-NLL 校准、真实调度器下的 P95 延迟预算、专门验证 ambiguity 场景错误接受率的场景）
-本 plan 明确没有实现，不是"实现了但没写"，这个边界记录在该 app 的源文件头注释里。
-
-### 6.11 `include/mapping/acoustic_optic_map_bridge.hpp`（声光 plan 6：mapping handoff，系列收尾）
+### 6.11 `include/mapping/acoustic_optic_map_bridge.hpp`（声光 plan 6：局部地图数据交接，系列收尾）
 
 只有一个函数：`BuildMapEvidenceFromFusedDepth`。把 plan 4 的 `FusedDepthMeasurement`
 转成 `MapEvidence`（`POINT_CLOUD` 表示），喂给 `include/mapping/submap_manager.hpp`——
@@ -892,11 +911,11 @@ plan 2-4 的既有 v1 范围一致），位姿修正只需要移动，不需要�
 单测（`tests/mapping/acoustic_optic_map_bridge_test.cpp`，编译进 `mapping_tests`）里最后一个用例直接实例化真正的
 `SubmapManager`（不是 mock），先设一次 keyframe pose 验证世界系坐标，再设第二次
 *不同* 的 pose、**不重新 `AddMapEvidence`**，验证 `WorldPointsForKeyframe` 立刻反映新
-位姿——这正是架构文档第 16 节"local fused evidence 可在 state 更新后重新变换，不被前端
+位姿——这正是架构文档第 16 节"融合局部地图数据可在 state 更新后重新变换，不被前端
 固化到 world frame"这条完成条件的直接证明。
 
 **声光系列六个 plan 到这里全部完成**：contracts/calibration → optical baseline →
-cross-modal geometry → probabilistic fusion → simulation/evaluation → mapping handoff。
+cross-modal geometry → probabilistic fusion → simulation/evaluation → 局部地图数据交接。
 六个 plan 交付的是一套经过单测和端到端场景矩阵验证过的、可复用的组件集合。见 6.12 节——
 `apps/replay_demo` 现在会在加载了带相机的 rig 时真正构造并调用这些组件，但这是一次
 独立的、后续的集成工作（见下），不是六个 plan 本身自带的。
@@ -916,9 +935,8 @@ cross-modal geometry → probabilistic fusion → simulation/evaluation → mapp
 把稠密深度接成 factor 是一个量级更大、需要新残差模型和信息量标定的工作，不在这次改动
 范围内，也不应该被理解成"顺手就能做"的后续小任务。
 
-**两个真实跑出来的结果，都是如实记录，没有为了好看去调参数**（本次复核在当前 HEAD
-`f285e0d` 重新实跑过一遍，数字比 26c8b26 刚接线时的记录小了不少——原因见下方注解，
-不是这次复核引入的新问题）：
+**下面两个数字是 `f285e0d` 时的历史复核记录，不是当前验收基线**。保留它们是为了
+解释声光集成刚接线时的行为；当前正确性由 6.10 节的场景矩阵和第 12 节的测试门禁判断：
 
 1. `configs/experiment/synthetic_smoke.yaml`（既有场景，逐字节未改）：
    `acoustic-optic: 12 keyframes with camera data, 0 accepted, 0 ambiguous, 0 conflict,
@@ -1044,6 +1062,8 @@ frames`，`added 10 relative-pose factors, 11 keyframes`（比 `black_box_vio` �
 
 ## 7. runtime/ 层
 
+这里目前提供的是 runtime 支持原语，不是已经组合好的在线调度器；`replay_demo` 仍是离线批处理。
+
 ### 7.1 状态机 `state_machines.hpp`
 
 架构文档 12.1 节的三个正交状态机（系统跟踪状态、单模态健康状态、建图节流
@@ -1108,13 +1128,13 @@ enum class Lane {
 [第 11 节](#11-配置系统-configs)）。每条车道的 overflow 策略不同，IMU 不能随便
 丢，相机/建图可以丢旧/低价值项，所以策略是构造参数而不是硬编码。
 
-> **代码 vs. CLAUDE.md 措辞的出入**：`BoundedQueue`/`Lane` 本身只是队列原语和
+> **当前实现边界**：`BoundedQueue`/`Lane` 本身只是队列原语和
 > 车道枚举，没有一个把四条车道real-time 调度、优先级抢占串起来的"调度器"类。
 > `apps/replay_demo`/`apps/synth_bag_gen.cpp` 目前都是单线程直接遍历 MCAP
 > 消息，并不实际实例化 `BoundedQueue`/驱动四车道调度。这部分是运行时原语已经
-> 就位、但尚未被任何 app 接线消费的一层（与 README"已知边界"里
-> "`experiment` 层算法变体选择字段只读取未真正驱动分支"是同一类"骨架已搭、
-> 未接线"的情况）。
+> 就位、但尚未组成在线调度器的一层。相对地，`estimator_mode` 和
+> `frontends.landmark_detector` 会真实派发；sonar/optical frontend 与 `map_backend`
+> 是经校验的单值字段。
 
 ### 7.3 分层配置加载 `config.hpp` / `config.cpp`
 
@@ -1129,6 +1149,10 @@ struct PlatformDefaultsConfig {
   double initial_lambda = 1e-3;
   SqrtInformationDefaults default_sqrt_information;
   double warmup_seconds = 0.0;   // 见下方"预热窗口"
+  bool require_converged = true;
+  double max_ate_rmse_m = -1.0;
+  int min_matched_ate_poses = 0;
+  bool require_nonempty_map = false;
 };
 struct ScenarioConfig {
   uint64_t seed = 42; int num_keyframes = 12;
@@ -1141,6 +1165,8 @@ struct ExperimentConfig {
   uw::domain::RigCalibrationSnapshot rig;   // 直接是 protobuf 消息，不是平行 struct
   ScenarioConfig scenario;
   std::string sonar_frontend = "sonar_cfar_frontend_v1";
+  std::string optical_frontend = "stereo_depth_frontend_v1";
+  std::string landmark_detector = "bright_blob";
   std::string estimator_mode = "black_box_vio";
   std::string map_backend = "submap_point_cloud_v1";
   bool write_run_manifest = true;
@@ -1150,6 +1176,7 @@ PlatformDefaultsConfig LoadPlatformDefaultsConfig(const std::string& path);
 uw::domain::RigCalibrationSnapshot LoadRigConfig(const std::string& path);
 ScenarioConfig LoadScenarioConfig(const std::string& path);
 ExperimentConfig LoadExperimentConfig(const std::string& path);
+std::optional<std::string> ValidateExperimentConfigSelections(const ExperimentConfig& config);
 ```
 
 `rig` 层直接解析进 `RigCalibrationSnapshot` protobuf 消息（不是另建一套
@@ -1181,9 +1208,12 @@ ExperimentConfig LoadExperimentConfig(const std::string& path) {
 否则拼到 `base_dir` 后面。这正是第一次实现时漏算的一层 `parent_path()`，
 CLAUDE.md/README 都提到这个问题，这里是对应的确切代码。
 
-`experiment` 层里 `frontends.sonar`/`estimator_mode`/`map_backend` 这三个"选算法
-变体"字段目前只被读取赋值给 `ExperimentConfig`，两个 app 都还是各自跑一条
-写死的固定管线，没有真正按这些字段分支。
+`replay_demo` 加载 experiment 后立即调用 `ValidateExperimentConfigSelections()`：
+sonar/optical frontend 与 `map_backend` 当前各只有一个实现标识符，未知值会启动失败；
+`map_backend` 是预留的地图实现选择字段，目前唯一支持的值是
+`submap_point_cloud_v1`。`estimator_mode`（`black_box_vio`/`stereo_landmark_vo`）和
+`landmark_detector`（`bright_blob`/`harris_corner`）会真正选择代码路径。fail-fast
+只解决“静默忽略错误配置”，不表示已经有多个 frontend/map backend 可动态切换。
 
 `warmup_seconds`（`PlatformDefaultsConfig`）：一次运行最开始 N 秒内的
 keyframe 只接受相对位姿（dead-reckoning）因子，不接受声呐 range/深度这类
@@ -1217,6 +1247,10 @@ struct RunManifest {
 通用转义器是不必要的复杂度。`apps/replay_demo` 里 `run_id` 具体是
 `replay_demo_<unix秒>`，`simulator` 写死为
 `"synthetic (apps/synth_bag_gen.cpp)"`（见 [9.2](#92-appsreplay_demo--端到端主流程)）。
+P0 后调用方会填 `UW_GIT_COMMIT`、experiment 文件的 FNV-1a hash、序列化 rig 的
+FNV-1a hash、bag 路径、OS、CPU、CPU-only GPU 说明、scenario seed 和 UTC 起止时间。
+`model_hash` 仍为空；hash 不是加密摘要；`simulator` 即使回放真实 HoloOcean bag 也仍
+写成 synthetic，因此完整 dataset/simulator/dependency provenance 尚未闭环。
 
 ### 7.5 MCAP I/O 封装 `mcap_io.hpp`
 
@@ -1289,13 +1323,13 @@ C++ 侧读不出来。这保证了 Python 写的 bag 能被 `replay_demo` 零转
   HoloOcean 要求首次 tick/step 前必须 reset；`step()` 读了不存在的公开属性
   `env.ticks_per_sec`，只能读私有的 `env._ticks_per_sec`；`close()` 调用了不存在的
   `env.close()`，`HoloOceanEnvironment` 只通过上下文管理器协议
-  `__exit__(None,None,None)` 暴露清理逻辑）。模块自己的文档字符串对状态给出的评价
-  很诚实："fixed against known issues, not yet proven"——这个类本身还没有被完整
-  端到端跑通验证过一次，只是这几个具体 bug 有真实复现+修复的记录，不代表已经
-  被证明可靠。本仓库这次复核未重新验证（本机仍没有 HoloOcean 环境），只核对了
-  代码和该文档字符串的一致性。
+  `__exit__(None,None,None)` 暴露清理逻辑）。随后 `record_session.py` 已在该原生
+  Windows 环境跑出一份约 78 MB 的真实 bag，所以“从未端到端跑过”已经不成立；但
+  模块文档字符串仍保守标为 "fixed against known issues, not yet proven"，更准确的
+  当前解释是“单次录制已成功，尚无可重复的真实仿真自动回归，长期可靠性未证明”。
+  本仓库所在 Linux 开发机仍没有 HoloOcean 环境，无法现场重跑这一段。
 - `camera_conversion.py`（`b2c19e1` 新增）：`holoocean_camera_to_image_frame()`，把
-  HoloOcean `RGBCamera` 的一次读数转成 canonical `uw.domain.ImageFrame`。通道顺序
+  HoloOcean `RGBCamera` 的一次读数转成规范化 `uw.domain.ImageFrame`。通道顺序
   是实测确认的，不是照抄 HoloOcean 官方文档——文档写的是 RGBA，但对着真实 HoloOcean
   2.3.0（`OpenWater-HoveringCamera` 场景，原生 Windows）抓一帧、把前三通道原样看
   和反转后看对比：不反转是一片看起来不对的琥珀/橙色，反转后是物理正确的蓝色水下
@@ -1333,12 +1367,12 @@ C++ 侧读不出来。这保证了 Python 写的 bag 能被 `replay_demo` 零转
 依赖（`pyproject.toml`）：`protobuf>=4.21`、`mcap>=1.0`、`numpy>=1.24`，`pytest`
 是 dev extra，`holoocean` 是可选 extra（保证没装 HoloOcean 的机器也能装/测其余
 部分）。本次复核实跑
-`cd adapters/holoocean && pip install -e ".[dev]" && pytest tests -q`：25 个测试
+`cd adapters/holoocean && pip install -e ".[dev]" && pytest tests -q`：35 个测试
 全过，覆盖 `coordinates`/`canonical_writer`/`scenario_randomization`/
 `camera_conversion`/`state_conversion`/`record_session`（后三个是 `b2c19e1` 新增，
 `record_session` 的测试跑的是不需要真实 HoloOcean 安装的 `record_frames()`）——
-`adapters/holoocean/README.md` 里若仍写着旧的 "9/9 passing"，那是没跟上这次新增
-测试的过时数字。`HoloOceanSession` 本身仍然没有一个针对它自己（而不是它调用的
+`adapters/holoocean/README.md` 不再把旧的 "9/9 passing" 当作当前数字。
+`HoloOceanSession` 本身仍然没有一个针对它自己（而不是它调用的
 转换函数）的自动化测试，因为需要真实仿真环境；见上面 `holoocean_driver.py` 条目。
 
 ### 8.2 `adapters/ros2` —— `UW_BUILD_ROS2` 开关保护
@@ -1406,7 +1440,7 @@ sonar_camera_reconstruction_baseline/`，纯 stub，诚实标注为不可用）�
 
 纯 stub，只有一个 `README.md`，说明意图：把公开数据集（EuRoC 风格、SVIn 自己的
 公开数据集、RUSSO/Tank/SonarSweep）转换成 `adapters/holoocean` 和
-`apps/synth_bag_gen.cpp` 产出的同一套 canonical MCAP/protobuf schema，让
+`apps/synth_bag_gen.cpp` 产出的统一 MCAP 录制格式/protobuf schema，让
 `replay_demo` 不关心 bag 来源。"本轮未实现：还没有转换/测试过任何公开数据集"。
 
 ---
@@ -1476,11 +1510,13 @@ xyz）。只依赖 `uw::domain`/`uw::core`/`uw::runtime`，不依赖
 
 CLI：`--bag <path>`（必填）、`--experiment <yaml>`（可选）、
 `--out <prefix>`（默认 `/tmp/replay_demo`）、`--max-iterations N`
-（CLI 覆盖 experiment，experiment 覆盖内建默认，三层覆盖链）。
+（CLI 覆盖 experiment，experiment 覆盖内建默认，三层覆盖链），以及真实数据评测用的
+`--align-ate`（拟合无尺度刚体对齐；默认关闭以保持合成基准数字不变）。
 
 `main()` 真实流程：
 
-1. 加载配置：给了 `--experiment` 就 `LoadExperimentConfig` → 拿到
+1. 加载配置：给了 `--experiment` 就 `LoadExperimentConfig` →
+   `ValidateExperimentConfigSelections`；未知算法标识符立即退出。随后拿到
    `PlatformDefaultsConfig`（求解器 max_iterations/initial_lambda、三种因子的
    sqrt-information 常数、`warmup_seconds`、`write_run_manifest`）。
 2. 建立在线声呐路标存储：实例化 `SubmapManager`，用固定 Identity pose 创建
@@ -1511,10 +1547,11 @@ CLI：`--bag <path>`（必填）、`--experiment <yaml>`（可选）、
      跨调用有状态）依次喂进 6.13 节的 `StereoLandmarkVoFrontend::Process()`，两张图先经
      `uw::domain::ConvertToMono8`（`synth_bag_gen` 写的已经是 MONO8，这里是 no-op；真实
      HoloOcean 录制是 RGB8，这里才是真正需要转换的地方）。后续 `AddKeyframe`/`Build`/
-     `AddResidualBlock` 跟 `black_box_vio` 分支完全一样，只是 evidence 来自前端实时计算
-     而不是 bag 里预存的证据。`landmark_detector` 字段（`config.landmark_detector`，
+     `AddResidualBlock` 跟 `black_box_vio` 分支完全一样，只是量测结果来自前端实时计算
+     而不是 bag 里预存的量测结果。`landmark_detector` 字段（`config.landmark_detector`，
      yaml 里 `frontends.landmark_detector`，默认 `bright_blob`）只在这个分支下被消费，
-     选 `StereoLandmarkVoFrontendParams::detector_kind`。
+     选 `StereoLandmarkVoFrontendParams::detector_kind`。`camera_rectifier` 当前没有接进
+     这里，真实帧仍以 distorted RGB→MONO8 结果进入 VO。
 7. 声呐一遍：配置 `SonarCfarFrontend`
    （`num_training_cells=16, num_guard_cells=4, pfa=1e-2,
    detector_threshold=50`，与 `sonar_cfar_frontend_test` 的合成 fixture 参数
@@ -1526,7 +1563,9 @@ CLI：`--bag <path>`（必填）、`--experiment <yaml>`（可选）、
    `SubmapManager::QueryNearestPoint(predicted_point_W, 1.5m)`；命中则复用稳定路标，
    未命中则把该预测点作为新 `MapEvidence` 插入 `"landmarks"` bucket。随后用
    `FactorBuildContext{nearby_points_W = {landmark_W}}` 构建
-   `SonarRangeFactorBuilder` 残差块。这是真实在线查询，但仍没有联合路标优化。
+   `SonarRangeFactorBuilder` 残差块。这是真实在线查询，但仍没有联合路标优化。该 pass
+   还用 `steady_clock` 记录每个声呐帧（包括早退）的批处理 CPU 耗时并打印 nearest-rank
+   P95；它不是 live capture-to-pose latency，也没有门限。
 8. 深度一遍：读 `/evidence/depth`，跳过预热窗口，构建
    `DepthFactorBuilder`（`proposed_noise = depth_sqrt_info`）。
 9. 求解：`GaussNewtonSolver::Solve(problem, {max_iterations,
@@ -1535,27 +1574,28 @@ CLI：`--bag <path>`（必填）、`--experiment <yaml>`（可选）、
     `StateSnapshot` 到 `StateStore`，调用
     `submap_manager.UpdateKeyframePose(kf_id, pose)`，把
     `{timestamp_s = i*0.2, pose}` 追加进 `estimated_trajectory`。
-11. 真值：读 `/gt/state`（`StateSnapshot`）进 `ground_truth_trajectory`，
+11. 若 rig 带相机，按 keyframe 同步双目/声呐，运行
+    `StereoOpticalDepthFrontend → SonarCfarFrontend → AcousticOpticDepthFusionFrontend`
+    并经 `AcousticOpticMapBridge` 把融合点云局部地图数据交给 `SubmapManager`。这是并行地图
+    pass，不向 `PoseGraphProblem` 新增稠密深度因子。
+12. 真值：读 `/gt/state`（`StateSnapshot`）进 `ground_truth_trajectory`，
     时间戳取自 `capture_timestamp`。
-12. 评测：`uw::evaluation::ComputeAte(estimated, ground_truth)`，打印
-    rmse/mean/max/匹配数。
-13. 输出：写 `<out_prefix>_trajectory.tum`（TUM 格式：
+13. 评测：`uw::evaluation::ComputeAte(estimated, ground_truth, 0.05, align_ate)`，打印
+    rmse/mean/max/匹配数；`--align-ate` 仅拟合 rotation+translation，不估 scale。
+14. 输出：写 `<out_prefix>_trajectory.tum`（TUM 格式：
     `timestamp tx ty tz qx qy qz qw`），除非配置里 `write_run_manifest=false`，
     否则再写 `<out_prefix>_run_manifest.json`
     （`run_id = replay_demo_<unix秒>`，`dataset_or_scenario = bag路径`，
-    `simulator = "synthetic (apps/synth_bag_gen.cpp)"`）。
+    `simulator = "synthetic (apps/synth_bag_gen.cpp)"`，并填 git/config/calibration/platform/
+    seed/time 字段）。随后检查 `require_converged`、ATE 匹配数/RMSE、非空地图等 P0 gate；
+    即使 gate 失败也先保留产物，再以退出码 2 报错。
 
 文件头注释里明确列出的 v1 限制：没有真实的可靠性调度器（sqrt-information
 常数是固定值，不是标定出来的）；路标来自在线 submap 查询但不会作为变量联合优化，
 首次发现时还要用当前 pose 和零 elevation 初始化；只消费 top-1 声呐假设；分层配置
-驱动求解器/噪声参数，且 `estimator_mode`（`b2c19e1` 起）也真的驱动上面第 6 步
-相对位姿证据来源的分支，但 `config.sonar_frontend`（yaml 里 `frontends.sonar`）和
-`config.map_backend`（`map_backend`）仍然只被读取和打印，不驱动任何分支——声呐
-前端和地图后端管线仍然写死为 `sonar_cfar_frontend_v1` + `submap_point_cloud_v1`。
-文件头注释原文用的措辞是"experiment's frontend/estimator/map-backend selection
-fields didn't actually dispatch on anything"——`estimator_mode` 是第一个变成假话的
-字段，`frontends.sonar`/`map_backend` 这句话依然成立，参见
-[configs/README.md](../configs/README.md) 里同一个更正。
+驱动求解器/噪声参数，`estimator_mode` 和 `landmark_detector` 真的驱动上面第 6 步；
+sonar/optical frontend 和 map backend 仍写死为各自唯一实现，但配置校验会拒绝其他
+标识符，不会“读取后照常运行”。参见 [configs/README.md](../configs/README.md)。
 
 链接（见 `cmake/Applications.cmake` 里 `replay_demo` 的 `target_link_libraries`）：
 `uw::domain, uw::core, uw::runtime, uw::estimation, uw::evaluation,
@@ -1565,35 +1605,44 @@ target，分别覆盖了旧的 `uw_relative_pose_factor`/`uw_sonar_range_factor`
 （现在在 `uw::mapping` 里）、`uw_sonar_cfar_frontend`（现在在 `uw::frontends`
 里）这些迁移前的独立 target。
 
-### 9.3 `evaluation/` —— 轨迹指标
+### 9.3 `evaluation/` —— 轨迹、深度、融合与地图指标
 
-只实现了 ATE，仓库里没有任何 RPE 代码（grep 过 `Rpe/RPE/relative_pose_error`
-均无命中）。
+轨迹侧只实现了 ATE，仓库里没有任何 RPE 代码（grep 过
+`Rpe/RPE/relative_pose_error` 均无命中）。深度/融合指标见 6.7 节；地图侧新增
+`MapMetricsResult`/`ComputeMapMetrics()`，计算双向最近邻平均距离之和（本仓库的
+Chamfer 定义）、completeness、outlier ratio 和 F-score。
 
 ```cpp
 struct TrajectoryPose { double timestamp_s; Pose3 pose_WB; };
 struct AteResult { double rmse_m, mean_m, max_m; int num_matched_poses; };
 AteResult ComputeAte(const std::vector<TrajectoryPose>& estimated,
                      const std::vector<TrajectoryPose>& ground_truth,
-                     double max_time_diff_s = 0.05);
+                     double max_time_diff_s = 0.05,
+                     bool align_before_scoring = false);
 ```
 实现：对每个估计位姿，按 `|时间戳差|` 线性扫描最近邻匹配真值（v1 对小规模合成
 场景够用），超过 `max_time_diff_s` 未匹配则跳过。每次匹配的误差只是平移
 欧氏距离（`(est.translation - gt.translation).norm()`），完全不计算旋转
 误差。累积 `rmse_m = sqrt(Σerr²/matched)`、`mean_m`、`max_m`。
 
-文件头明确标注的 v1 限制：比较前没有做 Umeyama SE3/Sim3 对齐，假定估计
-轨迹和真值轨迹已经共享同一个世界系/尺度，这对合成场景成立（两者本来就在同一个
-世界系里造出来的），但拿真实 VIO/SLAM 输出去对另外测绘的真值时就不成立了，标注
-为评测真实数据前的自然后续工作。
+`align_before_scoring=true` 时，会先用至少 3 对匹配平移点做 Kabsch/Umeyama SVD，
+拟合把估计轨迹映到真值的单一 rotation+translation，再计算上述平移误差；不估 scale，
+退化或匹配不足时回退到未对齐结果。合成场景默认关闭以保持既有数字，真实 HoloOcean
+回放通过 `replay_demo --align-ate` 启用。仍未实现 RPE、旋转误差和 Sim3 尺度对齐。
+
+`ComputeMapMetrics(estimated, reference, distance_threshold_m)` 当前用暴力
+`O(|estimated|*|reference|)` 最近邻，只在小点集单测中验证；空输入采用显式非 NaN
+约定。它尚未接入 `replay_demo`，也没有地图 reference 数据入口或质量 gate。现有回放
+可产生数百万局部地图数据点，正式接线前必须先引入 KD-tree/octree 等空间索引。
 
 ---
 
 ## 10. 端到端运行时序
 
 这是把 [9.1](#91-appssynth_bag_gencpp--合成数据生成) 和
-[9.2](#92-appsreplay_demo--端到端主流程) 串成一条时间线，也是目前仓库里唯一真实
-跑通的完整数据流：
+[9.2](#92-appsreplay_demo--端到端主流程) 串成一条时间线，是日常 CI 使用的合成闭环。
+此外，真实 HoloOcean 录制 bag 已经跑通同一个离线回放入口；两者的成熟度边界见本节
+末尾和第 15 节：
 
 ```
 synth_bag_gen --experiment configs/experiment/synthetic_smoke.yaml --out synthetic.mcap
@@ -1629,14 +1678,20 @@ replay_demo --bag synthetic.mcap --experiment configs/experiment/synthetic_smoke
   └─ 写 demo_trajectory.tum（TUM 格式）+ demo_run_manifest.json（RunManifest）
 ```
 
-典型结果（`estimator_mode=black_box_vio`，本次复核在当前 HEAD `f285e0d` 实测 seed
-1/2/3/7/42/100 六个种子）：6–7 次迭代内收敛，ATE RMSE 约 0.07–0.18 m（随 seed 波动，
-不是验收阈值；默认 seed=42 的 `configs/scenario/synthetic_smoke.yaml` 本身实测
-rmse=0.0666m）。早期约 3 cm 的结果依赖直接使用真值路标；改为在线路标发现后，声呐
+当前默认 `estimator_mode=black_box_vio` 的验证流水线（seed=42）实测 6 次迭代收敛，
+ATE RMSE `0.0665821 m`、mean `0.0562694 m`、max `0.109553 m`，匹配 12 个位姿。
+不同 seed 的数字会波动，这些观测值不是硬编码验收阈值。早期约 3 cm 的结果依赖直接
+使用真值路标；改为在线路标发现后，声呐
 缺少 elevation 且路标不参与联合优化，初始化误差会分摊到 x/y 估计。`estimator_mode=
 stereo_landmark_vo`（`configs/experiment/synthetic_smoke_vo.yaml`，见 6.13 节）
 实测 7 次迭代收敛，`ATE rmse=0.060835m`——量级上不比 `black_box_vio` 差，尽管相对
 位姿证据是真算出来的、不是从 bag 里读预先造好的证据。
+
+真实数据路径也已实际执行：`configs/experiment/real_holoocean_vo.yaml` 回放一份原生
+Windows HoloOcean 2.3.0 录制、约 78 MB、50 个 keyframe 的双目+深度+真值 bag，得到
+49 条 VO 相对位姿、50 个深度 factor；对齐后 ATE RMSE `0.5596 m`。该 bag 不含
+sonar/IMU/DVL，因此 sonar factor 和稠密地图输出为 0；求解器达到 30 次迭代后状态为
+`stalled`。这证明真实离线数据入口和 VO 路径可运行，不等于实时闭环或生产可用。
 `tests/integration/determinism_test.sh` 就是把这整条流程跑两遍、diff
 `_trajectory.tum`，验证其中没有藏着全局可变随机状态（见
 [第 12 节](#12-测试体系-tests)）——它不传 `--experiment`，所以只覆盖
@@ -1668,15 +1723,20 @@ runtime:
     correction:   { priority: high,    queue_capacity: 32, overflow_policy: drop_oldest }
     mapping:      { priority: medium,  queue_capacity: 16, overflow_policy: drop_oldest }
     evidence:     { priority: low,     queue_capacity: 256, overflow_policy: drop_oldest }
+gates:
+  require_converged: true
+  max_ate_rmse_m: -1.0
+  min_matched_ate_poses: 0
+  require_nonempty_map: false
 ```
 （`runtime.lanes` 描述的是 [7.2 节](#72-四车道有界队列原语-bounded_queuehpp)
 `BoundedQueue`/`Lane` 该怎么配置；目前没有任何 app 真正读取这一段去实例化队列，
 文件里写着，代码里还没接线消费。）
 
-`configs/rig/example_auv.yaml`（标定唯一事实源，对应 `RigCalibrationSnapshot`；
-`replay_demo`/`synth_bag_gen` v1 都还不消费这一层，只加载不使用）：
+`configs/rig/example_auv.yaml`（标定唯一事实源，对应 `RigCalibrationSnapshot`；两个 app
+都消费相机/声呐外参、内参、时间偏移等与当前路径有关的字段，IMU 噪声等仍未接线）：
 ```yaml
-calibration_version: "example_auv_v1"
+calibration_version: "example_auv_v2"
 frame_tree:
   - parent_frame: base_link
     child_frame: sonar_link
@@ -1733,23 +1793,26 @@ output:
 `configs/experiment/synthetic_smoke_vo.yaml`（`b2c19e1` 新增，见 6.13 节）：跟上面
 `synthetic_smoke.yaml` 基本一样（`rig`/`scenario`/`defaults`/`factor_builders`/
 `map_backend`/`output` 全同），差别只有两处：多了一行 `frontends.optical:
-stereo_depth_frontend_v1`（跟 `frontends.sonar` 一样只读取打印，不驱动分支），
+stereo_depth_frontend_v1`（目前是唯一被校验接受的实现，rig 是否带相机决定声光 pass），
 以及把 `estimator_mode` 换成 `stereo_landmark_vo`，用来触发 `apps/replay_demo` 里
 真正会分支的那条路径。
+
+`configs/experiment/real_holoocean_vo.yaml` 选择
+`rig/example_auv_real_camera.yaml`、`harris_corner`、`stereo_landmark_vo`，用于已有真实
+双目 bag 的离线回放。该样本产出 49 条相对位姿和 50 条深度因子；`--align-ate` 后
+RMSE `0.5596 m`，求解器仍 `stalled`，所以它是链路证据而不是通过的生产 benchmark。
 
 四层消费程度总结（`configs/README.md` 已有，这里复述一遍方便对照代码）：`defaults`
 完整接入 `replay_demo`；`rig` 在两个 app 里已经消费——加载了带相机的 rig 时驱动
 6.12 节的声光融合分支（以及 6.13 节 `stereo_landmark_vo` 分支，如果 `estimator_mode`
 也选了它），没有相机（或没传 `--experiment`）时两个 app 行为逐字节不变；`scenario`
-完整接入 `synth_bag_gen`；`experiment` 里选算法变体的字段（`frontends`/
-`estimator_mode`/`map_backend`）大多只被读取和打印——`frontends.optical` 对应一个
-真实实现（`StereoOpticalDepthFrontend`），但这个字段本身并不驱动 `replay_demo`/
-`synth_bag_gen` 的分支，两个 app 是否跑声光融合流水线看的是 rig 有没有相机，不是
-读这个字符串去选择实现；`frontends.sonar`/`map_backend` 同样只读取打印，管线仍
-写死为 `sonar_cfar_frontend_v1`/`submap_point_cloud_v1`。**一个例外**：`b2c19e1`
-起，`apps/replay_demo` 真的会按 `estimator_mode` 分支（`stereo_landmark_vo` 需要
+完整接入 `synth_bag_gen`；`experiment` 的每个算法选择都先经
+`ValidateExperimentConfigSelections`。`frontends.sonar`/`frontends.optical`/
+`map_backend` 当前仍各只有一个实现，rig 是否带相机决定声光流水线是否运行；未知名称
+会启动失败而不是静默忽略。`apps/replay_demo` 会按 `estimator_mode` 分支（
+`stereo_landmark_vo` 需要
 `rig` 带相机，用 6.13 节的 `StereoLandmarkVoFrontend` 从相机帧实时算相对位姿，
-见 `configs/experiment/synthetic_smoke_vo.yaml`）；**同一分支下的第二个例外**：
+见 `configs/experiment/synthetic_smoke_vo.yaml`）；同一分支下
 `frontends.landmark_detector`（`bright_blob`/`harris_corner`）也真的会被消费，选
 `StereoLandmarkVoFrontend` 内部用哪个 landmark 检测器，但只在 `estimator_mode ==
 stereo_landmark_vo` 时才读取。
@@ -1762,9 +1825,12 @@ stereo_landmark_vo` 时才读取。
 独立的 GTest executable（`cmake/Tests.cmake` 用 `gtest_discover_tests()` 展开成
 单个 case，CTest 名字前缀 `unit.<layer>.`/`contract.`/`integration.`）：
 
-### 契约测试 —— `tests/contracts/domain_contract_test.cpp`
+### 消息格式与接口一致性测试 —— `tests/contracts/domain_contract_test.cpp` 与 `tests/contracts/measurement_api_contract_test.cpp`
 
-只链接 `uw::domain` + gtest，测的是 protobuf round-trip 和几个域不变量助手：
+`cmake/Tests.cmake` 将这两个源文件编译为同一个 `contract_tests` target，并链接
+`uw::domain`、`uw::core` 和 gtest。`domain_contract_test.cpp` 覆盖 Protobuf round-trip
+与消息校验；`measurement_api_contract_test.cpp` 覆盖 `CameraFrameProvider` 和
+`OpticalDepthFrontend` 的接口边界：
 - `ObservationHeaderRoundTrips`：序列化/解析一个 `ObservationHeader`，字段相等
   性在 round-trip 后保持。
 - `SonarFrameAscendingAzimuthAccepted`/`...Rejected`：分别用升序/非升序方位角
@@ -1773,6 +1839,10 @@ stereo_landmark_vo` 时才读取。
   `SonarRangeBearing`，经 `MakeEvidence<>()` 包进 `MeasurementEvidence`，
   round-trip 后 `HasPayload<SonarRangeBearing>` 为真、
   `HasPayload<PressureDepthMeasurement>` 为假。
+- `measurement_api_contract_test.cpp`：用 fake `CameraFrameProvider` 和
+  `OpticalDepthFrontend` 验证轮询、单目/双目输入边界及其产生的规范化量测结果。
+  `measurement_api` 还定义 `FactorBuilder` 与 `ResidualBlock` 等进程内接口，但本测试
+  不宣称覆盖它们的行为。
 
 ### 集成/回放测试 —— `tests/integration/determinism_test.sh`
 
@@ -1803,13 +1873,14 @@ diff -q "$WORKDIR/run1_trajectory.tum" "$WORKDIR/run2_trajectory.tum"
 | `frontends`（sonar_cfar_frontend） | 合成声呐图上的 CFAR+DBSCAN（构造数据，非 fixture 文件） |
 | `frontends`（harris_corner_detector/landmark_blob_detector/patch_matcher/rigid_transform_fit/stereo_landmark_vo_frontend，6.13 节） | 手造图像/点集：检测器的 NMS/阈值行为、`PatchMatcher` 的确定性贪心匹配、`FitRigidTransformRansac` 对已知刚体变换+离群点的恢复、`StereoLandmarkVoFrontend` 端到端的证据产出（不包含真实相机图像） |
 | `mapping`（submap_manager） | `TRANSFORM_ONLY` vs `FULL_REFUSE` 的 stale 行为 |
-| `runtime`（config） | 直接读真实 `configs/experiment/synthetic_smoke.yaml` 逐字段断言 |
+| `core`（camera_rectifier） | plumb-bob 畸变/去畸变、边界采样、MONO8/RGB8/BGR8 与 0/4/5 系数校验 |
+| `runtime`（config） | 真实 experiment 逐字段断言；支持项通过、未知 frontend/backend/estimator/detector fail-fast |
 | `runtime`（mcap_io） | protobuf 消息经 MCAP 写入/读回的 round-trip |
-| `evaluation` | 零误差自比较；已知 1m 偏移轨迹对 rmse 精确为 1.0 |
+| `evaluation` | ATE 零误差/已知偏移/可选对齐；深度和融合指标；点云地图完美重叠、非对称、无重叠和空输入约定 |
 
 ```bash
-ctest --test-dir build --output-on-failure   # C++：按用例展开，当前 106 个（会随代码增长变化，实跑为准）
-cd adapters/holoocean && pytest               # Python：当前 25 个
+ctest --test-dir build --output-on-failure   # C++/脚本：当前 136 个（实跑为准）
+(cd adapters/holoocean && pytest -q)          # Python：当前 35 个
 tools/lint/check_no_ros_in_core.sh            # 依赖不变量（兼容入口）
 ```
 
@@ -1819,8 +1890,9 @@ tools/lint/check_no_ros_in_core.sh            # 依赖不变量（兼容入口�
 
 顶层 `CMakeLists.txt`：C++17，默认 `RelWithDebInfo`，
 `CMAKE_EXPORT_COMPILE_COMMANDS ON`，构建产物统一到 `build/bin/`（可执行文件）和
-`build/lib/`（库）。两个 option：`UW_BUILD_ROS2`（默认 OFF，需要 sourced ROS2
-环境）、`UW_BUILD_TESTS`（默认 ON）。根文件本身只做项目级设置和四个集中式
+`build/lib/`（库）。构建开关包括 `UW_BUILD_ROS2`（默认 OFF，需要 sourced ROS2
+环境）、`UW_BUILD_TESTS`（默认 ON）、`UW_SANITIZER`（`OFF`/`address`/`thread`）和
+`UW_COVERAGE`（默认 OFF，gcc/gcov `--coverage`）。根文件本身只做项目级设置和四个集中式
 `include()`，不直接声明任何 target：
 
 ```cmake
@@ -1860,7 +1932,8 @@ uw::core（sensor_models + measurement_api）
 自动生效）`schemas/proto/uw/domain/*.proto`，`protobuf_generate(LANGUAGE cpp ...
 PROTOC_OUT_DIR ${CMAKE_BINARY_DIR}/generated)`，构建 `domain_proto`
 STATIC 库（迁移前叫 `uw_domain_proto`，现在去掉了前缀）。显式链接一整组 absl
-组件（`flat_hash_map/hash/strings/status/statusor/synchronization/time/base/log/cord`），
+组件（`flat_hash_map/hash/strings/status/statusor/synchronization/time/base/log/cord`，以及
+coverage 链接顺序暴露出的 `log_internal_check_op`），
 绕开 `protobuf::libprotobuf` 的 `INTERFACE_LINK_LIBRARIES` 在
 conda-forge 工具链多层静态库传递时不可靠的问题（"DSO missing from command
 line"，CLAUDE.md 记录的那个已知问题）。生成代码的警告靠 `COMPILE_OPTIONS "-w"` 抑制。
@@ -1913,6 +1986,13 @@ build-essential`，60s 超时专门用来探测卡住/被限速的镜像（对�
 `PATH`/`cmake -DCMAKE_PREFIX_PATH` 调用方式，这正是本仓库在沙箱开发环境里实际
 被编译/测试所走的那条路径。
 
+`tools/run_quality_checks.sh`：把额外质量检查放在独立 build 目录，支持
+`sanitizer`（ASan+UBSan）、`coverage`（gcov 源码行摘要）、`static-analysis`
+（cppcheck，报告但不设失败阈值）和 `all`。`.github/workflows/ci.yml` 已增加并行的
+sanitizer 与 quality job。`UW_SANITIZER=thread` 仍可手动选择，但当前 conda-forge
+protobuf/gtest 是未插桩动态库，会产生已知假阳性，且沙箱还需关闭 ASLR，所以 CI
+刻意不跑 TSan；coverage/static-analysis 目前也只报告，不设覆盖率/告警门槛。
+
 ---
 
 ## 15. 已知边界
@@ -1923,25 +2003,27 @@ build-essential`，60s 超时专门用来探测卡住/被限速的镜像（对�
   真实 `holoocean_main` 进程（需要 UE5+Epic EULA），也没有接到
   `SonarFrontend`/`replay_demo` 下游，它是纯传输层。`ros2_adapters (uw::ros2_adapters)` 是全
   注释骨架，从未编译。
-- `--experiment` 目前完整接入 `defaults`/`scenario`（分别驱动求解器参数和
-  `synth_bag_gen`）；`rig` 在两个 app 里都已被消费，但只在"有没有相机"这个粗粒度
-  上——加载了带相机的 rig 会打开 6.12 节的声光融合 pass 和（如果 `estimator_mode`
-  也选了）6.13 节的 `stereo_landmark_vo` 分支，没有相机（或没传 `--experiment`）
-  时行为逐字节不变；`rig` 里更细的字段（`imu_noise`、`sonar_beam_models` 的具体
-  数值等）目前没有被这两个 app 用到。`experiment` 层里 `frontends.sonar`/
-  `map_backend` 仍然只读取打印，不驱动分支，声呐前端/地图后端管线仍写死为
-  `sonar_cfar_frontend_v1`/`submap_point_cloud_v1`；`estimator_mode`
-  是**唯一**真的驱动分支的字段（`b2c19e1` 起，见 9.2/6.13 节），选
-  `stereo_landmark_vo` 且 rig 带相机时把相对位姿证据来源从 bag 里的
+- `--experiment` 完整接入 `defaults`/`scenario`；`rig` 在两个 app 里被消费，加载带
+  相机的 rig 会打开 6.12 节的声光融合 pass，并可支持 6.13 节的
+  `stereo_landmark_vo` 分支。`ValidateExperimentConfigSelections()` 会在回放开始前
+  拒绝未知 sonar/optical frontend、map backend、estimator 或 landmark detector；
+  但 sonar/optical/map 当前分别只有一个可用实现，验证通过不代表这些字段已经拥有
+  多实现动态派发。`estimator_mode` 和 `frontends.landmark_detector` 会真实驱动分支：选
+  `stereo_landmark_vo` 且 rig 带相机时把相对位姿量测结果来源从 bag 里的
   `/evidence/relative_pose` 换成 `StereoLandmarkVoFrontend` 实时计算的结果；
-  `frontends.landmark_detector` 只在这个分支下被消费，选具体用哪个路标检测器。
+  `frontends.landmark_detector` 只在这个分支下被消费，选择具体路标检测器。rig 中
+  `imu_noise`、`sonar_beam_models` 的部分细节仍未被这两个 app 消费。
 - `StereoLandmarkVoFrontend`（6.13 节）验证方式跟仓库其余部分不太一样：单元测试
   用手造的合成点/图像，`configs/experiment/synthetic_smoke_vo.yaml` 在
   `synth_bag_gen` 的合成场景上实测收敛（ATE 0.061m），但 `determinism_test.sh` 不传
-  `--experiment`，所以这条分支没有专门的确定性回归测试；在真实 HoloOcean 录制的
-  bag（`record_session.py`）上还没有跑过完整的 `replay_demo`（只验证过
-  `HarrisCornerDetector` 在真实画面上能找到角点，见第 8.1 节），端到端在真实数据上
-  是否收敛未知。
+  `--experiment`，所以这条分支没有专门的双跑 diff 确定性回归测试。真实 HoloOcean
+  bag 已跑过完整 `replay_demo`：50 帧均进入输入，产出 49 条相对位姿，对齐 ATE RMSE
+  `0.5596 m`，但求解器在 30 次迭代处 `stalled`，且该录制没有 sonar/IMU/DVL；因此
+  应表述为“真实离线路径已跑通、质量与多传感器闭环仍未达标”。
+- `CameraRectifier` 已有 plumb-bob same-K 去畸变原语和单元测试，但尚未接入
+  `replay_demo`。在上述真实 bag 上离线试验时，几何校正会使当前 VO 默认参数的跟踪从
+  50/50 降到 8/50，说明 warp 本身可用而前端需要随校正后的影像重新调参；它也不是
+  支持任意离轴双目 rig 的通用 rectifier。
 - `adapters/holoocean` 的 `HoloOceanSession`（`holoocean_driver.py`）本身仍然没有
   被完整驱动过一次并证明可靠——`b2c19e1` 修的 4 个 bug 是真实运行中发现的，但模块
   自己的文档字符串明确写"fixed against known issues, not yet proven"；本仓库
@@ -1956,7 +2038,9 @@ build-essential`，60s 超时专门用来探测卡住/被限速的镜像（对�
   和零 elevation 初始化，后续只复用固定位置，不会被图优化精化。
 - `include/mapping/submap_manager.hpp` 尽管叫"submap"，实现粒度是按 keyframe，
   没有距离/重叠/帧数触发的 submap 边界逻辑。
-- `evaluation/` 只有 ATE（平移 RMSE/mean/max），没有 RPE，也没有 Umeyama
-  SE3/Sim3 对齐，假定估计轨迹和真值已经共享同一世界系/尺度，只对合成场景成立。
+- 轨迹评测只有 ATE（平移 RMSE/mean/max），没有 RPE 或旋转误差。它可选做
+  Kabsch/Umeyama 的 SE3 rotation+translation 对齐（不估 scale）；没有 Sim3 尺度对齐，
+  少于 3 对或退化匹配会回退到未对齐结果。点云地图指标虽已有 API/单测，但采用暴力
+  最近邻，尚未接回放、reference 数据或门禁，不能当作地图评测闭环已经完成。
 - `sonar_camera_reconstruction_baseline` 是纯 stub（`run_baseline.sh` 函数体是
   TODO+`exit 1`），因为上游依赖未 vendor 的 `bruce_slam` 且需要 ROS1 Noetic。

@@ -1,0 +1,31 @@
+[project]
+name = "uw-dataset-adapter"
+version = "0.1.0"
+description = "Public-dataset-to-canonical-MCAP converters (P1 workstream A3) — proves schemas/proto/uw/domain/ isn't HoloOcean-specific."
+requires-python = ">=3.10"
+dependencies = [
+    "protobuf>=4.21",
+    "mcap>=1.0",
+    "requests>=2.28",
+    "numpy>=1.24",
+]
+# No opencv/pyyaml: unlike adapters/holoocean, this package only does
+# byte-level message parsing (a hand-rolled ROS1 bag v2.0 reader — see
+# rosbag1_reader.py's module docstring for why that's hand-rolled instead
+# of depending on `rosbags`/`bagpy`). numpy IS needed: euroc_converter.py
+# undistorts each frame (see its own docstring for why that turned out to
+# be required, not optional) using the same forward-remap algorithm as
+# include/sensor_models/camera_rectifier.hpp, vectorized — a pure-Python
+# per-pixel loop over 752x480x2 cameras x dozens of keyframes would be far
+# too slow for this converter's own verification run to complete in
+# reasonable time.
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["uw_dataset_adapter*"]

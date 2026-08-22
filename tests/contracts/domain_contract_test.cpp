@@ -82,6 +82,62 @@ TEST(DomainContract, ImageFrameRoundTripsWithCanonicalHeader) {
   EXPECT_TRUE(parsed.is_rectified());
 }
 
+TEST(DomainContract, ImuSampleRoundTripsWithAndWithoutBias) {
+  uw::domain::ImuSample with_bias;
+  with_bias.mutable_header()->mutable_observation_id()->set_value("imu_0001");
+  with_bias.mutable_header()->mutable_sensor_id()->set_value("imu0");
+  with_bias.mutable_header()->mutable_sensor_frame()->set_value("imu_link");
+  for (double v : {0.1, 0.2, 9.81}) with_bias.add_linear_acceleration_mps2(v);
+  for (double v : {0.01, -0.02, 0.03}) with_bias.add_angular_velocity_radps(v);
+  with_bias.set_has_bias(true);
+  for (double v : {0.001, 0.002, 0.003}) with_bias.add_bias_linear_acceleration_mps2(v);
+  for (double v : {0.0001, 0.0002, 0.0003}) with_bias.add_bias_angular_velocity_radps(v);
+
+  std::string bytes;
+  ASSERT_TRUE(with_bias.SerializeToString(&bytes));
+  uw::domain::ImuSample parsed;
+  ASSERT_TRUE(parsed.ParseFromString(bytes));
+  EXPECT_EQ(parsed.header().observation_id().value(), "imu_0001");
+  ASSERT_EQ(parsed.linear_acceleration_mps2_size(), 3);
+  EXPECT_NEAR(parsed.linear_acceleration_mps2(2), 9.81, 1e-9);
+  ASSERT_EQ(parsed.angular_velocity_radps_size(), 3);
+  EXPECT_TRUE(parsed.has_bias());
+  ASSERT_EQ(parsed.bias_linear_acceleration_mps2_size(), 3);
+  EXPECT_NEAR(parsed.bias_angular_velocity_radps(1), 0.0002, 1e-9);
+
+  // Without bias: has_bias defaults false, bias fields stay empty — the
+  // wire contract distinguishes "no bias reported" from "bias is zero".
+  uw::domain::ImuSample no_bias;
+  no_bias.add_linear_acceleration_mps2(1.0);
+  EXPECT_FALSE(no_bias.has_bias());
+  EXPECT_EQ(no_bias.bias_linear_acceleration_mps2_size(), 0);
+}
+
+TEST(DomainContract, DvlSampleRoundTripsWithAndWithoutBeamRanges) {
+  uw::domain::DvlSample with_ranges;
+  with_ranges.mutable_header()->mutable_observation_id()->set_value("dvl_0001");
+  with_ranges.mutable_header()->mutable_sensor_id()->set_value("dvl0");
+  for (double v : {0.5, -0.1, 0.02}) with_ranges.add_velocity_mps(v);
+  with_ranges.set_has_beam_ranges(true);
+  for (double v : {2.0, 2.1, 2.2, 2.3}) with_ranges.add_beam_ranges_m(v);
+
+  std::string bytes;
+  ASSERT_TRUE(with_ranges.SerializeToString(&bytes));
+  uw::domain::DvlSample parsed;
+  ASSERT_TRUE(parsed.ParseFromString(bytes));
+  EXPECT_EQ(parsed.header().observation_id().value(), "dvl_0001");
+  ASSERT_EQ(parsed.velocity_mps_size(), 3);
+  EXPECT_NEAR(parsed.velocity_mps(0), 0.5, 1e-9);
+  EXPECT_TRUE(parsed.has_beam_ranges());
+  ASSERT_EQ(parsed.beam_ranges_m_size(), 4);
+  EXPECT_NEAR(parsed.beam_ranges_m(3), 2.3, 1e-9);
+
+  uw::domain::DvlSample no_ranges;
+  no_ranges.add_velocity_mps(1.0);
+  EXPECT_FALSE(no_ranges.has_beam_ranges());
+  EXPECT_EQ(no_ranges.beam_ranges_m_size(), 0);
+}
+
 TEST(DomainContract, OpticalAndFusedDepthPayloadsRoundTripThroughEvidence) {
   uw::domain::OpticalDepthPriorMeasurement prior;
   prior.mutable_reference_camera_frame()->set_value("camera_left_link");

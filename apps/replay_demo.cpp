@@ -6,8 +6,9 @@
 // neither HoloOcean nor ROS2).
 //
 // v1 limitations, documented rather than hidden:
-//  - No real reliability scheduler / AI information cap (section 8.4):
-//    sqrt-information values below are fixed constants, not calibrated.
+//  - No real reliability scheduler / learned-model information cap (section
+//    8.4): sqrt-information values below are fixed constants, not a
+//    calibrated reliability policy.
 //  - Landmark association for the sonar range factor now goes through a
 //    real SubmapManager::QueryNearestPoint() call (see the sonar block
 //    below): a detection within kLandmarkGateM of an already-known
@@ -27,10 +28,14 @@
 //    caveat.
 //  - Layered config (defaults/rig/scenario/experiment, section 14.2) covers
 //    solver options and factor sqrt-information constants via --experiment
-//    (see uw::runtime::LoadExperimentConfig); it does NOT yet drive
-//    frontend/factor_builder/map_backend SELECTION (config.sonar_frontend
-//    etc. are read but not dispatched on) — this app still only knows the
-//    one hardcoded pipeline (relative_pose_v1 + sonar_range_v1 + depth_v1).
+//    (see uw::runtime::LoadExperimentConfig). estimator_mode and
+//    landmark_detector genuinely dispatch (see the stereo_landmark_vo
+//    block below); sonar_frontend/optical_frontend/map_backend still only
+//    ever run one hardcoded implementation each (sonar_range_v1 +
+//    depth_v1 + submap_point_cloud_v1) because no second implementation
+//    exists yet — but as of ValidateExperimentConfigSelections(), naming
+//    anything else in an experiment YAML fails the run at startup instead
+//    of silently running that one pipeline anyway.
 //  - defaults.warmup_seconds (0 by default) keeps keyframes inside the
 //    warmup window in the graph and dead-reckoned via relative-pose
 //    factors, but withholds sonar-range/depth ("absolute reference")
@@ -233,6 +238,10 @@ int main(int argc, char** argv) {
   std::string calibration_hash;
   if (!opt.experiment_path.empty()) {
     const auto config = uw::runtime::LoadExperimentConfig(opt.experiment_path);
+    if (const auto error = uw::runtime::ValidateExperimentConfigSelections(config)) {
+      std::cerr << "invalid experiment config " << opt.experiment_path << ": " << *error << "\n";
+      return 1;
+    }
     defaults = config.defaults;
     write_run_manifest = config.write_run_manifest;
     if (config.rig.cameras_size() > 0) rig = config.rig;
@@ -361,6 +370,20 @@ int main(int argc, char** argv) {
     // recording is RGB8 (camera_conversion.py) and needs converting here,
     // at the point of consumption, rather than the recorder discarding
     // color at capture time.
+    //
+    // NOT wired in here yet: include/sensor_models/camera_rectifier.hpp
+    // (P1 rectification work) can undistort these frames against the rig's
+    // calibrated lens distortion, but doing so against the one real bag
+    // available (configs/rig/example_auv_real_camera.yaml's calibration)
+    // dropped stereo_landmark_vo tracking from 50/50 keyframes to 8/50 —
+    // bilinear resampling measurably smooths this bag's fine noise-like
+    // texture (Laplacian variance -43%), which harris_corner's
+    // matcher thresholds just below (empirically tuned against the
+    // DISTORTED input) turn out to depend on. The warp itself is correct
+    // (verified against real frames — no corruption, geometrically as
+    // expected); this is a retuning problem for whoever next works the real
+    // real-data VO path (docs/superpowers/plans/2026-08-21-p1-real-
+    // multisensor-closed-loop.md workstream A2), not a bug to fix here.
     uw::runtime::ReadMcapMessages<uw::domain::ImageFrame>(
         opt.bag_path, "/raw/camera/left", [&](uint64_t, const uw::domain::ImageFrame& f) {
           const auto mono = uw::domain::ConvertToMono8(f);
@@ -478,8 +501,34 @@ int main(int argc, char** argv) {
 
   int num_sonar_frames = 0;
   int num_sonar_factors = 0;
+  // P3 workstream A3 (docs/superpowers/plans/2026-08-22-p3-online-
+  // reconstruction-and-productionization.md): per-sonar-frame processing
+  // latency, mirroring acoustic_optic_scenario_matrix.cpp's per-trial
+  // timing pattern. This loop (not the stereo_landmark_vo loop above,
+  // which only runs in VO mode, and not any single point elsewhere in this
+  // multi-pass batch file) is the one genuinely per-keyframe frontend +
+  // data-association + factor-building pass that runs in every experiment
+  // config regardless of estimator_mode — the natural place for a first
+  // latency proxy. This is groundwork, not real online latency:
+  // replay_demo processes a whole bag in a few batch passes, so this
+  // measures per-frame CPU cost within that batch, not capture-to-pose
+  // latency in a live system (that needs Track B/C's scheduler).
+  std::vector<double> sonar_frame_latencies_ms;
   uw::runtime::ReadMcapMessages<uw::domain::SonarFrame>(
       opt.bag_path, "/raw/sonar_frame", [&](uint64_t, const uw::domain::SonarFrame& frame) {
+        // RAII so every exit path below (the early `return`s for warmup/
+        // unknown-keyframe/no-detection included) gets timed, not just the
+        // full-processing path — a reject decision still costs real time
+        // in an online system.
+        struct LatencyRecorder {
+          std::vector<double>& out;
+          std::chrono::steady_clock::time_point start;
+          ~LatencyRecorder() {
+            out.push_back(
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+          }
+        } latency_recorder{sonar_frame_latencies_ms, std::chrono::steady_clock::now()};
+
         ++num_sonar_frames;
         const std::string keyframe_id = frame.header().observation_id().value();
         if (!problem.HasKeyframe(keyframe_id)) return;
@@ -549,6 +598,14 @@ int main(int argc, char** argv) {
   std::cout << "discovered " << num_landmarks_discovered << " landmarks via submap query\n";
   std::cout << "processed " << num_sonar_frames << " sonar frames (sonar_cfar_frontend) -> "
             << num_sonar_factors << " sonar range factors\n";
+  // Same P95 formula as acoustic_optic_scenario_matrix.cpp (nearest-rank,
+  // no interpolation) — see this block's own comment above for scope.
+  std::sort(sonar_frame_latencies_ms.begin(), sonar_frame_latencies_ms.end());
+  const double p95_sonar_frame_latency_ms =
+      sonar_frame_latencies_ms.empty()
+          ? 0.0
+          : sonar_frame_latencies_ms[static_cast<std::size_t>(0.95 * (sonar_frame_latencies_ms.size() - 1))];
+  std::cout << "sonar frame processing latency: p95_ms=" << p95_sonar_frame_latency_ms << "\n";
 
   int num_depth_factors = 0;
   uw::runtime::ReadMcapMessages<uw::domain::MeasurementEvidence>(

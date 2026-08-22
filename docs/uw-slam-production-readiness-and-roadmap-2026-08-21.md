@@ -1,7 +1,7 @@
 # uw_slam 生产就绪度审计与阶段路线图
 
-> 状态：**当前审计基线 + 粗粒度执行路线**  
-> 核对日期：2026-08-21  
+> 状态：**当前审计基线 + 粗粒度执行路线**
+> 核对日期：2026-08-22
 > 核对范围：当前工作区源码、构建与测试工具、合成数据回放，以及本机保留的一份真实
 > HoloOcean 录制。当前工作区含未提交修改，因此本文记录的是“审计时刻的实际状态”，
 > 不是某个已发布版本的能力声明。
@@ -13,7 +13,7 @@
 
 ## 1. 执行摘要
 
-当前代码不需要推倒重来。Protobuf 领域契约、MCAP 回放、模块依赖边界、确定性测试和
+当前代码不需要推倒重来。Protobuf 规范化消息模型、MCAP 回放、模块依赖边界、确定性测试和
 若干真实算法切片已经构成了有价值的工程底座。主要问题不是架构方向错误，而是架构层
 明显领先于实现层：schema 和接口已经描述了接近生产系统的能力，在线运行、真实数据、
 估计后端、稠密重建和质量门禁仍主要停留在骨架或合成验证阶段。
@@ -22,7 +22,7 @@
 
 | 目标层级 | 当前成熟度 | 含义 |
 |---|---:|---|
-| 可扩展研究代码骨架 | 65%–75% | 分层、契约、合成垂直切片和基础测试已经成立 |
+| 可扩展研究代码骨架 | 65%–75% | 分层、核心消息与接口、合成端到端链路和基础测试已经成立 |
 | 团队内部稳定研发/测试平台 | 30%–40% | 可以开发和验证小模块，但真实数据、统一基准和自动门禁不足 |
 | 可长期在线运行的集成原型 | 20%–30% | ROS2、调度、故障恢复和资源预算尚未形成闭环 |
 | 现场可部署的生产系统 | 15%–25% | 真实环境鲁棒性、重建质量、运维与海试证据仍缺失 |
@@ -41,12 +41,15 @@
 | 检查 | 审计结果 | 解释 |
 |---|---|---|
 | `cmake --build build -j2` | 通过 | 当前 C++ 工作区可以完整构建 |
-| `ctest --test-dir build --output-on-failure` | 112/112 通过 | 合同、单元、合成集成和依赖 lint 均通过 |
+| `ctest --test-dir build --output-on-failure` | 136/136 通过 | 118 个 unit、13 个 contract、3 个 integration、2 个 lint 均通过 |
 | `tools/lint/check_no_ros_in_core.sh` | 通过 | C++ 分层依赖及 ROS/vendor 隔离仍成立 |
 | HoloOcean Python pytest（`uv run pytest`） | 35/35 通过 | 复核：本文写作时描述的 1 个失败（`test_record_session.py` 仍用旧式正值 fixture）实际已在
   `79d9be5`（Fix real-data VO pipeline: depth sign bug...）中随深度符号修订一并收口；重新
   跑一遍工作区确认当前不存在这个失败，下方一段按已收口改写，不再是待办 |
 | `git diff --check` | 通过 | 已跟踪改动未发现空白错误 |
+
+同一轮 `tools/verify_pipeline.sh`（不含 ROS2）六步全部通过：build、CTest、pytest、lint、
+合成数据生成和 replay；默认回放 ATE RMSE 为 `0.0665821 m`，12 个位姿匹配。
 
 > 复核结论：深度符号 fixture 不一致已经修复（见 `test_record_session.py` 里
 > `DepthSensor: np.array([-5.0])` → `depth_m == 5.0` 的负入正出约定，与
@@ -62,10 +65,10 @@
 | `stereo_landmark_vo` 合成回放 | 11 个 keyframe、33 个声呐 range factor、7 次迭代收敛，ATE RMSE `0.0608 m` |
 | 光学立体深度 smoke | RMSE `0 m`、coverage `0.9289`，干净的常视差合成图通过 |
 
-这些结果证明相机/声呐前端、因子构建、小规模位姿图、地图 evidence 和评测接口能够组合
+这些结果证明相机/声呐前端、因子构建、小规模位姿图、局部地图数据和评测接口能够组合
 运行。但两条回放中的稠密声光关联分别为 `0 accepted / 12 rejected` 和
 `0 accepted / 11 rejected`。也就是说，定位图使用了声呐距离约束，但回放产生的数百万
-地图点基本是光学深度 evidence；稠密重建没有在这条端到端路径中获得有效的声学修正。
+地图点基本是光学深度量测结果；稠密重建没有在这条端到端路径中获得有效的声学修正。
 
 ### 2.3 九场景声光矩阵
 
@@ -153,36 +156,38 @@
 - 对齐后的 ATE RMSE 为 `0.5596 m`；
 - 稠密地图点为 0。
 
-这份数据说明真实双目 VO 已经能够产生连续相对位姿，但真实重建尚未跑通。当前相机模型
-明确假设输入已经去畸变和极线校正，而真实 rig 包含畸变、非理想基线方向，录制路径也
-没有形成与前端一致的 rectification contract。由于该 bag 未纳入版本化数据集，它只能
+这份数据说明真实双目 VO 已经能够产生连续相对位姿，但真实重建尚未跑通。当前工作区
+已有 plumb-bob same-K 去畸变原语和 9 个单元测试，但尚未接入 replay，也不是支持任意
+离轴双目 rig 的通用 rectifier。对该真实 bag 的离线试验中，校正后影像使当前 VO 默认
+参数的跟踪从 50/50 降至 8/50，表明前端配置还需随影像域重调。由于该 bag 未纳入
+版本化数据集，它只能
 作为审计证据，尚不能作为团队长期回归基准。
 
 ## 3. 分项成熟度
 
 | 维度 | 评分 | 已有基础 | 主要缺口 |
 |---|---:|---|---|
-| 架构与领域契约 | 7/10 | Protobuf、模块 DAG、边界 lint、typed evidence | 契约版本迁移、单位/符号约束和兼容策略不足 |
+| 架构、核心消息与接口 | 7/10 | Protobuf、模块 DAG、边界 lint、带类型的量测与局部地图数据 | 消息版本迁移、单位/符号约束和兼容策略不足 |
 | 声呐前端 | 5/10 | CFAR、极坐标转换、DBSCAN、range factor | 真实声呐数据、registration、部分位姿协方差、环境自适应 |
 | 光学 VO/VIO | 3/10 | 合成双目 VO、Harris/NCC/RANSAC | rectification、IMU 预积分、滑窗、边缘化、真实退化处理 |
 | 声光融合定位 | 3/10 | range-only 因子进入位姿图 | 联合路标、可靠性调度、声呐 registration、消融证据 |
-| 声光融合重建 | 2/10 | 像素级后验深度、点云 evidence handoff | 声学有效覆盖、稠密几何、地图融合、重积分和地图评测 |
+| 声光融合重建 | 2/10 | 像素级后验深度、局部点云数据交接、点云地图指标原语 | 声学有效覆盖、稠密几何、地图融合/重积分、reference 数据与指标门禁 |
 | SLAM 后端 | 2/10 | 小规模 Eigen LM、FactorBuilder 接口 | 流形稀疏求解、鲁棒核、fixed-lag、协方差、回环/重定位 |
 | 在线运行时 | 2/10 | bounded queue、状态机和 lane 原语 | scheduler、异步数据流、背压、降级、恢复、实时预算 |
-| 真实数据与标定 | 3/10 | HoloOcean recorder、相机标定工具、canonical writer | 全传感器录制、版本化数据、time/TF audit、公开数据集 adapter |
-| 测试与评测 | 4/10 | 112 个 CTest、确定性回放、场景矩阵 | 非放空门禁、真实 benchmark、地图质量、长稳和故障注入 |
-| 工程生产化 | 2/10 | CMake、pytest、验证脚本 | CI、sanitizer、coverage、包发布、依赖锁定、完整 manifest |
+| 真实数据与标定 | 3/10 | HoloOcean recorder、相机标定工具、统一格式写入器 | 全传感器录制、版本化数据、time/TF audit、公开数据集 adapter |
+| 测试与评测 | 4/10 | 136 个 CTest、确定性回放、场景矩阵最低覆盖门禁、点云地图指标 API | 真实 benchmark、地图指标接线与门禁、质量/延迟硬门、长稳和更完整故障注入 |
+| 工程生产化 | 3/10 | CMake、pytest、主 CI、ASan+UBSan job、gcov/cppcheck 报告工具 | 可信 TSan、coverage/static 阈值、包发布、依赖锁定、soak、完整 manifest |
 
 ## 4. 值得保留的工程资产
 
 后续应继续沿用以下基础，而不是重建另一套平行框架：
 
-1. Protobuf 作为跨语言唯一领域契约；
+1. Protobuf 作为跨语言唯一规范化消息模型；
 2. MCAP 作为 live/replay 统一证据载体；
 3. `domain → core → algorithms/runtime/adapters → apps` 的单向依赖；
 4. frontend、FactorBuilder、ResidualBlock 和 StateStore 的职责分离；
 5. 显式 seed 和逐字节确定性回放；
-6. 地图 evidence 保存在局部坐标系，后端修正通过 keyframe pose 传播；
+6. 局部地图数据保存在局部坐标系，后端修正通过 keyframe pose 传播；
 7. 外部仓库只读、移植代码保留 provenance 和许可证记录；
 8. 分层配置与实验入口。
 
@@ -191,7 +196,7 @@ schema、enum 或文档而没有运行闭环的新抽象。
 
 ## 5. 主要差距
 
-### 5.1 估计后端仍是契约验证器
+### 5.1 估计后端仍是小规模求解验证器
 
 当前求解器使用稠密线性代数和原始 7 参数位姿更新，再归一化四元数。它适合验证小规模
 合成图和 FactorBuilder 接口，不适合真实长序列、滑窗和在线优化。缺少 SE(3) 流形更新、
@@ -199,34 +204,43 @@ schema、enum 或文档而没有运行闭环的新抽象。
 
 ### 5.2 当前不是完整 VIO/SLAM
 
-默认相对位姿来自 ground-truth+noise 桩；另一条路径是纯双目 VO，不消费 IMU。虽然
-schema 已有 IMU preintegration、velocity、bias 和 sonar registration 类型，但没有对应
-在线估计链。当前系统更准确的定义是“相对位姿先验 + depth + 声呐 range-only 的离线
-批量位姿图”。
+默认相对位姿来自 ground-truth+noise 桩；另一条路径是纯双目 VO，不消费 IMU。
+`estimator_mode` 是保留兼容性的历史字段名，只选择这两种相对位姿输入来源，二者最终都
+使用同一个 `GaussNewtonSolver`，不切换估计求解器。虽然 schema 已有 IMU
+preintegration、velocity、bias 和 sonar registration 类型，但没有对应在线估计链。当前系统
+更准确的定义是“相对位姿先验 + depth + 声呐 range-only 的离线批量位姿图”。
 
-### 5.3 重建层主要是 evidence 交接
+`stereo_landmark_vo` 仅在已加载的 rig 含相机时使用；否则 `replay_demo` 会像
+`black_box_vio` 一样回退读取 `/evidence/relative_pose`，配置校验不会拒绝这个无相机组合。
 
-`SubmapManager` 当前只维护局部点云 evidence 并按最新位姿变换，没有 TSDF、surfel、
+### 5.3 重建层主要是局部地图数据交接
+
+`SubmapManager` 是按 keyframe 索引的局部地图数据存储，不是完整的 submap 生命周期管理器；
+当前它只维护局部点云数据并按最新位姿变换，没有 TSDF、surfel、
 occupancy、mesh、遮挡/自由空间、地图裁剪或重积分实现。稠密声光融合只会尝试为少量
-像素做后验深度修正，尚未形成声呐覆盖区域的稳定几何生成和置信度融合。
+像素做后验深度修正；`AcousticOpticDepthFusionFrontend` 是融合模块，保留在 `frontends`
+路径只是历史命名，尚未形成声呐覆盖区域的稳定几何生成和置信度融合。`map_backend` 是
+预留的地图实现选择字段，目前唯一支持 `submap_point_cloud_v1`。
+`ComputeMapMetrics` 已提供 Chamfer/completeness/outlier/F-score 的小点集 API 和单测，
+但采用 `O(NM)` 暴力最近邻，尚未接入 replay、版本化 reference map 或质量 gate。
 
 ### 5.4 运行时原语尚未组成在线系统
 
+runtime 目前提供 queue、状态机等 runtime 支持原语，而不是已经组合好的在线调度器。
 `replay_demo` 仍是离线批处理：多次遍历 bag、构图后统一求解。状态机和 queue 没有被
 实际 scheduler 消费；ROS2 声呐节点也只完成 transport，没有驱动前端、估计器和地图。
 
-### 5.5 验收门禁可以在无有效输出时通过
+### 5.5 验收门禁仍未完全收口
 
-目前主要集成测试验证程序运行和确定性，没有强制检查：
+P0 已把 solver 收敛、最小轨迹匹配、可选 ATE、非空地图和场景最低关联覆盖接入运行或
+自动测试；矩阵测试也会保留真实 gate 退出码。当前剩余缺口是：
 
-- solver 必须收敛；
-- ATE/RPE 必须低于阈值；
-- 困难场景必须产生最低有效关联覆盖；
 - 融合必须相对 baseline 带来可量化收益；
 - P95 latency 必须满足预算；
-- 地图必须包含有效点且达到精度/完整度要求。
+- 地图必须包含有效点且达到精度/完整度要求；指标 API 已有，但数据接线和 gate 未完成；
+- RPE、旋转误差及对应门禁尚未实现。
 
-### 5.6 可复现记录尚未落地
+### 5.6 可复现记录已部分落地
 
 > **P0 执行中的复核**：本节描述的是审计时刻（2.1 之前）的状态。git commit、
 > 配置/标定 hash、OS、CPU、seed 和起止时间这几项已在 P0 执行中补齐（见第 7 节
@@ -238,9 +252,10 @@ occupancy、mesh、遮挡/自由空间、地图裁剪或重积分实现。稠密
 > 要到 P2/P3 引入学习式组件时才有内容可填。本节原始判断按未改写保留在下方，
 > 供审计基线参照，第 7 节是当前实际完成状态。
 
-本次生成的 RunManifest 中 git commit、配置/标定/model hash、OS、CPU、GPU、seed 和
-起止时间均为空。C++ 外部依赖也存在直接跟踪上游 `main` 的情况。当前可以重复运行同一
-工作区，但还不能可靠复原数周前或另一台机器上的一次实验。
+当前 RunManifest 已填 git commit、配置/标定 FNV-1a hash、bag 路径、OS、CPU、GPU
+说明、seed 和起止时间；MCAP 依赖已固定 commit。`model_hash` 因当前没有学习模型而
+为空，hash 也不是加密内容摘要；bag 只有路径而没有版本化数据 ID/内容 hash，完整依赖
+清单也未写入 manifest。因此它能定位本地运行上下文，但还不足以可靠复原跨机器实验。
 
 ## 6. 团队生产与测试平台的完成定义
 
@@ -280,7 +295,7 @@ occupancy、mesh、遮挡/自由空间、地图裁剪或重积分实现。稠密
   对应注释；`PressureDepthMeasurement` 本身仍没有 `Validate*` 函数、原样
   透传不做有限性/量级检查——这不算本条范围内的缺口（本条是"讲清楚约定"，
   不是"新增运行时校验"），但值得在后续 gate 工作中留意；
-- ~~为 replay 增加求解收敛、最小匹配数、ATE/RPE 和非空地图 gate~~——已完成
+- ~~为 replay 增加求解收敛、最小匹配数、ATE 和非空地图 gate~~——已完成
   并在两个合成 experiment（`synthetic_smoke.yaml`/`synthetic_smoke_vo.yaml`）
   的 `gates:` 段落打开，`require_converged` 无条件默认开启；
 - ~~为场景矩阵增加最低有效覆盖、baseline 改善和 P95 latency gate~~——三个 gate
@@ -299,7 +314,7 @@ occupancy、mesh、遮挡/自由空间、地图裁剪或重积分实现。稠密
   `|| true` 忽略矩阵二进制的退出码，`--trials-per-scenario` 从 5 提到 8（原因
   见 2.3 节该条备注——`turbid_sonar_visible` 在这条测试固定的 seed 下小样本会
   合理地落到 0，8 次是留了余量的下限，不是放宽覆盖率阈值本身）；
-- ~~填充 RunManifest 的代码、配置、标定、数据、seed、环境与起止时间~~——已完成
+- ~~填充 RunManifest 的代码、配置、标定、bag 路径、seed、环境与起止时间~~——已完成
   （`apps/replay_demo.cpp` 通过 `UW_GIT_COMMIT` 编译期宏 + 配置/标定内容
   FNV-1a 哈希 + `DetectOsInfo`/`DetectCpuInfo` 填充，`cmake/Applications.cmake`
   负责 git commit 注入，脏树会带 `-dirty` 后缀）；
@@ -328,10 +343,11 @@ occupancy、mesh、遮挡/自由空间、地图裁剪或重积分实现。稠密
 主要工作：
 
 - 固定直线、转弯、小闭环三类 1–3 分钟 HoloOcean 场景；
-- 录制包含双目、成像声呐、IMU、depth、GT 的 canonical MCAP；
+- 录制包含双目、成像声呐、IMU、depth、GT 的统一 MCAP 录制格式；
 - 完成 topic、capture/receive time、clock domain、TF 和标定 audit；
 - 建立去畸变和双目极线校正，明确 raw/rectified 图像契约；
-- 使实验配置中的 frontend、factor builder、estimator 和 map backend 选择真正生效；
+- 保持未知配置 fail-fast；为目前只有单一实现的 sonar/optical/map 增加真正的可替换实现
+  与派发（estimator 和 landmark detector 已真实派发，其他选择目前只是校验支持值）；
 - 增加至少一个公开水下数据集 adapter，验证 schema 不只适配 HoloOcean；
 - 固定真实数据的 VIO-only、VIO+depth、VIO+sonar、full fusion 四组 baseline。
 
@@ -382,7 +398,8 @@ occupancy、mesh、遮挡/自由空间、地图裁剪或重积分实现。稠密
 - 将 bounded queue、四条 lane 和三个状态机接入实际 scheduler；
 - 打通 ROS2 sensor gateway → frontend → estimator → mapping → evaluator/recorder；
 - 增加 watchdog、背压、降级顺序、恢复和资源预算；
-- 增加 ASan/UBSan/TSan、coverage、静态检查、包构建和 60 分钟 soak test。
+- 在已有 ASan+UBSan CI、gcov/cppcheck 报告基础上增加可信 TSan、覆盖率/静态分析阈值、
+  包构建和 60 分钟 soak test（当前预编译 protobuf/gtest 使 TSan 不可信）。
 
 阶段验收：
 
@@ -434,17 +451,18 @@ occupancy、mesh、遮挡/自由空间、地图裁剪或重积分实现。稠密
   5–8 个月，有现场证据的生产系统约需 9–15+ 个月。工程人月不包含等待船期、场地和
   传感器返修的时间，现场环境和数据获取仍是最大日历不确定因素。
 
-## 9. 最近两周建议动作
+## 9. 下一轮建议动作
 
-1. 收口深度符号测试，恢复完整 green baseline；
-2. 给 replay 和场景矩阵增加第一批非放空 gate；
-3. 完整填充 RunManifest 并固定 MCAP 依赖；
-4. 用现有 50 帧真实 bag 建立 rectification/有效视差诊断报告；
-5. 冻结一份全传感器 HoloOcean bag 录制规格并完成首轮采集；
-6. 为三条固定轨迹建立统一结果表，至少包含输入计数、因子计数、solver 状态、ATE/RPE、
-   地图点数、有效覆盖和 P95 latency；
-7. 将上述检查接入 `tools/verify_pipeline.sh`，让已有的 `.github/workflows/ci.yml`
-   直接复用（CI 骨架已存在，缺的是这些非放空 gate，不是流水线本身）。
+深度符号、首批 replay/场景矩阵 gate、manifest 基础字段、MCAP pin 和真实 bag 初步
+rectification 诊断已经完成。下一轮优先做：
+
+1. 冻结一份包含双目、声呐、IMU、depth、GT 的 HoloOcean 录制规格并完成首轮采集；
+2. 把 camera rectifier 接入可配置回放路径，并针对校正后影像重新标定 VO 参数；
+3. 版本化直线、转弯、小闭环三条固定数据及其 calibration/data ID；
+4. 为三条轨迹建立统一结果表，至少包含输入/因子计数、solver 状态、ATE、地图点数、
+   有效覆盖和 P95 latency；RPE 应在 evaluator 实现后加入，而不是在文档中假定已有；
+5. 给场景矩阵的融合收益和 P95 latency 选择可执行预算并接入 CI；
+6. 补齐 manifest 的数据内容标识和依赖版本清单，保证跨机器可复现。
 
 这两周不建议同时启动多个地图后端、3DGS、学习模型推理或复杂 dashboard。当前最大收益
 来自让真实数据、基础算法和自动验收形成闭环，而不是继续扩展展示层或未来接口。

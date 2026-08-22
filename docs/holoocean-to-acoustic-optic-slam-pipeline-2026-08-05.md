@@ -12,8 +12,8 @@ tags:
   - slam
   - demo
 status: evolving-plan
-updated: 2026-08-19
-verified_against: 919e1f0
+updated: 2026-08-22
+verified_against: "8df083b + current worktree"
 ---
 
 # HoloOcean 到声光融合 SLAM demo pipeline 方案
@@ -29,16 +29,17 @@ verified_against: 919e1f0
 最初方案用 SVIn 提供 VIO 位姿，再由 `sonar_camera_reconstruction` 累积声光点云；
 它适合作为对比 baseline，但声呐没有反向约束位姿，地图也缺少可重定位的局部证据。
 目标架构因此升级为 ROS 无关的领域契约、证据/因子边界、pose-graph 状态估计和
-versioned submap。当前仓库已经跑通合成数据垂直切片，但真实仿真、光学/VIO 前端与
-旧版完整 baseline 仍未端到端连接。
+versioned submap。当前仓库已经跑通合成数据垂直切片和一条真实 HoloOcean 双目离线
+VO 回放；后者没有 sonar/IMU/DVL、求解器仍 stalled，因此不能表述为真实声光 SLAM
+闭环。旧版完整 baseline 也仍未端到端连接。
 
 ## 当前实施状态
 
 | 状态 | 内容 |
 |---|---|
-| 当前垂直切片 | 合成 MCAP → 声呐 CFAR → 相对位姿/深度/声呐因子 → pose graph → 轨迹评测 |
-| 部分实现 | HoloOcean Python 网关的转换与 MCAP 写入；ROS2 ImagingSonar 传输与消息转换 |
-| 尚未接通 | 真实 HoloOcean/UE5 数据流、光学/VIO 前端、旧串联 baseline 的完整端到端运行 |
+| 当前垂直切片 | 合成 MCAP → 黑盒相对位姿或相机计算的双目 VO → 深度/声呐因子 → pose graph → ATE；另有并行声光稠密 evidence → submap 路径 |
+| 部分实现 | HoloOcean Python 网关已实际录制；50-keyframe 真实双目+depth+GT bag 已离线回放并产出 49 条 VO 相对位姿（对齐 ATE RMSE 0.5596 m，solver stalled）；ROS2 ImagingSonar 只完成传输；相机去畸变原语尚未接入 replay |
+| 尚未接通 | 全传感器实时 HoloOcean/UE5 → core 数据流、真实 sonar/IMU/DVL 融合、在线 VIO/SLAM、正式重建后端、旧串联 baseline 的完整端到端运行 |
 | 历史 baseline | SVIn 位姿输入 `sonar_camera_reconstruction`；保留用于比较，不作为平台骨架 |
 
 ## 阅读导航

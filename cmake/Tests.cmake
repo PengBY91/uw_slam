@@ -14,6 +14,7 @@ endfunction()
 
 add_executable(core_tests
   tests/core/camera_model_test.cpp
+  tests/core/camera_rectifier_test.cpp
   tests/core/sonar_arc_projector_test.cpp
 )
 target_link_libraries(core_tests PRIVATE uw::core GTest::gtest GTest::gtest_main)
@@ -55,6 +56,7 @@ uw_register_gtest(estimation_tests "unit.estimation" "unit;estimation")
 add_executable(mapping_tests
   tests/mapping/submap_manager_test.cpp
   tests/mapping/acoustic_optic_map_bridge_test.cpp
+  tests/mapping/surfel_map_test.cpp
 )
 target_link_libraries(mapping_tests PRIVATE uw::mapping GTest::gtest GTest::gtest_main)
 uw_register_gtest(mapping_tests "unit.mapping" "unit;mapping")
@@ -64,6 +66,7 @@ add_executable(runtime_tests
   tests/runtime/mcap_io_test.cpp
   tests/runtime/config_test.cpp
   tests/runtime/acoustic_optic_synchronizer_test.cpp
+  tests/runtime/bag_audit_checks_test.cpp
 )
 target_compile_definitions(runtime_tests PRIVATE UW_REPO_ROOT="${PROJECT_SOURCE_DIR}")
 target_link_libraries(runtime_tests PRIVATE
@@ -75,6 +78,7 @@ add_executable(evaluation_tests
   tests/evaluation/trajectory_metrics_test.cpp
   tests/evaluation/depth_metrics_test.cpp
   tests/evaluation/fusion_metrics_test.cpp
+  tests/evaluation/map_metrics_test.cpp
 )
 target_link_libraries(evaluation_tests PRIVATE uw::evaluation GTest::gtest GTest::gtest_main)
 uw_register_gtest(evaluation_tests "unit.evaluation" "unit;evaluation")

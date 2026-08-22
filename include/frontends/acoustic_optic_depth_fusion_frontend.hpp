@@ -32,6 +32,8 @@ struct FusedDepthResult {
 // optical-only passthrough — documented behavior, not an error. Returns
 // nullopt only when the optical evidence itself has no
 // OpticalDepthPriorMeasurement payload (nothing to build from).
+// This is a fusion module. The Frontend suffix is retained for source
+// compatibility and its frontends-target placement for build/link compatibility.
 class AcousticOpticDepthFusionFrontend {
  public:
   explicit AcousticOpticDepthFusionFrontend(AcousticOpticDepthFusionParams params);

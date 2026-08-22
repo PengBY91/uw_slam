@@ -44,3 +44,69 @@ jobs:
         with:
           name: verify-pipeline-logs
           path: ${{ runner.temp }}/verify
+
+  # P3 workstream A1 (docs/superpowers/plans/2026-08-22-p3-online-
+  # reconstruction-and-productionization.md): ASan+UBSan build of the full
+  # ctest suite, via tools/run_quality_checks.sh so local and CI stay one
+  # source of truth (same pattern as the `verify` job above and
+  # tools/verify_pipeline.sh). Runs in parallel with `verify`, not chained
+  # after it — a sanitizer finding is independent of whether the plain
+  # build passes. TSan is deliberately NOT run here — see
+  # CMakeLists.txt's UW_SANITIZER option comment and
+  # tools/run_quality_checks.sh's run_sanitizer() for why (false positives
+  # from this toolchain's uninstrumented prebuilt protobuf/gtest).
+  sanitizers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up conda-forge toolchain (Eigen, Protobuf, GTest, yaml-cpp, CMake)
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          miniforge-version: latest
+          environment-name: uw_slam_build
+          channels: conda-forge
+          channel-priority: strict
+
+      - name: Install C++ dependencies
+        shell: bash -l {0}
+        run: conda install -y eigen libprotobuf protobuf gtest yaml-cpp cmake
+
+      - name: ASan + UBSan build and ctest
+        shell: bash -l {0}
+        run: |
+          export CMAKE_PREFIX_PATH="$CONDA_PREFIX"
+          export PATH="$CONDA_PREFIX/bin:$PATH"
+          tools/run_quality_checks.sh sanitizer
+
+  # P3 workstream A1: static analysis (reported, not gated — see the plan
+  # doc for why no threshold is set yet) and gcov coverage (reported only;
+  # no lcov/gcovr on this toolchain, see tools/run_quality_checks.sh).
+  # Also independent of `verify` — runs in parallel.
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cppcheck
+        run: sudo apt-get update && sudo apt-get install -y cppcheck
+
+      - name: Set up conda-forge toolchain (Eigen, Protobuf, GTest, yaml-cpp, CMake)
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          miniforge-version: latest
+          environment-name: uw_slam_build
+          channels: conda-forge
+          channel-priority: strict
+
+      - name: Install C++ dependencies
+        shell: bash -l {0}
+        run: conda install -y eigen libprotobuf protobuf gtest yaml-cpp cmake
+
+      - name: Static analysis (cppcheck) and coverage build
+        shell: bash -l {0}
+        run: |
+          export CMAKE_PREFIX_PATH="$CONDA_PREFIX"
+          export PATH="$CONDA_PREFIX/bin:$PATH"
+          tools/run_quality_checks.sh static-analysis
+          tools/run_quality_checks.sh coverage

@@ -19,6 +19,8 @@ namespace uw::mapping {
 // are only ever computed on demand from the keyframe's CURRENT known pose,
 // so a pose-graph correction just changes what WorldPointsForKeyframe
 // returns, with no re-running of the frontend.
+// Despite the historical name, v1 is a keyframe-indexed local map-evidence
+// store. It does not create, switch, merge, or retire full submaps.
 class SubmapManager {
  public:
   void AddMapEvidence(uw::domain::MapEvidence evidence);

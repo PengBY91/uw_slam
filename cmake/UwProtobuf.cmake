@@ -1,6 +1,6 @@
-# Generates C++ bindings for the uw.domain protobuf schemas (the single
-# source of truth for domain contracts, see schemas/proto/) and exposes them
-# as the domain_proto static library. Every core/algorithms/adapters
+# Generates C++ bindings for the uw.domain protobuf schemas (the single source
+# for the cross-language normalized message model, see schemas/proto/) and
+# exposes them as the domain_proto static library. Every core/algorithms/adapters
 # target that needs domain types links against this instead of hand-rolling
 # equivalent structs.
 
@@ -34,6 +34,7 @@ target_link_libraries(domain_proto PUBLIC protobuf::libprotobuf)
 target_link_libraries(domain_proto PUBLIC
   absl::flat_hash_map absl::hash absl::strings absl::status absl::statusor
   absl::synchronization absl::time absl::base absl::log absl::cord
+  absl::log_internal_check_op
 )
 # Generated code triggers warnings we don't control; keep it out of -Werror.
 set_target_properties(domain_proto PROPERTIES COMPILE_OPTIONS "-w")

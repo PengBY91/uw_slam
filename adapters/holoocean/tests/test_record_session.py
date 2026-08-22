@@ -1,12 +1,33 @@
+import math
 import tempfile
 from pathlib import Path
 
 import numpy as np
-from uw.domain import image_pb2, measurement_pb2, observation_pb2, state_pb2, time_pb2  # noqa: E402
+from uw.domain import (  # noqa: E402
+    dvl_pb2,
+    image_pb2,
+    imu_pb2,
+    measurement_pb2,
+    observation_pb2,
+    sonar_pb2,
+    state_pb2,
+    time_pb2,
+)
 
 from uw_holoocean_adapter.canonical_writer import read_canonical_messages
 from uw_holoocean_adapter.holoocean_driver import RawSensorFrame
-from uw_holoocean_adapter.record_session import record_frames
+from uw_holoocean_adapter.record_session import SchemaModules, record_frames
+
+_MODULES = SchemaModules(
+    image=image_pb2,
+    observation=observation_pb2,
+    time=time_pb2,
+    state=state_pb2,
+    measurement=measurement_pb2,
+    sonar=sonar_pb2,
+    imu=imu_pb2,
+    dvl=dvl_pb2,
+)
 
 
 def _camera_array(fill: int) -> np.ndarray:
@@ -41,9 +62,7 @@ def test_record_frames_emits_a_keyframe_only_for_camera_bearing_frames():
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         path = str(Path(tmp_dir) / "session.mcap")
-        num_keyframes = record_frames(
-            image_pb2, observation_pb2, time_pb2, state_pb2, measurement_pb2, frames, path
-        )
+        num_keyframes = record_frames(_MODULES, frames, path)
 
         assert num_keyframes == 2
 
@@ -74,7 +93,78 @@ def test_record_frames_writes_nothing_for_an_all_non_camera_sequence():
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         path = str(Path(tmp_dir) / "empty.mcap")
-        num_keyframes = record_frames(
-            image_pb2, observation_pb2, time_pb2, state_pb2, measurement_pb2, frames, path
-        )
+        num_keyframes = record_frames(_MODULES, frames, path)
         assert num_keyframes == 0
+
+
+def test_record_frames_writes_sonar_imu_dvl_when_present_on_a_camera_bearing_tick():
+    # IMUSensor's real shape is (2,3) or (4,3) — see imu_conversion.py —
+    # unlike the (6,) placeholder above's OTHER test, which never actually
+    # reaches imu_conversion.py because that frame has no camera pair.
+    imu_no_bias = np.array([[0.0, 0.0, 9.81], [0.01, -0.02, 0.03]])
+    dvl_with_ranges = np.array([0.5, -0.1, 0.02, 2.0, 2.1, 2.2, 2.3])
+    sonar_image = np.full((4, 6), 0.5, dtype=np.float32)
+
+    frames = [
+        RawSensorFrame(
+            sim_time_s=0.2,
+            receive_time_s=0.2,
+            sensors={
+                "LeftCamera": _camera_array(10),
+                "RightCamera": _camera_array(20),
+                "IMUSensor": imu_no_bias,
+                "DVLSensor": dvl_with_ranges,
+                "ImagingSonar": sonar_image,
+            },
+        ),
+    ]
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = str(Path(tmp_dir) / "sensors.mcap")
+        num_keyframes = record_frames(_MODULES, frames, path)
+        assert num_keyframes == 1
+
+        imu_messages = list(read_canonical_messages(path, "/raw/imu", imu_pb2.ImuSample))
+        assert len(imu_messages) == 1
+        imu_sample = imu_messages[0][1]
+        assert imu_sample.header.observation_id.value == "kf0"
+        assert list(imu_sample.linear_acceleration_mps2) == [0.0, 0.0, 9.81]
+        assert imu_sample.has_bias is False
+
+        dvl_messages = list(read_canonical_messages(path, "/raw/dvl", dvl_pb2.DvlSample))
+        assert len(dvl_messages) == 1
+        dvl_sample = dvl_messages[0][1]
+        assert list(dvl_sample.velocity_mps) == [0.5, -0.1, 0.02]
+        assert dvl_sample.has_beam_ranges is True
+        assert list(dvl_sample.beam_ranges_m) == [2.0, 2.1, 2.2, 2.3]
+
+        sonar_messages = list(read_canonical_messages(path, "/raw/sonar_frame", sonar_pb2.SonarFrame))
+        assert len(sonar_messages) == 1
+        sonar_frame = sonar_messages[0][1]
+        assert sonar_frame.num_ranges == 4
+        assert sonar_frame.num_beams == 6
+        # Ascending azimuth is this platform's required invariant
+        # (schemas/proto/uw/domain/sonar.proto's documented contract).
+        angles = list(sonar_frame.azimuth_angles)
+        assert angles == sorted(angles)
+        assert math.isclose(angles[0], -math.radians(60.0), rel_tol=1e-6)
+        # 0.5 in [0,1] -> round(0.5*255) = 128 for every (uniform-fill) cell.
+        assert set(sonar_frame.intensity_tensor) == {128}
+
+
+def test_record_frames_omits_sonar_imu_dvl_topics_when_absent():
+    frames = [
+        RawSensorFrame(
+            sim_time_s=0.0,
+            receive_time_s=0.0,
+            sensors={"LeftCamera": _camera_array(10), "RightCamera": _camera_array(20)},
+        ),
+    ]
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = str(Path(tmp_dir) / "no_sensors.mcap")
+        num_keyframes = record_frames(_MODULES, frames, path)
+        assert num_keyframes == 1
+        assert list(read_canonical_messages(path, "/raw/imu", imu_pb2.ImuSample)) == []
+        assert list(read_canonical_messages(path, "/raw/dvl", dvl_pb2.DvlSample)) == []
+        assert list(read_canonical_messages(path, "/raw/sonar_frame", sonar_pb2.SonarFrame)) == []

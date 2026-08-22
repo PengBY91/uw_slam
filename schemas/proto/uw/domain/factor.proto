@@ -20,6 +20,12 @@ message FactorCandidate {
   repeated StateId associated_state_ids = 1;
   string measurement_type = 2;    // matches a MeasurementEvidence.payload oneof case name
   string residual_model = 3;      // identifies which FactorBuilder should consume this
+  // Historical field name. Current v1 FactorBuilders interpret a positive
+  // value as one isotropic sqrt-information scalar (larger means stronger
+  // weight); zero or a negative value falls back to 1.0. Renaming it while
+  // retaining tag 4 and type double remains binary-wire compatible, but
+  // requires generated-source/API plus Protobuf JSON/text-name migration.
+  // Do not change tag 4.
   double proposed_noise = 4;
   repeated uint32 observable_subspace = 5;
   RobustPolicyHint robust_policy_hint = 6;

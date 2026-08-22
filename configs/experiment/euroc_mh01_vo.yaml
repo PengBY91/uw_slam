@@ -1,0 +1,53 @@
+# Second real (non-synthetic) data experiment, and the first from a public
+# dataset rather than this repo's own HoloOcean recordings — P1 workstream
+# A3 (docs/superpowers/plans/2026-08-21-p1-real-multisensor-closed-loop.md),
+# proving schemas/proto/uw/domain/ and apps/replay_demo's stereo_landmark_vo
+# path aren't HoloOcean-specific. Consumes a bag produced by
+# adapters/datasets/uw_dataset_adapter/euroc_converter.py from the EuRoC MAV
+# Dataset's MH_01_easy sequence (real ROS1 bag, real 752x480 stereo camera
+# frames, see that converter's own docstring for exactly what was and
+# wasn't converted and why).
+#
+# rig points at rig/euroc_mh01.yaml (real EuRoC calibration — see that
+# file's header comment for sourcing and the stereo-rotation-collapse
+# precedent it follows). landmark_detector is harris_corner, same reasoning
+# as configs/experiment/real_holoocean_vo.yaml: bright_blob is tuned for
+# synth_bag_gen's synthetic high-contrast blocks, not real camera imagery —
+# EuRoC's machine-hall scenes (textured walls/machinery) are exactly the
+# kind of real, richly-textured imagery Harris corners are meant for.
+#
+# No gates section: unlike synthetic_smoke*.yaml, there is no
+# previously-established ATE/convergence baseline for this data source yet
+# to set a threshold against (matching real_holoocean_vo.yaml's own
+# precedent of shipping ungated until a real baseline exists — see the
+# roadmap's section-10 risk about gates that can pass without checking
+# anything meaningful).
+#
+# No ground truth: euroc_converter.py does not write /gt/state (see its
+# docstring), so ATE will report 0 matched poses — this experiment verifies
+# the pipeline runs on real external data, not trajectory accuracy.
+#
+# scenario field only satisfies the config loader's layer requirement (see
+# real_holoocean_vo.yaml's identical note) — apps/replay_demo never reads
+# ScenarioConfig fields.
+
+rig: rig/euroc_mh01.yaml
+scenario: scenario/synthetic_smoke.yaml
+defaults: defaults/platform.yaml
+
+frontends:
+  optical: stereo_depth_frontend_v1
+  sonar: sonar_cfar_frontend_v1
+  landmark_detector: harris_corner
+
+factor_builders:
+  - relative_pose_v1
+  - sonar_range_v1
+  - depth_v1
+
+estimator_mode: stereo_landmark_vo
+map_backend: submap_point_cloud_v1
+
+output:
+  trajectory_format: tum
+  write_run_manifest: true

@@ -1,4 +1,5 @@
-# 跟 synthetic_smoke.yaml 完全一样，只是 estimator_mode 换成 stereo_landmark_vo：
+# 跟 synthetic_smoke.yaml 完全一样，只是相对位姿输入模式（estimator_mode）换成
+# stereo_landmark_vo：
 # apps/replay_demo 会用 include/frontends/stereo_landmark_vo_frontend.hpp 从
 # /raw/camera/left,right 实时算相对位姿因子，取代 synthetic_smoke.yaml 默认的
 # black_box_vio（从 synth_bag_gen 写进 bag 的 ground-truth+noise 证据里读）。
@@ -17,7 +18,10 @@ factor_builders:
   - sonar_range_v1
   - depth_v1
 
+# estimator_mode 是历史字段名，当前选择相对位姿输入来源，不切换求解器。
+# black_box_vio 读取 bag 中外部/预生成量测；stereo_landmark_vo 从双目图像计算量测。
 estimator_mode: stereo_landmark_vo
+# map_backend 是预留的地图实现选择，目前只有 submap_point_cloud_v1。
 map_backend: submap_point_cloud_v1
 
 output:

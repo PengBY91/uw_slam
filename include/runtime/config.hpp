@@ -8,6 +8,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -71,9 +72,10 @@ struct ScenarioConfig {
 
 // The fully-resolved layer stack for one run: defaults + rig + scenario,
 // as named by an experiment YAML (which also selects algorithm variants —
-// those selections are read but only partially consumed in v1; see
-// apps/replay_demo and apps/synth_bag_gen.cpp for exactly what's wired
-// up vs. still a documented no-op).
+// see apps/replay_demo and apps/synth_bag_gen.cpp for exactly what's
+// dispatched on vs. still a documented single-implementation field, and
+// ValidateExperimentConfigSelections() below for what happens when a field
+// names something this binary doesn't have).
 struct ExperimentConfig {
   PlatformDefaultsConfig defaults;
   uw::domain::RigCalibrationSnapshot rig;
@@ -87,7 +89,13 @@ struct ExperimentConfig {
   // apps/synth_bag_gen.cpp's synthetic scene; "harris_corner" is for
   // real camera imagery.
   std::string landmark_detector = "bright_blob";
+  // Historical name: this selects the relative-pose evidence source, not the
+  // optimizer. "stereo_landmark_vo" selects camera-computed evidence only
+  // when the loaded rig contains cameras; otherwise replay falls back to
+  // bag /evidence/relative_pose. Both paths feed the same GaussNewtonSolver.
   std::string estimator_mode = "black_box_vio";
+  // Reserved map-implementation selector; v1 accepts only
+  // "submap_point_cloud_v1".
   std::string map_backend = "submap_point_cloud_v1";
   bool write_run_manifest = true;
 };
@@ -103,5 +111,17 @@ ScenarioConfig LoadScenarioConfig(const std::string& path);
 // configs/experiment/*.yaml already write those keys as "defaults/x.yaml"
 // etc.), the three layers underneath it.
 ExperimentConfig LoadExperimentConfig(const std::string& path);
+
+// Checks that every algorithm-selection field in `config`
+// (sonar_frontend/optical_frontend/map_backend/estimator_mode/
+// landmark_detector) names an implementation this binary actually has,
+// instead of being silently ignored — see docs/uw-slam-production-
+// readiness-and-roadmap-2026-08-21.md section 10's "配置存在但不驱动实现"
+// risk. Returns the reason the first unrecognized field is invalid, or
+// std::nullopt if every field is recognized. apps/replay_demo (the only
+// consumer of these fields — apps/synth_bag_gen only reads
+// config.scenario/config.rig, not the algorithm-selection fields) should
+// treat a non-nullopt result as a fatal configuration error, not a warning.
+std::optional<std::string> ValidateExperimentConfigSelections(const ExperimentConfig& config);
 
 }  // namespace uw::runtime

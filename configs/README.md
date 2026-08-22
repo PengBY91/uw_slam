@@ -4,13 +4,23 @@
 
 **当前状态**：`apps/synth_bag_gen` 和 `apps/replay_demo` 都可以通过 `--experiment <path>` 加载
 这里的分层配置（解析代码见 `include/runtime/config.hpp`，用 yaml-cpp）。仍是 v1 明确限制
-的部分：`experiment/*.yaml` 里选择算法变体的字段（`frontends`/`estimator_mode`/`map_backend`）大多
-只被读取和打印，两个 app 各自仍只实现一条固定管线，还没有真正按配置切换 frontend/estimator/map
-backend 的实现——这是紧接着的下一步，不应该修改这里定义的分层结构或字段命名。**一个例外**：
-`apps/replay_demo` 现在真的会按 `estimator_mode` 分支——`stereo_landmark_vo`（需要 rig 带相机）会
-用 `include/frontends/stereo_landmark_vo_frontend.hpp` 从 `/raw/camera/left,right` 实时算相对位姿因
-子，替代默认 `black_box_vio` 从 bag 里 `/evidence/relative_pose` 读取合成生成器写入的
-ground-truth+noise 证据；见 `configs/experiment/synthetic_smoke_vo.yaml`。**同一分支下的第二个例
+的部分：`experiment/*.yaml` 里选择算法变体的字段（`frontends`/`map_backend`）大多只对应一条
+固定管线，两个 app 各自仍只实现这一条，还没有真正按配置切换 frontend/map backend 的实现——这
+是紧接着的下一步，不应该修改这里定义的分层结构或字段命名。**但从
+`uw::runtime::ValidateExperimentConfigSelections`（`apps/replay_demo` 加载 `--experiment` 后立即调
+用）开始**，这些字段不再是"读取但不驱动"：`frontends.sonar`/`frontends.optical`/`map_backend`
+只要不等于目前唯一实现的那个值（分别是 `sonar_cfar_frontend_v1`/`stereo_depth_frontend_v1`/
+`submap_point_cloud_v1`），`replay_demo` 会在跑之前直接报错退出，而不是静默按硬编码管线继续
+跑——关掉了生产就绪度文档第 10 节"配置存在但不驱动实现"那条风险里"未识别或未实现的算法选择
+必须启动失败"这一半；"真正切换到另一条实现"仍然是待办，因为除了下面两个例外，压根还没有第二
+条实现可切换。`map_backend` 是预留的地图实现选择字段，目前只支持
+`submap_point_cloud_v1`。**第一个例外**：`estimator_mode` 是保留兼容性的历史字段名。当前它只选择
+相对位姿输入来源：`black_box_vio` 读取 bag 中外部或预生成的相对位姿量测，
+`stereo_landmark_vo` 从双目图像在线计算相对位姿；两条路径最终使用同一个
+`GaussNewtonSolver`，并不切换估计求解器。`stereo_landmark_vo` 需要 rig 带相机，并使用
+`include/frontends/stereo_landmark_vo_frontend.hpp` 从 `/raw/camera/left,right` 实时计算量测，
+替代默认 `black_box_vio` 从 `/evidence/relative_pose` 读取的量测；见
+`configs/experiment/synthetic_smoke_vo.yaml`。**同一分支下的第二个例
 外**：`frontends.landmark_detector`（`bright_blob` 默认值 / `harris_corner`）也真的会被消费，选择
 `stereo_landmark_vo_frontend` 内部用哪个 landmark 检测器——`bright_blob`
 （`LandmarkBlobDetector`）是给 `synth_bag_gen` 的合成高亮方块场景调的，`harris_corner`
@@ -25,13 +35,13 @@ ground-truth+noise 证据；见 `configs/experiment/synthetic_smoke_vo.yaml`。*
 - `rig/`：标定唯一事实源（对应 `RigCalibrationSnapshot`），描述一台具体机体的传感器外参、内参、
   噪声模型。
 - `scenario/`：world、控制、退化、故障、seed ——描述"跑什么数据"，不描述"用什么算法"。
-- `experiment/`：选择 frontend、estimator mode、reliability policy、map backend、model version 和
-  算力预算 ——描述"怎么跑"。
+- `experiment/`：选择 frontend、相对位姿输入模式（`estimator_mode`）、reliability policy、
+  地图实现（`map_backend`）、model version 和算力预算 ——描述"怎么跑"。
 
 每次运行仍然会产出一个不可变 `RunManifest`（见 `include/runtime/run_manifest.hpp`），
 记录实际生效的配置/标定/代码/模型哈希，即使当前配置文件本身还没被程序读取。
 
-## 声光前端契约字段
+## 声光消息与接口字段
 
 `rig/*.yaml` 的 `cameras`、camera/sonar `frame_tree` 边和
 `time_offset_seconds` 已解析进 `RigCalibrationSnapshot`。时间偏移采用

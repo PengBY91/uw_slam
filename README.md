@@ -7,15 +7,16 @@
 [![ROS 2 Jazzy](https://img.shields.io/badge/ROS_2-Jazzy-22314E?logo=ros&logoColor=white)](https://docs.ros.org/en/jazzy/)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](./LICENSE)
 
-`uw_slam` 把水下 SLAM 中的数据契约、传感器前端、因子构建、状态估计、地图管理、
+`uw_slam` 把水下 SLAM 中的核心消息与接口、传感器前端、因子构建、状态估计、地图管理、
 仿真/ROS2 接入和评测拆成可独立演进的模块。跨语言数据统一使用 Protobuf，录制与
 回放统一使用 MCAP，算法核心不依赖 ROS2 或 HoloOcean。
 
-当前仓库处于“架构骨架 + 可运行垂直切片”阶段：合成数据可以完整经过
+当前仓库处于“架构骨架 + 可运行端到端链路”阶段：合成数据可以完整经过
 `声呐/光学前端 → 因子图 → 位姿估计 → 地图 → 轨迹评测`，并有确定性回放测试保护。
-它还不是生产可部署的完整声光融合系统；光学前端（稠密深度融合、立体特征点 VO）
-已有可运行实现，但都只在合成数据上验证过——实时多传感器闭环和真实
-HoloOcean 数据流仍在后续范围内。
+它还不是生产可部署的完整声光融合系统：光学前端（稠密深度、立体特征点 VO）和声光
+关联/后验深度融合已有可运行实现；一份真实 HoloOcean 双目录制也已完成离线 VO 回放，
+但求解器尚未收敛到可作为基准的水平。实时 ROS2/UE5 多传感器闭环、真实声呐融合和
+生产级精度/稳定性验证仍在后续范围内。
 
 ## 导航
 
@@ -33,14 +34,15 @@ HoloOcean 数据流仍在后续范围内。
 
 | 能力 | 当前实现 | 状态 |
 |---|---|---|
-| 领域契约 | Protobuf 定义观测、量测证据、因子、状态、地图、健康状态和标定 | 已实现并有跨模块 round-trip 测试 |
+| 核心消息与接口 | Protobuf 提供跨语言规范化消息模型，定义观测、量测证据、因子、状态、地图、健康状态和标定；`measurement_api` 提供算法接口 | 已实现并有跨模块 round-trip 测试 |
 | 声呐前端 | CFAR 检测、极坐标转换、DBSCAN 聚类 | 已实现并有固定 fixture 回归测试 |
 | 因子构建 | 相对位姿、深度、声呐距离因子，声呐残差含解析雅可比 | 已实现并有数值验证 |
 | 光学相对位姿 | 立体特征点 VO：blob/Harris 检测 + NCC 匹配 + RANSAC 刚体拟合，从左右相机帧实时算相对位姿 | 已实现并接入 Demo（`estimator_mode: stereo_landmark_vo`），可替代默认的 ground-truth+noise 桩 `black_box_vio` |
+| 声光深度融合 | 声呐弧投影、跨模态关联、后验深度优化、局部点云数据交接 | 已实现九场景矩阵；CTest 强制执行最低有效覆盖 gate，质量收益与延迟 gate 仍为 opt-in |
 | 状态估计 | Eigen 实现的 Gauss-Newton/LM 位姿图求解器 | 已实现；后端接口可替换 |
-| 地图与评测 | `SubmapManager`、ATE/RPE 轨迹指标 | 已实现并接入 Demo |
-| 可复现实验 | 四层 YAML 配置、不可变 `RunManifest`、确定性 MCAP 回放 | 已实现 |
-| 仿真接入 | HoloOcean Python 网关、canonical MCAP 读写 | 转换与写入逻辑已测试；未连接本机真实仿真器 |
+| 地图与评测 | `SubmapManager`；ATE、深度/融合和点云 Chamfer/completeness/outlier/F-score 指标 | ATE/深度/融合已用于现有验证；点云指标已有 API/单测但尚未接 Demo 或门禁；尚无 RPE |
+| 可复现实验 | 四层 YAML 配置、不可变 `RunManifest`、确定性 MCAP 回放 | Manifest 已写 git/config/标定 hash、平台、seed 和起止时间；完整数据/依赖 provenance 仍待补齐 |
+| 仿真接入 | HoloOcean Python 网关、统一 MCAP 格式录制、相机标定 | 已在原生 Windows HoloOcean 2.3.0 录制真实双目 bag 并离线回放；当前 Linux 开发机未重新运行仿真器 |
 | ROS2 接入 | HoloOcean ImagingSonar 桥接节点 | 可编译、可独立启动；下游管线尚未接通 |
 
 主要技术栈：
@@ -48,7 +50,7 @@ HoloOcean 数据流仍在后续范围内。
 | 范围 | 技术 |
 |---|---|
 | 算法与运行时 | C++17、Eigen、yaml-cpp |
-| 数据契约 | Protobuf |
+| 核心消息与接口 | Protobuf、`measurement_api` |
 | 录制与回放 | MCAP |
 | 仿真适配 | Python 3.10+、HoloOcean |
 | 中间件适配 | ROS2 Jazzy（可选构建） |
@@ -94,7 +96,8 @@ cat /tmp/uw_slam_verify/readme_smoke/summary.txt
 | `demo_trajectory.tum` | TUM 格式估计轨迹 |
 | `demo_run_manifest.json` | 本次运行实际使用的配置与版本信息 |
 
-当前工作区验证面包含 106 个 CTest 测试（按用例展开）和 25 个 Python 测试。数字会随
+2026-08-22 对当前工作树的实跑包含 136 个 CTest 测试（按用例展开）和 35 个 Python
+测试，全部通过；默认合成回放 ATE RMSE 为 `0.0665821 m`（12 个匹配位姿）。数字会随
 模块增加而变化，`summary.txt` 和实际测试命令才是最终依据。
 
 ## 运行端到端 Demo
@@ -146,24 +149,30 @@ cat /tmp/demo_trajectory.tum
 `synth_bag_gen` 写入的 ground-truth+noise 证据；ATE 量级与默认桩相当（约
 0.06 m）。
 
+仓库还提供 `configs/experiment/real_holoocean_vo.yaml`，用于回放已有的真实 HoloOcean
+双目录制。当前审计样本约 76 MB、50 个 keyframe，不含声呐/IMU/DVL；它产出 49 条 VO
+相对位姿和 50 条深度因子，对齐后 ATE RMSE 为 `0.5596 m`，但求解器 30 次迭代后仍
+`stalled`。这证明录制数据能进入离线 VO 管线，不代表真实重建或实时闭环已经跑通；
+完整证据见[生产就绪度路线图 2.4 节](./docs/uw-slam-production-readiness-and-roadmap-2026-08-21.md#24-真实-holoocean-录制回放)。
+
 ## 架构
 
 ### 数据流
 
 ```mermaid
 flowchart LR
-    SYN[合成场景] --> MCAP[Canonical MCAP]
+    SYN[合成场景] --> MCAP[统一 MCAP 录制格式]
     HOP[HoloOcean Python 网关] --> MCAP
     HOR[HoloOcean ROS2 话题] -. 传输层已验证<br/>下游尚未接通 .-> FE
 
-    PB[Protobuf 领域契约] --- MCAP
+    PB[Protobuf 规范化消息模型] --- MCAP
     MCAP --> FE[声呐 CFAR 前端]
     MCAP --> ODO["相对位姿 / 深度证据<br/>(black_box_vio 桩 或 stereo_landmark_vo 实算)"]
     FE --> FACTOR[声呐距离因子]
     ODO --> FACTOR
     FACTOR --> EST[位姿图求解]
     EST --> MAP[Submap 管理]
-    EST --> EVAL[ATE / RPE 评测]
+    EST --> EVAL[ATE + 深度/融合指标]
     EST --> OUT[轨迹 + RunManifest]
 ```
 
@@ -171,11 +180,11 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    SCHEMAS[schemas<br/>跨语言契约] --> DOMAIN[domain<br/>领域类型]
-    DOMAIN --> CORE[core<br/>传感器模型 + 前端/因子抽象]
+    SCHEMAS[schemas<br/>跨语言消息模型] --> DOMAIN[domain<br/>生成消息辅助与校验]
+    DOMAIN --> CORE[core<br/>传感器模型 + 算法接口]
     CORE --> ALGO["frontends / factor_builders /<br/>estimation / mapping"]
     ALGO --> RUNTIME[runtime<br/>配置、队列、MCAP、Manifest]
-    ALGO --> EVAL[evaluation<br/>ATE/RPE 轨迹指标]
+    ALGO --> EVAL[evaluation<br/>ATE + 深度/融合指标]
     RUNTIME --> ADAPTERS[adapters<br/>HoloOcean、ROS2、第三方]
     ADAPTERS --> APPS[apps<br/>可执行入口]
 ```
@@ -185,16 +194,16 @@ mapping, runtime, evaluation, adapters} → apps`）。`include/`、`src/` 下�
 代码不能包含 ROS2、HoloOcean 或第三方 vendor 头文件，也不能使用旧的手写 `uw/...`
 include 路径；`tools/lint/check_no_ros_in_core.sh`（实际实现在
 `tools/lint/check_layer_dependencies.py`）会强制检查这一点。Protobuf schema 是
-C++ 与 Python 的唯一跨语言事实源。
+C++ 与 Python 跨语言规范化消息模型的唯一来源。
 
 ### 仓库结构
 
 | 目录 | 职责 |
 |---|---|
-| `schemas/proto/` | 领域契约和 C++/Python 代码生成输入 |
+| `schemas/proto/` | 跨语言规范化消息模型和 C++/Python 代码生成输入 |
 | `include/`、`src/` | 手写 C++ 公共头文件与实现，按角色分区（`domain`、`sensor_models`、`measurement_api`、`frontends`、`factor_builders`、`estimation`、`mapping`、`runtime`、`evaluation`、`adapters`） |
 | `apps/` | `synth_bag_gen`、`replay_demo` 等可执行入口源码 |
-| `tests/` | 契约（`contracts/`）、按层单元测试和确定性回放（`integration/`） |
+| `tests/` | 消息格式与接口一致性（`contracts/`）、按层单元测试和确定性回放（`integration/`） |
 | `cmake/` | 集中式 CMake：`Dependencies.cmake`、`Libraries.cmake`、`Applications.cmake`、`Tests.cmake` |
 | `adapters/` | HoloOcean（Python）、ROS2、数据集与第三方系统边界文档 |
 | `baselines/` | 外部基线（如 `sonar_camera_reconstruction`）运行脚本，不链接进本仓库构建 |
@@ -213,7 +222,7 @@ ctest --test-dir build --output-on-failure
 
 测试分为三层：
 
-- **契约测试**（`contract.*`，源码在 `tests/contracts/`）：验证 Protobuf round-trip 和模块边界；
+- **消息格式与接口一致性测试**（CTest 标签仍为 `contract.*`，源码在 `tests/contracts/`）：验证 Protobuf round-trip 和模块边界；
 - **单元测试**（`unit.<layer>.*`，源码按层放在 `tests/{core,frontends,factor_builders,estimation,mapping,runtime,evaluation,adapters}/`）：验证前端、因子雅可比、求解器、地图、运行时和评测；
 - **集成/回放测试**（`integration.*`，源码在 `tests/integration/`）：同一 bag/config/seed 运行两次，输出必须逐字节一致。
 
@@ -243,6 +252,17 @@ tools/lint/check_no_ros_in_core.sh
 tools/verify_pipeline.sh
 ```
 
+额外质量检查使用独立构建目录，不会覆盖普通 `build/`：
+
+```bash
+tools/run_quality_checks.sh sanitizer       # ASan + UBSan，全量 CTest
+tools/run_quality_checks.sh coverage        # gcov 摘要；目前只报告、不设覆盖率门槛
+tools/run_quality_checks.sh static-analysis # cppcheck；未安装时跳过，目前不作为失败 gate
+```
+
+TSan 可通过 `-DUW_SANITIZER=thread` 手动构建，但当前预编译 protobuf/gtest 未插桩会
+产生已知假阳性，因此尚未接入 CI。
+
 未显式指定 `--out-dir` 时，日志写入
 `${TMPDIR:-/tmp}/uw_slam_verify/<timestamp>/`。
 
@@ -263,15 +283,19 @@ defaults → rig → scenario → experiment → 显式 CLI 参数
 | `scenario/` | world、控制、退化、故障和随机 seed |
 | `experiment/` | 前端、估计器、可靠性策略、地图后端和算力预算 |
 
-`synth_bag_gen` 与 `replay_demo` 已消费 rig/scenario/defaults 的主要字段；算法变体
-选择目前会被解析和打印，但尚未驱动不同实现分支。字段说明与路径解析规则见
+`synth_bag_gen` 与 `replay_demo` 已消费 rig/scenario/defaults 的主要字段。
+`replay_demo` 会按 `estimator_mode` 和 `frontends.landmark_detector` 选择 VO 路径与
+检测器；`frontends.sonar`、`frontends.optical`、`map_backend` 目前各只有一个实现，
+但未知值会在启动时失败，不会静默按硬编码管线继续运行。字段说明与路径解析规则见
 [配置文档](./configs/README.md)。
 
 ### HoloOcean Python 网关
 
 `adapters/holoocean/` 可以把 HoloOcean 观测写成与 C++ 回放程序一致的
-MCAP/Protobuf 格式。坐标变换、确定性随机化、时间语义和 canonical writer 已有
-测试；实际 `HoloOceanSession` 仍需安装仿真器后在目标机器上验证。
+MCAP/Protobuf 格式。坐标变换、确定性随机化、时间语义和统一格式写入器已有
+测试；录制入口与相机标定工具已在原生 Windows HoloOcean 2.3.0 上用于生成真实双目
+bag。本仓库所在 Linux 开发机没有 HoloOcean/UE5 环境，`HoloOceanSession` 的完整可靠性
+和实时多传感器录制仍未形成自动化回归。
 
 安装和代码生成步骤见 [HoloOcean 适配器文档](./adapters/holoocean/README.md)。
 
@@ -298,7 +322,7 @@ ROS2 默认不参与构建。启用 `-DUW_BUILD_ROS2=ON` 前，需要：
 1. **不要修改 `external_repos/` 的子仓库。** 它们是只读参考和移植来源。
 2. **保持单向依赖。** `domain → core → {frontends, factor_builders, estimation,
    mapping, runtime, evaluation, adapters} → apps`。
-3. **先改 schema。** 新增跨语言领域字段时修改 `schemas/proto/`，不要在 C++ 与
+3. **先改 schema。** 新增跨语言规范化消息字段时修改 `schemas/proto/`，不要在 C++ 与
    Python 中维护两套平行结构。
 4. **保留代码出处。** 移植第三方实现前先阅读 [`NOTICE`](./NOTICE)，保留版权头并
    补充来源、移植范围和有意排除的内容。
@@ -329,7 +353,11 @@ ROS2 默认不参与构建。启用 `-DUW_BUILD_ROS2=ON` 前，需要：
 - ROS2 HoloOcean 桥接节点的传输层可构建和启动，但尚未经过真实仿真数据流验证，
   也未连接 `SonarFrontend`。
 - SVIn 的非 ROS2 provider 具有注入点单元测试；ROS2 wrapper 仍是文档骨架，未编译。
-- `experiment` 中的 frontend、estimator 和 map backend 选择字段尚未真正切换实现。
+- `estimator_mode` 与 `landmark_detector` 已驱动真实分支；sonar/optical frontend 和 map
+  backend 目前仍各只有一个受支持标识符，配置校验只能 fail-fast，尚无第二实现可切换。
+- `camera_rectifier` 已实现并通过 plumb-bob 去畸变单元测试，但只支持当前平行双目
+  几何假设，不是通用离轴极线校正器，也尚未接入 `replay_demo`。在现有真实 bag 上直接
+  启用会因重采样削弱纹理而降低 VO 跟踪率，仍需联合调参和数据回归。
 - 当前求解器只提供 Eigen Gauss-Newton/LM，Ceres/GTSAM 后端属于延后决策。
 - 位姿图只优化 keyframe，不联合优化路标；声呐 elevation 初值不会被后续因子精化。
 - reliability 多路信息上限目前只实现固定常数，尚未实现完整的自适应策略。

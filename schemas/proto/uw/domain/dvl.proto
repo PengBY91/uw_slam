@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+package uw.domain;
+
+import "uw/domain/observation.proto";
+
+// Raw Doppler Velocity Log sample, following the same "raw sensor frame"
+// pattern as ImageFrame (image.proto) and SonarFrame (sonar.proto) — header
+// first, then the physical reading, nothing pre-processed. No frontend in
+// this repo consumes DVL data yet; this message exists so a real DVL
+// stream can be recorded now and consumed once one does.
+//
+// Field provenance: shape matches HoloOcean's DVLSensor output
+// (holoocean.sensors.DVLSensor — a 1D array of
+// [velocity_x, velocity_y, velocity_z, (optional) up to 4 beam ranges]).
+// The 4 optional trailing values are HoloOcean's own
+// [range_x_forw, range_y_forw, range_x_back, range_y_back] as documented
+// in that sensor's docstring; this message carries them through
+// structurally (a flat list of beam ranges) rather than re-deriving a beam
+// geometry this repo hasn't independently verified.
+message DvlSample {
+  ObservationHeader header = 1;
+
+  // Velocity, m/s, in the sensor's own frame (header.sensor_frame).
+  // 3 entries [x, y, z].
+  repeated double velocity_mps = 2;
+
+  // True only when the producing sensor was configured to also report beam
+  // ranges (HoloOcean DVLSensor's ReturnRange option, default true).
+  // beam_ranges_m is empty and must not be read as meaningful when false.
+  bool has_beam_ranges = 3;
+  // Up to 4 entries, meters — HoloOcean DVLSensor's own beam order
+  // (see this message's top comment); a producer emitting fewer than 4
+  // beams writes only what it has.
+  repeated double beam_ranges_m = 4;
+}

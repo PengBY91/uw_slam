@@ -1,0 +1,81 @@
+# RigCalibrationSnapshot for the EuRoC MAV Dataset (ASL, ETH Zurich)
+# machine_hall sequences (MH_01 through MH_05 share the same rig/
+# calibration — this is not MH_01-specific despite the filename, named
+# after the sequence adapters/datasets/uw_dataset_adapter/euroc_converter.py
+# is verified against). P1 workstream A3 (docs/superpowers/plans/
+# 2026-08-21-p1-real-multisensor-closed-loop.md) — the public-dataset
+# adapter's rig, proving configs/rig/*.yaml + StereoGeometry aren't
+# HoloOcean-specific.
+#
+# Values sourced from the OKVIS project's published EuRoC config
+# (https://github.com/ethz-asl/okvis, config/config_fpga_p2_euroc.yaml),
+# which republishes the same per-camera intrinsics/distortion and T_SC
+# (camera-to-IMU/body) extrinsics as the dataset's own sensor.yaml files —
+# used here because this sandbox could not reach the ASL host directly
+# (robotics.ethz.ch resolves to an RFC 2544 benchmark-range address from
+# here, i.e. effectively unreachable) to fetch the calibration YAMLs
+# bundled with the raw dataset itself; OKVIS's numbers are the standard,
+# widely-cited republication of that exact calibration, not an independent
+# or approximate one.
+#
+# k_matrix_row_major/distortion below are cam0's and cam1's own intrinsics
+# unchanged from that source. frame_tree's camera_left_link/camera_right_link
+# do NOT carry the source's real (small, ~1.4 degree max) inter-camera
+# rotation misalignment — computed numerically (T_C0C1 = inv(T_SC0) @ T_SC1)
+# to confirm it actually is small before discarding it: baseline translation
+# 0.1101m, almost purely along cam0's optical +x axis (0.1101, -0.0002,
+# 0.0009), rotation submatrix within 0.014 of identity. Collapsing that to
+# identity rotation on both edges is the same precedent configs/rig/
+# example_auv_real_camera.yaml already establishes for its own real-camera
+# stereo rig ("测出的 R 偏差...当作标定噪声/忽略不计的安装倾斜处理") — StereoGeometry::
+# Resolve requires the two edges' rotation submatrices to match, and 1.4
+# degrees is exactly the kind of real-hardware noise that precedent exists
+# for, not a StereoGeometry limitation being worked around here.
+# OpticalFromBodyRotation() (include/sensor_models/camera_model.cpp) maps
+# this platform's body-frame convention (x-forward/y-left/z-up) so that
+# optical +x (where the computed baseline points) corresponds to body -y —
+# hence camera_right_link sits at -0.1101 in body y relative to
+# camera_left_link below.
+#
+# is_rectified: EuRoC's own frames are raw, but euroc_converter.py
+# undistorts each one at conversion time (uw_dataset_adapter/undistort.py,
+# a Python port of include/sensor_models/camera_rectifier.hpp's exact
+# algorithm — see that converter's own docstring for why this turned out to
+# be required, not optional: real distortion on this scene's repetitive
+# structure produced geometrically-backwards stereo matches, not just
+# noisy ones) using exactly the k_matrix_row_major/distortion values below
+# — so the MCAP bags it writes carry is_rectified=true truthfully, and
+# these coefficients are the real, non-trivial (radial-tangential,
+# comparable magnitude to configs/rig/example_auv_real_camera.yaml's)
+# calibration used to remove them, not a placeholder describing raw
+# geometry the pipeline still has to deal with.
+
+calibration_version: "euroc_machine_hall_v1"
+
+frame_tree:
+  - parent_frame: base_link
+    child_frame: camera_left_link
+    transform_row_major:
+      [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]
+  - parent_frame: base_link
+    child_frame: camera_right_link
+    transform_row_major:
+      [1,0,0,0, 0,1,0,-0.1101, 0,0,1,0, 0,0,0,1]
+
+cameras:
+  - sensor_id: camera_left
+    width: 752
+    height: 480
+    k_matrix_row_major: [458.654880721,0,367.215803962, 0,457.296696463,248.37534061, 0,0,1]
+    distortion: [-0.28340811217, 0.0739590738929, 0.000193595028569, 1.76187114545e-05]
+    distortion_model: plumb_bob
+  - sensor_id: camera_right
+    width: 752
+    height: 480
+    k_matrix_row_major: [457.587426604,0,379.99944652, 0,456.13442556,255.238185386, 0,0,1]
+    distortion: [-0.283683654496, 0.0745128430929, -0.000104738949098, -3.55590700274e-05]
+    distortion_model: plumb_bob
+
+time_offset_seconds:
+  camera_left: 0.0
+  camera_right: 0.0

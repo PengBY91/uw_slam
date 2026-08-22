@@ -15,11 +15,13 @@
 #include <vector>
 
 #include "uw/domain/calibration.pb.h"
+#include "uw/domain/dvl.pb.h"
 #include "uw/domain/factor.pb.h"
 #include "uw/domain/health.pb.h"
 #include "uw/domain/hypothesis.pb.h"
 #include "uw/domain/ids.pb.h"
 #include "uw/domain/image.pb.h"
+#include "uw/domain/imu.pb.h"
 #include "uw/domain/map.pb.h"
 #include "uw/domain/measurement.pb.h"
 #include "uw/domain/observation.pb.h"
