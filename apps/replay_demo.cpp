@@ -298,6 +298,9 @@ int main(int argc, char** argv) {
         if (!uw::domain::HasPayload<uw::domain::PressureDepthMeasurement>(evidence)) return;
         if (evidence.source_observations_size() == 0) return;
         if (evidence.source_observations(0).value() != "kf0") return;
+        // depth_m is positive-down (world Z-up); negate to get pose z — see
+        // PressureDepthMeasurement's field comment in
+        // schemas/proto/uw/domain/measurement.proto.
         kf0_z = -uw::domain::GetPayload<uw::domain::PressureDepthMeasurement>(evidence).depth_m();
       });
 

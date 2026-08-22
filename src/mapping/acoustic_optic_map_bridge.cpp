@@ -53,6 +53,10 @@ std::optional<uw::domain::MapEvidence> BuildMapEvidenceFromFusedDepth(
     }
     if (i >= fused.valid_mask().size() || fused.valid_mask()[i] == 0) continue;
     const double depth_m = fused.depth_m(static_cast<int>(i));
+    // FusedDepthMeasurement.depth_m is camera-optical-frame, positive
+    // z-forward range (see its field comment in
+    // schemas/proto/uw/domain/measurement.proto) — unrelated to
+    // PressureDepthMeasurement's world-frame positive-down convention.
     if (!(depth_m > 0.0)) continue;
 
     const double u = static_cast<double>(i % fused.width());

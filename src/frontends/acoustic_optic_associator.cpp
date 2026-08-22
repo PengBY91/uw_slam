@@ -155,10 +155,33 @@ AssociationAuditResult AcousticOpticAssociator::Associate(
   if (passed.size() > 1) {
     record.set_second_best_score(passed[1].score);
     if (passed[1].score - passed[0].score < params_.ambiguity_margin) {
-      record.set_status(uw::domain::ACOUSTIC_OPTIC_ASSOCIATION_STATUS_AMBIGUOUS);
-      record.set_reason(uw::domain::ACOUSTIC_OPTIC_ASSOCIATION_REASON_AMBIGUOUS_MARGIN);
-      result.records.push_back(record);
-      return result;
+      // Near boresight, elevation only weakly perturbs (range, bearing) —
+      // bearing is exactly independent of elevation/depth, and range only
+      // picks up a second-order sec(phi) correction — so on a locally flat
+      // target, several arc-sample pixels legitimately tie on geometric
+      // score even though there is no real competing hypothesis (see
+      // docs/uw-slam-production-readiness-and-roadmap-2026-08-21.md 2.3 for
+      // the investigation that found this: clean_textured/elevation_stress
+      // scenarios were rejecting 100% of associations as AMBIGUOUS despite
+      // being the "should just work" cases). What actually matters for
+      // downstream fusion is whether the CHOICE affects the resulting depth
+      // estimate — if the tied candidates' depth_m values also agree, they
+      // are redundant estimates of the same point, not competing
+      // hypotheses, so fall through and accept the best-scoring one instead
+      // of rejecting.
+      const double depth_diff = static_cast<double>(passed[1].depth_m) - static_cast<double>(passed[0].depth_m);
+      const double combined_variance =
+          static_cast<double>(passed[0].variance_m2) + static_cast<double>(passed[1].variance_m2);
+      const double agreement_threshold_sq =
+          combined_variance * params_.depth_agreement_sigma * params_.depth_agreement_sigma;
+      const bool depths_agree =
+          combined_variance > 0.0 ? (depth_diff * depth_diff) <= agreement_threshold_sq : depth_diff == 0.0;
+      if (!depths_agree) {
+        record.set_status(uw::domain::ACOUSTIC_OPTIC_ASSOCIATION_STATUS_AMBIGUOUS);
+        record.set_reason(uw::domain::ACOUSTIC_OPTIC_ASSOCIATION_REASON_AMBIGUOUS_MARGIN);
+        result.records.push_back(record);
+        return result;
+      }
     }
   }
 

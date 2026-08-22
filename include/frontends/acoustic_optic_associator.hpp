@@ -26,6 +26,15 @@ struct AcousticOpticAssociatorParams {
   double range_gate_m = 0.5;
   double bearing_gate_rad = 0.1;
   double ambiguity_margin = 1.0;  // second_best_score - best_score must exceed this to accept
+  // When the top two candidates' geometric scores are within ambiguity_margin
+  // of each other (see Associate()'s comment on why that alone is not always
+  // a meaningful "these are different real-world points" signal near
+  // boresight), they are still accepted — rather than rejected as ambiguous
+  // — if their depth_m values also agree to within this many combined
+  // standard deviations (sqrt(variance_m2_a + variance_m2_b)). Consistent
+  // with AcousticOpticDepthFusionParams::innovation_gate_sigma's use of a
+  // sigma-multiple gate for the same kind of decision.
+  double depth_agreement_sigma = 3.0;
   int max_candidates = 8;
 };
 

@@ -52,6 +52,12 @@ std::size_t PixelCount(uint32_t width, uint32_t height) {
   return static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
 }
 
+// Enforces the OpticalDepthPriorMeasurement/FusedDepthMeasurement convention
+// (camera-optical-frame, positive z-forward range — see those messages'
+// field comments in schemas/proto/uw/domain/measurement.proto). This is a
+// DIFFERENT convention from PressureDepthMeasurement.depth_m (world-frame,
+// positive-down); PressureDepthMeasurement has no equivalent Validate*
+// function and passes through unchecked.
 ValidationResult ValidateDepthValues(const google::protobuf::RepeatedField<float>& depth,
                                      const google::protobuf::RepeatedField<float>& variance,
                                      const std::string& valid_mask) {

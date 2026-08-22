@@ -541,6 +541,9 @@ int main(int argc, char** argv) {
     // Depth.
     {
       uw::domain::PressureDepthMeasurement measurement;
+      // depth_m is positive-down (world Z-up); negate the pose z to produce
+      // it — see PressureDepthMeasurement's field comment in
+      // schemas/proto/uw/domain/measurement.proto.
       measurement.set_depth_m(-trajectory[i].translation.z());
       measurement.set_sigma_m(0.05);
       uw::domain::EvidenceId evidence_id;

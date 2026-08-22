@@ -115,6 +115,15 @@ int main(int argc, char** argv) {
   // fail every scenario today for a reason unrelated to correctness — left
   // opt-in until the latency work in that roadmap's P3 lands.
   double max_p95_latency_ms = -1.0;
+  // <0 = disabled. Fraction by which fused_covered_rmse must be <= (1 -
+  // fraction) * optical_covered_rmse to pass, checked only for scenarios
+  // with covered_rmse_samples > 0. Left opt-in for the same reason as the
+  // minimum-coverage gate above stays unwired from ctest (docs/uw-slam-
+  // production-readiness-and-roadmap-2026-08-21.md 2.3): most scenarios
+  // currently produce 0 accepted associations because of a real associator
+  // scoring bug, so covered_rmse_samples is 0 for them and this gate would
+  // have nothing to check, not a genuine pass/fail signal.
+  double min_fusion_improvement_fraction = -1.0;
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
@@ -127,6 +136,8 @@ int main(int argc, char** argv) {
       trials_per_scenario = std::stoi(next());
     } else if (arg == "--max-p95-latency-ms" && i + 1 < argc) {
       max_p95_latency_ms = std::stod(next());
+    } else if (arg == "--min-fusion-improvement-fraction" && i + 1 < argc) {
+      min_fusion_improvement_fraction = std::stod(next());
     } else {
       std::cerr << "unknown argument: " << arg << "\n";
       return 1;
@@ -322,9 +333,22 @@ int main(int argc, char** argv) {
     // and kOpticalInvalidRegion are deliberately built (see
     // acoustic_optic_scenarios.cpp) so that fusion has nothing valid to
     // accept — 0 accepted is their correct, expected outcome, not a
-    // regression, so they're excluded here.
+    // regression, so they're excluded here. kTimeOffsetFault
+    // (acoustic_optic_scenarios.cpp injects a full 1s capture-time offset,
+    // meant to be caught by the synchronizer's time gate before the
+    // associator ever runs) and kExtrinsicPerturbation (injects a 1.0m
+    // sonar-extrinsic error, explicitly documented there as "chosen to
+    // unambiguously exceed the associator's default range/bearing gates so
+    // this scenario demonstrates fail-closed rejection") are likewise
+    // deliberate fail-closed fault-injection scenarios, not associator
+    // bugs — see the investigation in this roadmap doc's P0 section for how
+    // this was told apart from the real bug that used to also produce 0/N
+    // here (clean_textured/elevation_stress, now fixed in
+    // acoustic_optic_associator.cpp's depth-agreement check).
     if (spec.kind != uw::scenario_matrix::ScenarioKind::kSonarDropout &&
-        spec.kind != uw::scenario_matrix::ScenarioKind::kOpticalInvalidRegion && agg.accepted == 0) {
+        spec.kind != uw::scenario_matrix::ScenarioKind::kOpticalInvalidRegion &&
+        spec.kind != uw::scenario_matrix::ScenarioKind::kTimeOffsetFault &&
+        spec.kind != uw::scenario_matrix::ScenarioKind::kExtrinsicPerturbation && agg.accepted == 0) {
       std::cerr << "GATE FAIL: " << spec.name << " had 0/" << agg.trials
                 << " accepted associations — no evidence the fusion pipeline produced any valid "
                    "output in this scenario\n";
@@ -335,6 +359,18 @@ int main(int argc, char** argv) {
       std::cerr << "GATE FAIL: " << spec.name << " p95_latency_ms " << p95_latency << " exceeds "
                 << max_p95_latency_ms << "\n";
       any_gate_failed = true;
+    }
+
+    if (min_fusion_improvement_fraction >= 0.0 && agg.covered_rmse_samples > 0) {
+      const double optical_covered_rmse = agg.sum_optical_covered_rmse / agg.covered_rmse_samples;
+      const double fused_covered_rmse = agg.sum_fused_covered_rmse / agg.covered_rmse_samples;
+      const double required_max_rmse = optical_covered_rmse * (1.0 - min_fusion_improvement_fraction);
+      if (fused_covered_rmse > required_max_rmse) {
+        std::cerr << "GATE FAIL: " << spec.name << " fused_covered_rmse " << fused_covered_rmse
+                  << " does not improve on optical_covered_rmse " << optical_covered_rmse << " by at least "
+                  << (min_fusion_improvement_fraction * 100.0) << "% (required <= " << required_max_rmse << ")\n";
+        any_gate_failed = true;
+      }
     }
   }
 

@@ -29,8 +29,18 @@ message RelativePoseMeasurement {
 }
 
 message PressureDepthMeasurement {
+  // Positive-down magnitude below the surface, from a pressure/depth sensor
+  // (NOT a coordinate). This platform's world/body Pose3 frame is Z-up
+  // (architecture invariant, see CLAUDE.md "不要引入欧拉角" section neighbor
+  // on frames), so consumers convert with `pose_z = -depth_m`
+  // (src/factor_builders/depth_residual.cpp: `residual = measured_depth_m +
+  // translation.z()`; adapters/holoocean's `depth_sensor_to_evidence` does
+  // the same on the Python side). Do NOT confuse this with the
+  // camera-optical-frame `depth_m` on OpticalDepthPriorMeasurement/
+  // FusedDepthMeasurement below — same field name, different frame and
+  // different sign convention.
   double depth_m = 1;
-  double sigma_m = 2;
+  double sigma_m = 2;  // same units/frame as depth_m above.
 }
 
 // Placeholder payloads for frontends not yet implemented in this first
@@ -44,6 +54,11 @@ message VisualTrackMeasurement {
   repeated uint64 track_ids = 3;
 }
 
+// Placeholder — not yet populated by any frontend (stereo_optical_depth_frontend
+// emits OpticalDepthPriorMeasurement instead). Frame/sign convention for
+// x_m/y_m/z_m is undecided until a producer exists; do not assume it matches
+// either PressureDepthMeasurement's world-frame convention or
+// OpticalDepthPriorMeasurement's optical-frame convention below.
 message StereoDepthMeasurement {
   repeated double x_m = 1;
   repeated double y_m = 2;
@@ -78,8 +93,20 @@ message OpticalDepthPriorMeasurement {
   FrameId reference_camera_frame = 1;
   uint32 width = 2;
   uint32 height = 3;
+  // Positive distance along the reference camera's OPTICAL frame z-axis
+  // (z-forward, REP-103 — see include/sensor_models/camera_model.hpp), i.e.
+  // triangulated range in front of the camera, NOT a world-frame depth below
+  // the surface. Different convention from PressureDepthMeasurement.depth_m
+  // above despite the shared field name. Producers (e.g.
+  // stereo_optical_depth_frontend) compute this from rectified stereo
+  // disparity (`fx * baseline_m / disparity_px`) and therefore implicitly
+  // require both source ImageFrames to have `is_rectified == true`; no
+  // frontend currently enforces that flag itself (is_rectified is
+  // write-only from synthetic generators as of 2026-08-21 — see
+  // docs/uw-slam-production-readiness-and-roadmap-2026-08-21.md P1 item on
+  // establishing a raw/rectified image contract).
   repeated float depth_m = 4 [packed = true];
-  repeated float variance_m2 = 5 [packed = true];
+  repeated float variance_m2 = 5 [packed = true];  // (depth_m units)^2, same optical-frame convention.
   bytes valid_mask = 6;
   OpticalDepthScaleStatus scale_status = 7;
   string producer_type = 8;
@@ -115,6 +142,12 @@ message AcousticOpticAssociationRecord {
   double best_score = 6;
   double second_best_score = 7;
   double time_delta_seconds = 8;
+  // prior_depth_m/posterior_depth_m/*_variance_m2 use the same
+  // camera-optical-frame convention as OpticalDepthPriorMeasurement.depth_m
+  // above (positive z-forward range, not world-frame depth). posterior_*
+  // is only meaningful when status == ACCEPTED; for other statuses it holds
+  // whatever value the associator last wrote (typically unset/zero) and
+  // should not be read as a valid measurement.
   double prior_depth_m = 9;
   double posterior_depth_m = 10;
   double prior_variance_m2 = 11;
@@ -132,8 +165,11 @@ message FusedDepthMeasurement {
   FrameId reference_camera_frame = 1;
   uint32 width = 2;
   uint32 height = 3;
+  // Same camera-optical-frame convention as OpticalDepthPriorMeasurement.depth_m
+  // above (positive z-forward range). Per-pixel value is either the untouched
+  // optical prior or the sonar-corrected posterior — see contribution_mask below.
   repeated float depth_m = 4 [packed = true];
-  repeated float variance_m2 = 5 [packed = true];
+  repeated float variance_m2 = 5 [packed = true];  // (depth_m units)^2.
   bytes valid_mask = 6;
   // One byte per pixel, encoded with DepthContribution values.
   bytes contribution_mask = 7;
