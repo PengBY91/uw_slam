@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 from uw.domain import measurement_pb2, state_pb2, time_pb2  # noqa: E402
 
 from uw_holoocean_adapter.state_conversion import (
@@ -25,10 +26,18 @@ def test_pose_sensor_to_state_snapshot_sets_id_time_and_pose():
     assert recovered_translation == [1.0, 2.0, 3.0]
 
 
-def test_depth_sensor_to_evidence_sets_depth_and_sources():
+def test_depth_sensor_to_evidence_negates_raw_holoocean_reading():
+    """HoloOcean's real DepthSensor returns raw world-frame position_z
+    (negative underwater — confirmed against a real recording, and against
+    external_repos/HoloOcean's own DepthSensor docstring), not an
+    already-positive depth magnitude. depth_sensor_to_evidence's output must
+    be positive-down (the wire convention apps/replay_demo's kf0_z anchoring
+    consumes via `kf0_z = -depth_m`) — this is the regression test for a
+    real bug: passing the raw reading through unnegated put the anchor
+    keyframe ~585m away from ground truth in a real end-to-end run."""
     evidence = depth_sensor_to_evidence(
         measurement_pb2,
-        np.array([12.5]),
+        np.array([-292.71]),
         evidence_id="depth_kf3",
         source_observation_id="kf3",
         sigma_m=0.1,
@@ -36,7 +45,7 @@ def test_depth_sensor_to_evidence_sets_depth_and_sources():
 
     assert evidence.evidence_id.value == "depth_kf3"
     assert evidence.WhichOneof("payload") == "pressure_depth"
-    assert evidence.pressure_depth.depth_m == 12.5
+    assert evidence.pressure_depth.depth_m == pytest.approx(292.71)
     assert evidence.pressure_depth.sigma_m == 0.1
     assert len(evidence.source_observations) == 1
     assert evidence.source_observations[0].value == "kf3"
@@ -45,7 +54,7 @@ def test_depth_sensor_to_evidence_sets_depth_and_sources():
 def test_depth_sensor_to_evidence_accepts_scalar_array():
     evidence = depth_sensor_to_evidence(
         measurement_pb2,
-        np.array(7.0),
+        np.array(-7.0),
         evidence_id="depth_kf0",
         source_observation_id="kf0",
     )

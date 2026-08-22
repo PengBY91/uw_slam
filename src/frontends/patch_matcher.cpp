@@ -46,11 +46,50 @@ std::vector<PatchMatch> PatchMatcher::Match(const std::vector<LandmarkBlob>& a,
   candidates.reserve(a.size() * b.size());
   for (std::size_t i = 0; i < a.size(); ++i) {
     for (std::size_t j = 0; j < b.size(); ++j) {
+      if (params_.max_row_diff_px >= 0.0 &&
+          std::abs(a[i].centroid_v - b[j].centroid_v) > params_.max_row_diff_px) {
+        continue;
+      }
       const double score = NormalizedCrossCorrelation(a[i].patch, b[j].patch);
       if (score >= params_.min_ncc_score) {
         candidates.push_back(PatchMatch{i, j, score});
       }
     }
+  }
+
+  if (params_.min_score_margin > 0.0) {
+    // Per-index best/second-best score, from each side independently.
+    // -2.0 is below any real NCC score ([-1, 1]), so it safely means "no
+    // second candidate seen yet".
+    std::vector<double> best_a(a.size(), -2.0), second_a(a.size(), -2.0);
+    std::vector<double> best_b(b.size(), -2.0), second_b(b.size(), -2.0);
+    for (const auto& candidate : candidates) {
+      if (candidate.score > best_a[candidate.index_a]) {
+        second_a[candidate.index_a] = best_a[candidate.index_a];
+        best_a[candidate.index_a] = candidate.score;
+      } else if (candidate.score > second_a[candidate.index_a]) {
+        second_a[candidate.index_a] = candidate.score;
+      }
+      if (candidate.score > best_b[candidate.index_b]) {
+        second_b[candidate.index_b] = best_b[candidate.index_b];
+        best_b[candidate.index_b] = candidate.score;
+      } else if (candidate.score > second_b[candidate.index_b]) {
+        second_b[candidate.index_b] = candidate.score;
+      }
+    }
+    candidates.erase(
+        std::remove_if(
+            candidates.begin(), candidates.end(),
+            [&](const PatchMatch& candidate) {
+              const bool ambiguous_a = second_a[candidate.index_a] > -2.0 &&
+                                        (best_a[candidate.index_a] - second_a[candidate.index_a]) <
+                                            params_.min_score_margin;
+              const bool ambiguous_b = second_b[candidate.index_b] > -2.0 &&
+                                        (best_b[candidate.index_b] - second_b[candidate.index_b]) <
+                                            params_.min_score_margin;
+              return ambiguous_a || ambiguous_b;
+            }),
+        candidates.end());
   }
 
   // Stable sort by descending score, ties broken by (index_a, index_b) —

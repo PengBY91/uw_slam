@@ -89,6 +89,73 @@ TEST(PatchMatcher, GreedyAssignmentIsOneToOne) {
   }
 }
 
+TEST(PatchMatcher, RowGateRejectsCandidatesOutsideToleranceButKeepsWithinTolerance) {
+  const std::vector<uint8_t> pattern = {10, 200, 10, 200, 10, 200, 10, 200, 10};
+
+  // Same appearance, but b[0] is far off-row (rejected) and b[1] is within
+  // tolerance (kept) relative to a[0]'s row.
+  std::vector<LandmarkBlob> left = {MakeBlob(50.0, 100.0, pattern)};
+  std::vector<LandmarkBlob> right = {MakeBlob(50.0, 150.0, pattern), MakeBlob(50.0, 101.0, pattern)};
+
+  PatchMatcherParams params;
+  params.min_ncc_score = 0.9;
+  params.max_row_diff_px = 2.0;
+  PatchMatcher matcher(params);
+
+  const auto matches = matcher.Match(left, right);
+  ASSERT_EQ(matches.size(), 1u);
+  EXPECT_EQ(matches[0].index_b, 1u);  // the far (row-diff=50) candidate must never be considered
+}
+
+TEST(PatchMatcher, RowGateDisabledByDefaultMatchesAnyRow) {
+  const std::vector<uint8_t> pattern = {10, 200, 10, 200, 10, 200, 10, 200, 10};
+  std::vector<LandmarkBlob> left = {MakeBlob(50.0, 100.0, pattern)};
+  std::vector<LandmarkBlob> right = {MakeBlob(50.0, 400.0, pattern)};  // far off-row
+
+  PatchMatcherParams params;
+  params.min_ncc_score = 0.9;
+  PatchMatcher matcher(params);
+
+  EXPECT_EQ(matcher.Match(left, right).size(), 1u);
+}
+
+TEST(PatchMatcher, MinScoreMarginRejectsAmbiguousMatchesButKeepsDistinctOnes) {
+  // b[0] and b[1] both look almost exactly like a[0] (a real-texture
+  // repetitive-patch scenario) — too close in score to trust either.
+  // a[1]/b[2] is a clearly distinct, unambiguous pair and must still match.
+  const std::vector<uint8_t> pattern_a = {10, 200, 10, 200, 10, 200, 10, 200, 10};
+  const std::vector<uint8_t> pattern_a_near_twin = {12, 198, 12, 198, 12, 198, 12, 198, 12};
+  const std::vector<uint8_t> pattern_distinct = {5, 5, 250, 5, 5, 250, 5, 5, 250};
+
+  std::vector<LandmarkBlob> left = {MakeBlob(0, 0, pattern_a), MakeBlob(1, 1, pattern_distinct)};
+  std::vector<LandmarkBlob> right = {MakeBlob(0, 0, pattern_a), MakeBlob(1, 1, pattern_a_near_twin),
+                                      MakeBlob(2, 2, pattern_distinct)};
+
+  PatchMatcherParams params;
+  params.min_ncc_score = 0.6;
+  params.min_score_margin = 0.05;
+  PatchMatcher matcher(params);
+
+  const auto matches = matcher.Match(left, right);
+  ASSERT_EQ(matches.size(), 1u);
+  EXPECT_EQ(matches[0].index_a, 1u);
+  EXPECT_EQ(matches[0].index_b, 2u);
+}
+
+TEST(PatchMatcher, MinScoreMarginDisabledByDefaultKeepsAmbiguousMatches) {
+  const std::vector<uint8_t> pattern_a = {10, 200, 10, 200, 10, 200, 10, 200, 10};
+  const std::vector<uint8_t> pattern_a_near_twin = {12, 198, 12, 198, 12, 198, 12, 198, 12};
+
+  std::vector<LandmarkBlob> left = {MakeBlob(0, 0, pattern_a)};
+  std::vector<LandmarkBlob> right = {MakeBlob(0, 0, pattern_a), MakeBlob(1, 1, pattern_a_near_twin)};
+
+  PatchMatcherParams params;
+  params.min_ncc_score = 0.6;
+  PatchMatcher matcher(params);
+
+  EXPECT_EQ(matcher.Match(left, right).size(), 1u);  // picks the best one, doesn't reject it
+}
+
 TEST(PatchMatcher, EmptyInputsProduceNoMatches) {
   PatchMatcherParams params;
   PatchMatcher matcher(params);

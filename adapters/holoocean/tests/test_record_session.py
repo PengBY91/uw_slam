@@ -25,7 +25,11 @@ def test_record_frames_emits_a_keyframe_only_for_camera_bearing_frames():
                 "LeftCamera": _camera_array(10),
                 "RightCamera": _camera_array(20),
                 "PoseSensor": np.eye(4),
-                "DepthSensor": np.array([5.0]),
+                # Raw HoloOcean DepthSensor is signed world-frame position_z
+                # (negative underwater, see state_conversion.py's
+                # depth_sensor_to_evidence docstring) — depth_m below is the
+                # WIRE convention (positive-down) it gets negated into.
+                "DepthSensor": np.array([-5.0]),
             },
         ),
         RawSensorFrame(

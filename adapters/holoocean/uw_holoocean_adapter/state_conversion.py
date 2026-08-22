@@ -48,8 +48,24 @@ def depth_sensor_to_evidence(
     positive-down reading (uw::sensor_models::Pose3's z is up, so consumers
     negate this — see replay_demo's kf0_z anchoring, which does exactly
     that: `kf0_z = -depth_m`).
+
+    `depth_value` is HoloOcean's own raw DepthSensor reading, which is NOT
+    already a positive-down magnitude — confirmed straight from the vendored
+    (read-only) source, `external_repos/HoloOcean/client/src/holoocean/
+    sensors.py`'s `DepthSensor` docstring: it "Returns a 1D numpy array of
+    [position_z]", i.e. the raw world-frame z coordinate (negative
+    underwater, matching PoseSensor's z convention — verified against a
+    real recording: a real bag's /gt/state z and this function's un-negated
+    input were both ~-292m for the same keyframes). Negating here is what
+    makes this function's OUTPUT match the documented positive-down wire
+    convention above; passing `depth_value` through unnegated was a real bug
+    (found by running `apps/replay_demo` against a real HoloOcean bag, not
+    caught by this module's own tests, which only ever exercised
+    already-positive inputs): the fixed kf0 anchor ended up at +292m while
+    ground truth was at -292m, a ~585m constant offset that dominated the
+    resulting ATE almost entirely.
     """
-    depth_m = float(np.asarray(depth_value).reshape(-1)[0])
+    depth_m = -float(np.asarray(depth_value).reshape(-1)[0])
 
     evidence = measurement_pb2_module.MeasurementEvidence()
     evidence.evidence_id.value = evidence_id

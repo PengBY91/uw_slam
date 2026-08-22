@@ -78,6 +78,14 @@ struct Options {
   std::string experiment_path;
   std::string out_prefix = "/tmp/replay_demo";
   int max_iterations = -1;  // -1 = "not set on CLI"; falls back to config/hardcoded default
+  // Off by default so every synthetic scenario's already-tracked ATE number
+  // (README/CLAUDE.md's "expected ~0.06-0.07m" etc.) is unaffected — those
+  // scenarios already share a common world frame/origin with ground truth
+  // by construction, so alignment isn't needed there. Pass --align-ate for
+  // a real (non-synth_bag_gen) bag, whose absolute world position has
+  // nothing to do with the pose graph's kf0-at-origin convention — see
+  // evaluation/trajectory_metrics.hpp's ComputeAte doc comment.
+  bool align_ate = false;
 };
 
 std::string ToTumLine(double timestamp_s, const Pose3& pose) {
@@ -110,6 +118,8 @@ int main(int argc, char** argv) {
       opt.out_prefix = next();
     } else if (arg == "--max-iterations") {
       opt.max_iterations = std::stoi(next());
+    } else if (arg == "--align-ate") {
+      opt.align_ate = true;
     } else {
       std::cerr << "unknown argument: " << arg << "\n";
       return 1;
@@ -117,7 +127,7 @@ int main(int argc, char** argv) {
   }
   if (opt.bag_path.empty()) {
     std::cerr << "usage: replay_demo --bag <path.mcap> [--experiment <path.yaml>] "
-                 "[--out <prefix>] [--max-iterations N]\n";
+                 "[--out <prefix>] [--max-iterations N] [--align-ate]\n";
     return 1;
   }
 
@@ -284,6 +294,28 @@ int main(int argc, char** argv) {
     vo_params.detector_kind = landmark_detector == "harris_corner"
                                    ? uw::frontends::LandmarkDetectorKind::kHarrisCorner
                                    : uw::frontends::LandmarkDetectorKind::kBrightBlob;
+    if (landmark_detector == "harris_corner") {
+      // Only for the real-camera path: synth_bag_gen's landmarks are
+      // deliberately unique per-id hash patterns (see its header), so
+      // PatchMatcher's plain greedy NCC never had an ambiguity problem
+      // there and the tracked synthetic ATE number shouldn't shift.
+      // Real underwater imagery (coral/rock/sand) is locally repetitive —
+      // confirmed the hard way running apps/replay_demo against a real
+      // HoloOcean recording: appearance-only matching with no
+      // spatial/distinctiveness constraint produced ATE=587m (solver
+      // stalled), because RANSAC's majority-consensus assumption breaks
+      // down once wrong correspondences are as numerous as right ones.
+      // max_row_diff_px mirrors BlockMatcher's own same-row disparity
+      // search (an epipolar constraint for this rig's parallel stereo
+      // pair); min_score_margin rejects a match unless it is clearly
+      // better than the next-best candidate for either side (a
+      // Lowe's-ratio-test-style distinctiveness check) — see
+      // patch_matcher.hpp for both. Thresholds are a first empirical pass
+      // against the one real bag available, not a calibrated constant.
+      vo_params.stereo_matcher.max_row_diff_px = 4.0;
+      vo_params.stereo_matcher.min_score_margin = 0.02;
+      vo_params.temporal_matcher.min_score_margin = 0.05;
+    }
     uw::frontends::StereoLandmarkVoFrontend vo_frontend(vo_params);
 
     for (int i = 0; i <= max_kf_index; ++i) {
@@ -598,7 +630,8 @@ int main(int argc, char** argv) {
         ground_truth_trajectory.push_back({timestamp_s, pose});
       });
 
-  const auto ate = uw::evaluation::ComputeAte(estimated_trajectory, ground_truth_trajectory);
+  const auto ate =
+      uw::evaluation::ComputeAte(estimated_trajectory, ground_truth_trajectory, 0.05, opt.align_ate);
   std::cout << "ATE: rmse=" << ate.rmse_m << "m mean=" << ate.mean_m << "m max=" << ate.max_m
             << "m (" << ate.num_matched_poses << " matched poses)\n";
 

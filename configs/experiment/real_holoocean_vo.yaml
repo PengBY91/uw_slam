@@ -1,0 +1,38 @@
+# 第一个真实（非合成）数据的端到端定量验证 experiment：consume
+# adapters/holoocean/uw_holoocean_adapter/record_session.py 在真实 HoloOcean
+# （OpenWater-HoveringCamera，Windows 原生渲染）上录制的 bag（/tmp/real_session.mcap，
+# 78MB，50 个 keyframe，只有 /raw/camera/{left,right}、/gt/state、/evidence/depth
+# 三类话题——这个场景没有声呐传感器，也没有录 IMU/DVL，所以这次跑不出
+# sonar_range_v1 因子，只有 relative_pose（来自 stereo_landmark_vo_frontend 实时算，
+# 不是从 bag 读桩）+ depth_v1 两类证据参与位姿图。
+#
+# rig 换成 example_auv_real_camera.yaml（真实标定的内参/畸变/立体基线，见该文件
+# 头部注释）；frontends.landmark_detector 换成 harris_corner——bright_blob（默认）
+# 是给 synth_bag_gen 的合成高亮方块调的固定阈值检测器，在真实水下渲染画面上找不到
+# 东西（见 project 记忆：HarrisCornerDetector 已经在这个真实 bag 的全部 50 帧上验证过，
+# 每帧都能顶满 max_corners=200）。
+#
+# scenario 字段这里只是满足 config loader 的层级要求——apps/replay_demo 不读取
+# ScenarioConfig 的任何字段（那是 synth_bag_gen 生成合成数据专用的），所以复用
+# synthetic_smoke.yaml 场景文件的内容对这次真实数据回放没有影响。
+
+rig: rig/example_auv_real_camera.yaml
+scenario: scenario/synthetic_smoke.yaml
+defaults: defaults/platform.yaml
+
+frontends:
+  optical: stereo_depth_frontend_v1
+  sonar: sonar_cfar_frontend_v1
+  landmark_detector: harris_corner
+
+factor_builders:
+  - relative_pose_v1
+  - sonar_range_v1
+  - depth_v1
+
+estimator_mode: stereo_landmark_vo
+map_backend: submap_point_cloud_v1
+
+output:
+  trajectory_format: tum
+  write_run_manifest: true
