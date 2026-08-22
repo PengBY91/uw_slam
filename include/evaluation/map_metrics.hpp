@@ -38,11 +38,8 @@ struct MapMetricsResult {
 
 // Chamfer distance / completeness / outlier ratio between an estimated
 // point set (e.g. SubmapManager::WorldPointsForKeyframe's output) and a
-// reference point set (ground-truth surface samples). P3 workstream A2
-// (docs/superpowers/plans/2026-08-22-p3-online-reconstruction-and-
-// productionization.md) — first map-quality metrics this repo has;
-// computed directly against point clouds, so it does NOT need Track D's
-// TSDF/surfel/occupancy backend to exist first.
+// reference point set (ground-truth surface samples). It operates directly
+// on point clouds and does not require a particular map backend.
 //
 // Empty-input convention (avoid NaN, matching ComputeDepthMetrics's
 // zero-not-NaN precedent in this same directory):
@@ -52,9 +49,8 @@ struct MapMetricsResult {
 //   - `reference` empty, `estimated` non-empty: outlier_ratio is 1.0, NOT
 //     0.0 — an empty reference means nothing can be confirmed correct, so
 //     every estimated point is conservatively treated as unconfirmed
-//     (fail-closed, matching this repo's general stance on "can't verify"
-//     — see the roadmap doc's own "困难场景 gate 放空" risk). completeness
-//     stays 0.0 (nothing to be complete about).
+//     (fail-closed, matching this repo's general stance on "can't verify").
+//     Completeness stays 0.0 (nothing to be complete about).
 //   - both empty: everything 0.0.
 //
 // v1 scale limitation, documented rather than hidden (same pattern as

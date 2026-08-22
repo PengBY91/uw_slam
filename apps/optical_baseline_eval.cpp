@@ -1,8 +1,8 @@
-// Optical-only baseline harness (plan 2 of the acoustic-optic series):
+// Optical-only baseline harness:
 // StereoOpticalDepthFrontend against a synthetic bag from
 // apps/synth_stereo_gen.cpp, scored with uw::evaluation::ComputeDepthMetrics
 // against /gt/depth. Does NOT fuse sonar and does NOT touch
-// apps/replay_demo's pose-graph loop — see plan 2's scope boundary.
+// the replay pose-graph loop.
 #include <iostream>
 #include <optional>
 #include <string>

@@ -1,6 +1,5 @@
-// Cross-modal geometric association (design spec section 8.2/8.3) — NOT
-// the posterior depth update (section 8.4, plan 4's
-// AcousticOpticDepthFusionFrontend). Produces AcousticOpticAssociationRecords
+// Cross-modal geometric association only — posterior depth updates belong to
+// AcousticOpticDepthFusionFrontend. Produces AcousticOpticAssociationRecords
 // with prior_depth_m/prior_variance_m2 filled in and
 // posterior_depth_m/posterior_variance_m2 left at zero; never sets
 // POSTERIOR_INVALID or VARIANCE_NOT_IMPROVED. Inherits the repo-wide v1

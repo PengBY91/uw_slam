@@ -17,7 +17,7 @@ struct ArcCandidate {
 };
 
 // Samples the ideal FLS arc p_S(phi) = rho * [cos(phi)cos(theta), cos(phi)sin(theta), sin(phi)],
-// phi in [-aperture/2, +aperture/2] (design spec section 8.1), transforms each sample through
+// phi in [-aperture/2, +aperture/2], transforms each sample through
 // `camera_T_sonar` (a rig-derived Pose3 in this platform's BODY convention — e.g.
 // camera_left_edge.Inverse() * sonar_edge, both straight from RigCalibrationSnapshot's
 // frame_tree) into the target camera's frame, applies the fixed body->optical rotation

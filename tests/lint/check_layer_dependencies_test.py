@@ -40,6 +40,31 @@ class LayerDependencyTest(unittest.TestCase):
             self.assertEqual(len(errors), 1)
             self.assertIn("estimation must not include frontends", errors[0])
 
+    def test_rejects_algorithm_layer_to_application_dependency(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write(
+                root,
+                "src/frontends/example.cpp",
+                '#include "application/replay_pipeline.hpp"\n',
+            )
+            errors = load_checker().check(root)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("frontends must not include application", errors[0])
+
+    def test_allows_application_layer_to_compose_project_roles(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write(
+                root,
+                "src/application/replay_pipeline.cpp",
+                '#include "frontends/example.hpp"\n'
+                '#include "estimation/example.hpp"\n'
+                '#include "mapping/example.hpp"\n'
+                '#include "runtime/example.hpp"\n',
+            )
+            self.assertEqual(load_checker().check(root), [])
+
     def test_rejects_ros_header_outside_ros2_adapter(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

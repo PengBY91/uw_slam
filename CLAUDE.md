@@ -27,7 +27,8 @@
   和 ROS2 Jazzy 装在系统 apt 里，都在这个仓库目录之外，不受 `.gitignore`/版本
   控制影响。
 - **依赖只能单向**：`domain → core → {frontends, factor_builders, estimation,
-  mapping, runtime, evaluation, adapters} → apps`，ROS2 隔离在 `adapters/ros2/`。
+  mapping, runtime, evaluation, adapters} → application → apps`，ROS2 隔离在
+  `adapters/ros2/`；`apps/` 只做参数解析和进程入口，用例编排放在 `application`。
   `include/`、`src/` 下任何生产代码都不能 include ROS/HoloOcean/第三方 vendor
   头，也不能再用旧的 `uw/...` 手写头路径——这是 `tools/lint/
   check_layer_dependencies.py`（`tools/lint/check_no_ros_in_core.sh` 是它的

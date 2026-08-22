@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# L2: same seed/config -> byte-identical scenario-matrix report (plan 5),
+# L2: same seed/config -> byte-identical scenario-matrix report,
 # EXCEPT p95_latency_ms — that field is a real wall-clock measurement and
 # will legitimately differ run-to-run on any real machine; stripping it is
 # not hiding nondeterminism, it's excluding the one field that was never
-# meant to be deterministic. Deliberately does NOT round-trip through MCAP
-# (see plan 5's file header for why) — this proves the pipeline itself
+# meant to be deterministic. Deliberately does NOT round-trip through MCAP;
+# this proves the pipeline itself
 # (RNG usage, iteration order, floating-point formatting) is deterministic,
 # the same property determinism_test.sh proves for the pose-graph replay
 # path.

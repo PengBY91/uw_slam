@@ -47,7 +47,7 @@ uw::domain::MeasurementEvidence MakeFusedEvidence(int width, int height, int val
 
 TEST(AcousticOpticMapBridge, ConvertsBoresightPixelToBaseLinkFramePoint) {
   const auto rig = MakeRig();
-  // index 5*20+10 = 110, matching the (10,5) boresight pixel used throughout plans 3/4.
+  // index 5*20+10 = 110, matching the (10,5) boresight fixture pixel.
   const auto fused_evidence = MakeFusedEvidence(20, 10, 110, 5.0f, 0.02f);
 
   uw::mapping::AcousticOpticMapBridgeParams params;

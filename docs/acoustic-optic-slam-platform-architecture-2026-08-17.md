@@ -188,10 +188,11 @@ ROS2 topic 只是数据面的传输机制，不是算法内部 API。
 
 ~~~text
 apps / demo_bringup
-  └─→ uw::runtime
+  └─→ uw::application
         ├─→ frontend APIs
         ├─→ uw::estimation
         ├─→ uw::mapping
+        ├─→ uw::runtime
         └─→ adapter APIs
 
 frontend implementations
@@ -239,7 +240,7 @@ uw::measurement_api ─→ uw::sensor_models ─→ uw::domain
 3. `uw::mapping` 只消费版本化状态和地图证据；
 4. HoloOcean、厂商消息和论文消息只存在于 adapters；
 5. 数据流中的 map→loop→estimation 反馈不能形成代码依赖环；
-6. apps 负责组合，不拥有算法状态；
+6. application 负责用例组合，apps 只负责参数解析和进程入口；两者都不拥有算法状态；
 7. 第一版使用编译期模块注册，不开发通用动态插件系统。
 
 ## 6. 推荐仓库边界

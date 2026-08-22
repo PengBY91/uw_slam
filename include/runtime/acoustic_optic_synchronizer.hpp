@@ -1,4 +1,4 @@
-// Pure, stateless capture-time pairing (design spec section 5.1): given
+// Pure, stateless capture-time pairing: given
 // already-captured frames and the rig's time_offset_seconds
 // (t_reference = t_sensor_capture + time_offset_seconds[sensor_id]),
 // decides whether they form one valid synchronized bundle. Uses

@@ -142,7 +142,7 @@ TEST(AcousticOpticAssociator, AcceptsConsistentBoresightDetection) {
   EXPECT_NEAR(record.prior_depth_m(), 5.0, 1e-6);
   EXPECT_NEAR(record.best_score(), 0.0, 1e-6);
   EXPECT_NEAR(record.time_delta_seconds(), 0.01, 1e-9);
-  // Posterior fields are explicitly plan 4's job — this plan must not set them.
+  // Association must leave posterior fields for the fusion stage.
   EXPECT_EQ(record.posterior_depth_m(), 0.0);
   EXPECT_EQ(record.posterior_variance_m2(), 0.0);
 }

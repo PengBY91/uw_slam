@@ -1,8 +1,4 @@
-// P3 workstream D8 (docs/superpowers/plans/2026-08-22-p3-online-
-// reconstruction-and-productionization.md): this repo's first real
-// map-geometry backend. See docs/superpowers/plans/2026-08-22-p3-d8-
-// geometry-backend-decision.md for why surfel was chosen over TSDF/
-// occupancy, and what scope this PoC deliberately does NOT cover.
+// Lightweight surfel map backend for incrementally fusing point evidence.
 #pragma once
 
 #include <cstddef>
@@ -13,8 +9,7 @@
 namespace uw::mapping {
 
 // A single surfel: an oriented disk approximating a small patch of surface.
-// v1 fields only: no radius growth, no confidence decay/cap, no pruning —
-// see the decision doc for what's left to D9/D10.
+// v1 fields only: no radius growth, confidence decay/cap, or pruning.
 struct Surfel {
   Eigen::Vector3d position_W = Eigen::Vector3d::Zero();
   // Zero() means "unknown" — a single fused point carries no normal
@@ -23,8 +18,8 @@ struct Surfel {
   Eigen::Vector3d normal_W = Eigen::Vector3d::Zero();
   double radius_m = 0.0;
   // Accumulated merge weight — higher means more (and/or more confident)
-  // observations support this surfel. Intended convention (see the
-  // decision doc): 1/variance_m2, so it composes directly with
+  // observations support this surfel. Intended convention: 1/variance_m2,
+  // so it composes directly with
   // MapEvidence.uncertainty (already populated as variance_m2 by
   // acoustic_optic_map_bridge.cpp) without any protocol change — but
   // SurfelMap itself is agnostic to what "confidence" means, it only
@@ -39,11 +34,7 @@ struct SurfelMapParams {
   double merge_distance_m = 0.05;
 };
 
-// Hand-rolled surfel map, no external dependency beyond Eigen (already a
-// repo-wide dependency) — see the decision doc for why hand-rolled instead
-// of a library (Open3D/voxblox et al. were considered and rejected on
-// dependency-footprint grounds, consistent with this repo's existing
-// posture toward the hand-rolled Gauss-Newton solver).
+// Hand-rolled surfel map with no external dependency beyond Eigen.
 //
 // v1 scale limitation, documented rather than hidden (same pattern as
 // other v1 notes in this codebase, e.g. ComputeMapMetrics's brute-force
@@ -52,8 +43,7 @@ struct SurfelMapParams {
 // for the point counts this is tested against; NOT fine for
 // apps/replay_demo's real map evidence volume (millions of points per
 // run) — a spatial index (voxel hash, KD-tree) is required before this
-// scales, and is explicitly left to a follow-up workstream, not attempted
-// here.
+// scales.
 class SurfelMap {
  public:
   explicit SurfelMap(SurfelMapParams params = {});

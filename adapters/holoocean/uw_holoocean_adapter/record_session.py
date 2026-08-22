@@ -17,9 +17,8 @@ published (they run at their own configured Hz, slower than the
 simulation's tick rate — see holoocean_driver.py's RawSensorFrame comment);
 non-camera ticks are stepped but produce no bag messages, matching how
 apps/tools/synth_bag_gen ties every message to a keyframe rather than to a
-raw tick. Sonar/IMU/DVL (P1 workstream B4, docs/superpowers/plans/
-2026-08-21-p1-real-multisensor-closed-loop.md) are each written to their
-own topic (/raw/sonar_frame, /raw/imu, /raw/dvl) whenever present on a
+raw tick. Sonar/IMU/DVL are each written to their own topic
+(/raw/sonar_frame, /raw/imu, /raw/dvl) whenever present on a
 camera-bearing tick — none of the three is required for the others or for
 the tick to count as a keyframe, since real hardware would run them at
 independent rates too.

@@ -1,9 +1,8 @@
 """Converts a EuRoC MAV Dataset (ASL, ETH Zurich) ROS1 bag's stereo camera
 topics into a canonical MCAP bag this repo's apps/replay_demo can consume
-directly — P1 workstream A3 (docs/superpowers/plans/2026-08-21-p1-real-
-multisensor-closed-loop.md): the point is proving schemas/proto/uw/domain/
-and the stereo_landmark_vo pipeline aren't HoloOcean-specific, using real
-external sensor data, not synthetic placeholders.
+directly. This exercises schemas/proto/uw/domain/ and the
+stereo_landmark_vo pipeline with real external sensor data rather than
+HoloOcean-specific or synthetic input.
 
 Source format: a ROS1 bag (not the ASL raw CSV+PNG archive) — every
 reachable public mirror of the ASL raw archive during this work turned out
@@ -47,7 +46,7 @@ Undistortion turned out to be REQUIRED, not optional: verified this the
 hard way (this repo's own convention — see CLAUDE.md's "已经踩过的坑" — of not
 trusting an assumption without actually running the real pipeline). A
 first version of this converter wrote raw (distorted) frames directly with
-is_rectified=False, matching P1 workstream A2's precedent of not wiring
+is_rectified=False, following the existing rule not to wire
 include/sensor_models/camera_rectifier.hpp into any real-camera path
 without also retuning the downstream matcher. That produced ZERO relative-
 pose factors end to end. Root-caused with a standalone probe (HarrisCorner-

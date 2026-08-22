@@ -45,13 +45,9 @@ jobs:
           name: verify-pipeline-logs
           path: ${{ runner.temp }}/verify
 
-  # P3 workstream A1 (docs/superpowers/plans/2026-08-22-p3-online-
-  # reconstruction-and-productionization.md): ASan+UBSan build of the full
-  # ctest suite, via tools/run_quality_checks.sh so local and CI stay one
-  # source of truth (same pattern as the `verify` job above and
-  # tools/verify_pipeline.sh). Runs in parallel with `verify`, not chained
-  # after it — a sanitizer finding is independent of whether the plain
-  # build passes. TSan is deliberately NOT run here — see
+  # ASan+UBSan runs through the same quality-check entry point used locally.
+  # It runs independently of the plain verification job. TSan is not run here;
+  # see
   # CMakeLists.txt's UW_SANITIZER option comment and
   # tools/run_quality_checks.sh's run_sanitizer() for why (false positives
   # from this toolchain's uninstrumented prebuilt protobuf/gtest).
@@ -79,10 +75,8 @@ jobs:
           export PATH="$CONDA_PREFIX/bin:$PATH"
           tools/run_quality_checks.sh sanitizer
 
-  # P3 workstream A1: static analysis (reported, not gated — see the plan
-  # doc for why no threshold is set yet) and gcov coverage (reported only;
-  # no lcov/gcovr on this toolchain, see tools/run_quality_checks.sh).
-  # Also independent of `verify` — runs in parallel.
+  # Static analysis and gcov coverage are reported but not gated. This job
+  # runs independently of `verify`.
   quality:
     runs-on: ubuntu-latest
     steps:

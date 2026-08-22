@@ -30,9 +30,7 @@ TEST(SurfelMap, KeepsDistantPointsAsSeparateSurfels) {
 }
 
 TEST(SurfelMap, HigherConfidencePointDominatesMergedPosition) {
-  // Models the exact scenario this backend was chosen for (see
-  // docs/superpowers/plans/2026-08-22-p3-d8-geometry-backend-decision.md):
-  // a low-confidence sonar return and a high-confidence optical depth
+  // A low-confidence sonar return and a high-confidence optical depth
   // return of the same physical point should merge toward the optical
   // estimate, not a naive 50/50 average.
   SurfelMap map(SurfelMapParams{/*merge_distance_m=*/1.0});

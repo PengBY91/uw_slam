@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # L2: real synth_stereo_gen + StereoOpticalDepthFrontend + depth metrics,
-# exercised end to end (plan 2 of the acoustic-optic series). Not a
-# rigorous accuracy benchmark — that's plan 5's ablation/scenario-matrix
-# job; this only proves the geometry pipeline recovers a known depth on a
+# exercised end to end. This is not a rigorous accuracy benchmark; it only
+# proves the geometry pipeline recovers a known depth on a
 # clean synthetic scene within a small, honestly-loose tolerance.
 set -euo pipefail
 

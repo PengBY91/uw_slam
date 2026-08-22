@@ -183,14 +183,18 @@ flowchart LR
     SCHEMAS[schemas<br/>跨语言消息模型] --> DOMAIN[domain<br/>生成消息辅助与校验]
     DOMAIN --> CORE[core<br/>传感器模型 + 算法接口]
     CORE --> ALGO["frontends / factor_builders /<br/>estimation / mapping"]
-    ALGO --> RUNTIME[runtime<br/>配置、队列、MCAP、Manifest]
-    ALGO --> EVAL[evaluation<br/>ATE + 深度/融合指标]
-    RUNTIME --> ADAPTERS[adapters<br/>HoloOcean、ROS2、第三方]
-    ADAPTERS --> APPS[apps<br/>可执行入口]
+    CORE --> RUNTIME[runtime<br/>配置、队列、MCAP、Manifest]
+    CORE --> EVAL[evaluation<br/>ATE + 深度/融合指标]
+    CORE --> ADAPTERS[adapters<br/>HoloOcean、ROS2、第三方]
+    ALGO --> APPLICATION[application<br/>用例编排]
+    RUNTIME --> APPLICATION
+    EVAL --> APPLICATION
+    ADAPTERS --> APPLICATION
+    APPLICATION --> APPS[apps<br/>参数解析与可执行入口]
 ```
 
 依赖只允许从左向右（`domain → core → {frontends, factor_builders, estimation,
-mapping, runtime, evaluation, adapters} → apps`）。`include/`、`src/` 下的生产
+mapping, runtime, evaluation, adapters} → application → apps`）。`include/`、`src/` 下的生产
 代码不能包含 ROS2、HoloOcean 或第三方 vendor 头文件，也不能使用旧的手写 `uw/...`
 include 路径；`tools/lint/check_no_ros_in_core.sh`（实际实现在
 `tools/lint/check_layer_dependencies.py`）会强制检查这一点。Protobuf schema 是
@@ -201,8 +205,8 @@ C++ 与 Python 跨语言规范化消息模型的唯一来源。
 | 目录 | 职责 |
 |---|---|
 | `schemas/proto/` | 跨语言规范化消息模型和 C++/Python 代码生成输入 |
-| `include/`、`src/` | 手写 C++ 公共头文件与实现，按角色分区（`domain`、`sensor_models`、`measurement_api`、`frontends`、`factor_builders`、`estimation`、`mapping`、`runtime`、`evaluation`、`adapters`） |
-| `apps/` | `synth_bag_gen`、`replay_demo` 等可执行入口源码 |
+| `include/`、`src/` | 手写 C++ 公共头文件与实现，按角色分区（`domain`、`sensor_models`、`measurement_api`、`frontends`、`factor_builders`、`estimation`、`mapping`、`runtime`、`evaluation`、`adapters`、`application`） |
+| `apps/` | `synth_bag_gen`、`replay_demo` 等参数解析与可执行入口源码；可复用算法和用例编排分别位于对应层与 `application` 层 |
 | `tests/` | 消息格式与接口一致性（`contracts/`）、按层单元测试和确定性回放（`integration/`） |
 | `cmake/` | 集中式 CMake：`Dependencies.cmake`、`Libraries.cmake`、`Applications.cmake`、`Tests.cmake` |
 | `adapters/` | HoloOcean（Python）、ROS2、数据集与第三方系统边界文档 |
@@ -321,7 +325,7 @@ ROS2 默认不参与构建。启用 `-DUW_BUILD_ROS2=ON` 前，需要：
 
 1. **不要修改 `external_repos/` 的子仓库。** 它们是只读参考和移植来源。
 2. **保持单向依赖。** `domain → core → {frontends, factor_builders, estimation,
-   mapping, runtime, evaluation, adapters} → apps`。
+   mapping, runtime, evaluation, adapters} → application → apps`。
 3. **先改 schema。** 新增跨语言规范化消息字段时修改 `schemas/proto/`，不要在 C++ 与
    Python 中维护两套平行结构。
 4. **保留代码出处。** 移植第三方实现前先阅读 [`NOTICE`](./NOTICE)，保留版权头并
@@ -345,7 +349,7 @@ ROS2 默认不参与构建。启用 `-DUW_BUILD_ROS2=ON` 前，需要：
   不参与位姿估计。相对位姿证据默认来自 `black_box_vio`（bag 里 ground-truth+noise
   的桩）；`estimator_mode: stereo_landmark_vo` 会改用 `stereo_landmark_vo_frontend`
   从左右相机帧实时算相对位姿（blob/Harris 检测 + NCC 匹配 + RANSAC 刚体拟合），
-  但它是纯视觉里程计，不融合 IMU，也不是完整的 VIO 前端。`apps/replay_demo`/
+  但它是纯视觉里程计，不融合 IMU，也不是完整的 VIO 前端。回放管线/
   `apps/synth_bag_gen` 在 `--experiment` 加载了带相机的 rig 时，会真正构造并跑
   `StereoOpticalDepthFrontend`/`SonarCfarFrontend`/`AcousticOpticDepthFusionFrontend`
   （详见代码库参考文档 6.12 节，含真实跑出来的数字）；不传 `--experiment`（或 rig

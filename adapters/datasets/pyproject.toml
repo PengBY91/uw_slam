@@ -1,7 +1,7 @@
 [project]
 name = "uw-dataset-adapter"
 version = "0.1.0"
-description = "Public-dataset-to-canonical-MCAP converters (P1 workstream A3) — proves schemas/proto/uw/domain/ isn't HoloOcean-specific."
+description = "Public-dataset-to-canonical-MCAP converters that exercise the canonical schema with non-HoloOcean data."
 requires-python = ">=3.10"
 dependencies = [
     "protobuf>=4.21",

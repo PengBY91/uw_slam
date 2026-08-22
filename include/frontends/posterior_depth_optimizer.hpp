@@ -18,7 +18,7 @@ struct PosteriorDepthResult {
   double bearing_residual_rad = 0.0;
 };
 
-// Optimizes a scalar depth `d` at a fixed pixel (design spec section 8.4):
+// Optimizes a scalar depth `d` at a fixed pixel:
 //   min_d (d-d_o)^2/sigma_d^2 + (range(d)-rho)^2/sigma_rho^2 + (bearing(d)-theta)^2/sigma_theta^2
 // where range(d)/bearing(d) come from UnprojectPixelToSonarRangeBearing at the fixed pixel.
 // v1 uses plain squared residuals (Gaussian loss — Huber/Cauchy is a documented future

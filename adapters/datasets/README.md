@@ -2,8 +2,7 @@
 
 Converts public SLAM/underwater datasets into the canonical MCAP schema defined in
 `schemas/proto/uw/domain/` — the same wire format `adapters/holoocean` and `apps/synth_bag_gen`
-produce, so `apps/replay_demo` and the rest of the pipeline don't need to know or care where a bag
-came from. P1 workstream A3 (`docs/superpowers/plans/2026-08-21-p1-real-multisensor-closed-loop.md`).
+produce, so `apps/replay_demo` and the rest of the pipeline do not depend on a bag's origin.
 
 ## `uw_dataset_adapter` (EuRoC MAV Dataset)
 
@@ -12,9 +11,9 @@ machine-hall sequences (verified against MH_01_easy) into a canonical MCAP bag. 
 own docstring for the full story — source access constraints (the ASL host isn't reachable from
 every network), why it reads from a ROS1 bag rather than the dataset's raw CSV+PNG archive
 (`rosbag1_reader.py`, hand-rolled to tolerate a truncated/partial-download bag file), and why it
-undistorts every frame itself before writing it (`undistort.py` — a real finding, not a
-nice-to-have: raw distorted frames produced zero relative-pose factors on this scene's repetitive
-structure; see the plan doc's Workstream A3 write-up for the full diagnosis).
+undistorts every frame itself before writing it (`undistort.py` — raw distorted frames produced
+zero relative-pose factors on this scene's repetitive structure; the converter docstring records
+the diagnosis).
 
 ```bash
 cd adapters/datasets

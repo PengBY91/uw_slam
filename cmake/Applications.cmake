@@ -39,10 +39,7 @@ function(uw_apply_application_defaults target)
 endfunction()
 
 add_executable(replay_demo apps/replay_demo.cpp)
-target_link_libraries(replay_demo PRIVATE
-  uw::domain uw::core uw::runtime uw::estimation uw::evaluation
-  uw::factor_builders uw::mapping uw::frontends
-)
+target_link_libraries(replay_demo PRIVATE uw::application)
 uw_apply_application_defaults(replay_demo)
 
 add_executable(synth_bag_gen apps/synth_bag_gen.cpp)

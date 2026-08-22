@@ -28,6 +28,7 @@ PROJECT_ROLES = {
     "runtime",
     "evaluation",
     "adapters",
+    "application",
 }
 ALLOWED = {
     "domain": {"domain", "domain_proto"},
@@ -42,6 +43,7 @@ ALLOWED = {
     "runtime": {"runtime", "measurement_api", "sensor_models", "domain", "domain_proto"},
     "evaluation": {"evaluation", "sensor_models", "domain", "domain_proto"},
     "adapters": {"adapters", "measurement_api", "sensor_models", "domain", "domain_proto"},
+    "application": PROJECT_ROLES | {"domain_proto"},
     "ros2": {"adapters", "measurement_api", "sensor_models", "domain", "domain_proto"},
     "apps": PROJECT_ROLES | {"domain_proto"},
 }

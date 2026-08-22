@@ -1,6 +1,6 @@
 // Generates a single synthetic stereo frame pair + a ground-truth depth
-// grid for optical-baseline evaluation (plan 2 of the acoustic-optic
-// series). Deliberately independent of apps/synth_bag_gen.cpp: this is a
+// grid for optical-baseline evaluation. Deliberately independent of
+// apps/synth_bag_gen.cpp: this is a
 // single static-scene generator for the optical baseline, not a
 // trajectory/pose-graph bag — see that tool's own header for why THIS repo
 // needs synthetic generators at all (no HoloOcean/ROS2 on this dev
@@ -10,9 +10,9 @@
 //   /raw/camera/left    uw.domain.ImageFrame
 //   /raw/camera/right   uw.domain.ImageFrame
 //   /gt/depth            uw.domain.MeasurementEvidence (OpticalDepthPriorMeasurement,
-//                         producer_type="ground_truth" — reuses plan 1's metric depth-grid
-//                         contract instead of inventing a parallel GT schema; ground truth is
-//                         exactly a perfect metric depth prior)
+//                         producer_type="ground_truth" — reuses the metric depth-grid contract
+//                         instead of inventing a parallel GT schema; ground truth is exactly a
+//                         perfect metric depth prior)
 #include <cstdint>
 #include <iostream>
 #include <string>

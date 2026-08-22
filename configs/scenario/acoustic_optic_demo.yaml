@@ -1,5 +1,4 @@
-# A dedicated, additive scenario (see docs/superpowers/plans/
-# 2026-08-20-acoustic-optic-replay-demo-integration.md) — the ONE difference
+# A dedicated, additive scenario. The one difference
 # from scenario/synthetic_smoke.yaml is the target position: placed directly
 # ahead of kf0's camera (base_link -> camera_left_link translation is
 # (0.15, 0.06, 0) in configs/rig/example_auv.yaml) so it sits inside BOTH

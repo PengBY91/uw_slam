@@ -13,14 +13,9 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 
-# P3 workstream A1 (docs/superpowers/plans/2026-08-22-p3-online-
-# reconstruction-and-productionization.md): opt-in sanitizer build, applied
-# globally (not per-target) because mixing sanitized and non-sanitized
-# objects in one link graph fails at link/runtime, not just build time —
-# this must cover every target, including FetchContent'd third-party code
-# (protobuf-generated sources, the MCAP SDK), not just this repo's own.
-# ASan and UBSan are cheap to combine in one build; TSan cannot be combined
-# with either, hence a single-choice option rather than independent flags.
+# Sanitizer flags apply to the complete link graph, including generated and
+# FetchContent sources. Mixing sanitized and unsanitized objects can fail at
+# link or runtime. ASan and UBSan are combined; TSan must remain separate.
 #
 # NOTE on UW_SANITIZER=thread: verified 2026-08-22 that this currently
 # reports heap-use-after-free/race findings on plain protobuf getter calls
@@ -34,10 +29,8 @@ list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 # inside an uninstrumented library and reports spurious races on its
 # internal atomics/arena allocation. Fixing this needs a from-source
 # protobuf+gtest rebuild under TSan, out of scope for this CMake option;
-# UW_SANITIZER=thread is left available for whoever eventually needs it
-# (P3's online scheduler work is where real application-level threading
-# will first exist), but is NOT wired into CI (see .github/workflows/
-# ci.yml) until that prerequisite is addressed. Also: this sandbox's TSan
+# UW_SANITIZER=thread remains available for specialized toolchains, but is
+# not wired into CI until that prerequisite is addressed. This sandbox's TSan
 # additionally requires ASLR disabled to even start (`setarch $(uname -m)
 # -R` before both the build — gtest_discover_tests runs binaries at build
 # time — and any run) — a "ThreadSanitizer: unexpected memory mapping"
@@ -56,12 +49,9 @@ if(NOT UW_SANITIZER STREQUAL "OFF")
   endif()
 endif()
 
-# P3 workstream A1: opt-in coverage instrumentation (gcc/gcov — this
-# environment has no lcov/llvm-cov, see the plan doc's A1 workstream for
-# what was checked). Kept as its own option (not folded into UW_SANITIZER)
-# since coverage and sanitizers are orthogonal and both cheap to combine
-# with a plain build, but combining coverage with a sanitizer build is not
-# tested here and not the intended use.
+# Opt-in gcc/gcov coverage instrumentation. It remains separate from
+# UW_SANITIZER because the options are orthogonal; their combination is not
+# part of the supported verification matrix.
 option(UW_COVERAGE "Build with gcov coverage instrumentation (--coverage)" OFF)
 if(UW_COVERAGE)
   add_compile_options(--coverage -fno-omit-frame-pointer)

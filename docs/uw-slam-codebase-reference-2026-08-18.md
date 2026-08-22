@@ -79,7 +79,7 @@ RMSE `0.0665821 m`（12 个匹配位姿）。`estimator_mode` 是为兼容保留
 依赖只允许单向：
 
 ```
-core → algorithms → runtime → adapters → apps
+core → {algorithms, runtime, evaluation, adapters} → application → apps
 ```
 
 `include/`、`src/` 下任何生产代码不允许出现 ROS/HoloOcean/第三方 vendor 头，也不允许
@@ -98,8 +98,7 @@ core → algorithms → runtime → adapters → apps
 > 仍保留 `uw_xxx` 这种旧前缀写法，是当时（迁移前）的构建产物名，与当前
 > `cmake/Libraries.cmake` 里的真实 target 名不再一致，读到类似写法时以
 > `cmake/Libraries.cmake`/`cmake/Tests.cmake` 的当前内容为准。下表已更新为当前
-> 布局；`docs/superpowers/plans/2026-08-21-cpp-layout-flattening.md` 记录了这次
-> 重构的完整过程。
+> 布局。
 
 | 层 | 源码目录 | CMake target（`uw::` alias） | 依赖 | 作用 |
 |---|---|---|---|---|
@@ -114,8 +113,9 @@ core → algorithms → runtime → adapters → apps
 | adapters/holoocean（Python，独立包） | `adapters/holoocean/` | Python `uw_holoocean_adapter` | protobuf, mcap, numpy | 直连 HoloOcean Python API |
 | adapters/ros2（可选，`UW_BUILD_ROS2`） | `adapters/ros2/include`、`adapters/ros2/src` | `ros2_adapters`（INTERFACE）+ `holoocean_sonar_bridge_node`（可执行） | ROS2 Jazzy, `holoocean_interfaces`, `adapters` | ROS2 话题 → `SonarFrame` 的传输层桥接 |
 | adapters（合并 svin_bridge + holoocean_ros_bridge 两个无 ROS provider） | `include/adapters`、`src/adapters`（文档：`adapters/svin_bridge.md`、`adapters/holoocean_ros_bridge.md`） | `adapters` | `core` | 两个具体 provider 实现（第三个 baseline 现在是独立执行边界，见 `baselines/`） |
-| apps | `apps/synth_bag_gen.cpp`, `apps/replay_demo.cpp` 等 | 各自独立可执行文件 | 上述所有层 | 合成生成、离线回放与评测入口 |
 | evaluation | `include/evaluation`、`src/evaluation` | `evaluation` | `core` | ATE、深度、融合和点云地图指标（没有 RPE） |
+| application | `include/application`、`src/application` | `application` | 算法、runtime、evaluation | 跨层用例编排；当前包含离线回放管线 |
+| apps | `apps/synth_bag_gen.cpp`, `apps/replay_demo.cpp` 等 | 各自独立可执行文件 | `application` 或单一用途所需层 | 参数解析与进程入口 |
 
 ---
 
@@ -147,6 +147,7 @@ include/                     手写公共头文件，按角色分区（物理 uw
   evaluation/                trajectory_metrics / depth_metrics / fusion_metrics / map_metrics
   adapters/                  svin_bridge_local_odometry_provider、
                               holoocean_ros_bridge_sonar_frame_provider（均无 ROS2 依赖）
+  application/               replay_pipeline 等跨层用例接口
 src/                         对应 include/ 分区的实现（.cpp），结构镜像 include/
 apps/
   synth_bag_gen.cpp           合成带真值的 MCAP bag（位姿图/sonar/depth 路径）
@@ -154,7 +155,7 @@ apps/
   optical_baseline_eval.cpp   跑 StereoOpticalDepthFrontend，用 depth_metrics 打分
   acoustic_optic_scenario_matrix.cpp / acoustic_optic_scenarios.{cpp,hpp}
                                声光 plan 1-4 全组件真实接线 + 9 场景矩阵（声光 plan 5）
-  replay_demo.cpp              bag 回放 → 前端 → 因子构建 → 求解 → 评测
+  replay_demo.cpp              仅解析参数并调用 application/replay_pipeline
 adapters/
   holoocean/                  Python 包 uw_holoocean_adapter，直连 HoloOcean，未随本次重构改动
   ros2/                       UW_BUILD_ROS2 开关保护的 ROS2 节点；include/adapters/、src/
@@ -338,7 +339,7 @@ bool IsAzimuthAscending(const SonarFrame&);   // sonar.proto 不变量的实现
 // 输入已是 MONO8 时原样返回（no-op）。存在的原因：真实 HoloOcean 相机是 RGB8
 // （camera_conversion.py），但 StereoLandmarkVoFrontend（6.13 节）/
 // StereoOpticalDepthFrontend（6.7 节）硬性要求 MONO8 输入，这个转换在消费点
-// （apps/replay_demo）而不是录制点（record_session.py）做，颜色信息不在采集时就丢弃。
+// （application/replay_pipeline）而不是录制点（record_session.py）做，颜色信息不在采集时就丢弃。
 std::optional<ImageFrame> ConvertToMono8(const ImageFrame& frame);
 ```
 
@@ -631,7 +632,7 @@ residual = sqrt_information * (measured_depth_m + translation.z())
 雅可比只有 tz 分量非零（`= sqrt_information`），线性关系，精确计算不需要有限差分。
 **这就是 CLAUDE.md 里"z 轴 anchor bug"提到的那个因子**：一旦图里有深度因子，z 就
 不再是 gauge freedom，固定/anchor keyframe 必须给自己真实的深度衍生 z，而不能
-想当然地钉在 `Pose3::Identity()` 的 z=0（`apps/replay_demo` 的处理见
+想当然地钉在 `Pose3::Identity()` 的 z=0（`application/replay_pipeline` 的处理见
 [第 9.2 节](#92-appsreplay_demo--端到端主流程)）。
 
 ### 6.5 `include/estimation` —— Gauss-Newton/LM 求解器
@@ -901,7 +902,7 @@ camera-optical 系，也不是 world 系**。这是刻意的：`SubmapManager::W
 plan 2-4 的既有 v1 范围一致），位姿修正只需要移动，不需要拿 `source_observations` 重新
 跑一遍前端。
 
-值得指出的对比：`apps/replay_demo` 现有的声呐 landmark 插入代码（约第 296-309 行）用的是
+值得指出的对比：`src/application/replay_pipeline.cpp` 的声呐 landmark 插入代码用的是
 另一条路——直接把点存成 `local_frame="world"`，keyframe pose 钉死成 identity，本质是绕开
 "local 点要落在哪个参考系"这个问题的权宜写法（对应 README 里记录的 z=0 anchor 那类 v1
 限制）。本 plan **没有改动、也没有替换** `replay_demo` 这段代码——只是新增了一条按照
@@ -917,10 +918,10 @@ plan 2-4 的既有 v1 范围一致），位姿修正只需要移动，不需要�
 **声光系列六个 plan 到这里全部完成**：contracts/calibration → optical baseline →
 cross-modal geometry → probabilistic fusion → simulation/evaluation → 局部地图数据交接。
 六个 plan 交付的是一套经过单测和端到端场景矩阵验证过的、可复用的组件集合。见 6.12 节——
-`apps/replay_demo` 现在会在加载了带相机的 rig 时真正构造并调用这些组件，但这是一次
+回放管线现在会在加载了带相机的 rig 时真正构造并调用这些组件，但这是一次
 独立的、后续的集成工作（见下），不是六个 plan 本身自带的。
 
-### 6.12 `apps/replay_demo` 接入声光融合（rig-gated，位姿图本身不受影响）
+### 6.12 回放管线接入声光融合（rig-gated，位姿图本身不受影响）
 
 `replay_demo`/`synth_bag_gen` 现在会在 `--experiment` 加载的 rig 含相机时，真正构造并跑
 `StereoOpticalDepthFrontend` → `SonarCfarFrontend`（复用已有实例，不是新建）→
@@ -970,8 +971,8 @@ cross-modal geometry → probabilistic fusion → simulation/evaluation → 局�
 commit `b2c19e1` 新增，独立于第 6.1–6.12 节的声光 plan 1–6 系列，也不移植自任何
 external repo（原创实现，无需 NOTICE 条目）。目的：把 `synth_bag_gen` 写进 bag 的
 ground-truth+noise "black-box VIO" 相对位姿证据换成从左右相机帧真正算出来的相对
-位姿，供 `apps/replay_demo` 在 `estimator_mode: stereo_landmark_vo` 时消费（见
-[9.2 节](#92-appsreplay_demo--端到端主流程)）。五个新文件，全部合并进既有的
+位姿，供回放管线在 `estimator_mode: stereo_landmark_vo` 时消费（见 9.2 节）。
+五个新文件，全部合并进既有的
 `frontends`（`uw::frontends`）target，测试合并进既有的 `frontends` GTest
 executable（`tests/frontends/{harris_corner_detector,landmark_blob_detector,
 patch_matcher,rigid_transform_fit,stereo_landmark_vo_frontend}_test.cpp`）：
@@ -1130,7 +1131,7 @@ enum class Lane {
 
 > **当前实现边界**：`BoundedQueue`/`Lane` 本身只是队列原语和
 > 车道枚举，没有一个把四条车道real-time 调度、优先级抢占串起来的"调度器"类。
-> `apps/replay_demo`/`apps/synth_bag_gen.cpp` 目前都是单线程直接遍历 MCAP
+> `src/application/replay_pipeline.cpp`/`apps/synth_bag_gen.cpp` 目前都是单线程直接遍历 MCAP
 > 消息，并不实际实例化 `BoundedQueue`/驱动四车道调度。这部分是运行时原语已经
 > 就位、但尚未组成在线调度器的一层。相对地，`estimator_mode` 和
 > `frontends.landmark_detector` 会真实派发；sonar/optical frontend 与 `map_backend`
@@ -1244,9 +1245,9 @@ struct RunManifest {
 ```
 `ToJson()` 是手写字符串拼接，注释说明：假定字段值不含未转义的引号/控制字符
 （对 git hash/config hash/run id 这类字段成立），为这个小而完全可控的字段集写
-通用转义器是不必要的复杂度。`apps/replay_demo` 里 `run_id` 具体是
+通用转义器是不必要的复杂度。`src/application/replay_pipeline.cpp` 里 `run_id` 具体是
 `replay_demo_<unix秒>`，`simulator` 写死为
-`"synthetic (apps/synth_bag_gen.cpp)"`（见 [9.2](#92-appsreplay_demo--端到端主流程)）。
+`"synthetic (apps/synth_bag_gen.cpp)"`（见 9.2 节）。
 P0 后调用方会填 `UW_GIT_COMMIT`、experiment 文件的 FNV-1a hash、序列化 rig 的
 FNV-1a hash、bag 路径、OS、CPU、CPU-only GPU 说明、scenario seed 和 UTC 起止时间。
 `model_hash` 仍为空；hash 不是加密摘要；`simulator` 即使回放真实 HoloOcean bag 也仍
@@ -1506,14 +1507,15 @@ xyz）。只依赖 `uw::domain`/`uw::core`/`uw::runtime`，不依赖
 这是 `tests/integration/determinism_test.sh`（不传 `--experiment`）能保持逐字节
 不变的前提。
 
-### 9.2 `apps/replay_demo` —— 端到端主流程
+### 9.2 `application/replay_pipeline` + `apps/replay_demo` —— 端到端主流程
 
 CLI：`--bag <path>`（必填）、`--experiment <yaml>`（可选）、
 `--out <prefix>`（默认 `/tmp/replay_demo`）、`--max-iterations N`
 （CLI 覆盖 experiment，experiment 覆盖内建默认，三层覆盖链），以及真实数据评测用的
 `--align-ate`（拟合无尺度刚体对齐；默认关闭以保持合成基准数字不变）。
 
-`main()` 真实流程：
+`apps/replay_demo.cpp` 的 `main()` 只解析参数；实际流程由
+`src/application/replay_pipeline.cpp` 的 `RunReplayPipeline()` 执行：
 
 1. 加载配置：给了 `--experiment` 就 `LoadExperimentConfig` →
    `ValidateExperimentConfigSelections`；未知算法标识符立即退出。随后拿到
@@ -1597,13 +1599,10 @@ CLI：`--bag <path>`（必填）、`--experiment <yaml>`（可选）、
 sonar/optical frontend 和 map backend 仍写死为各自唯一实现，但配置校验会拒绝其他
 标识符，不会“读取后照常运行”。参见 [configs/README.md](../configs/README.md)。
 
-链接（见 `cmake/Applications.cmake` 里 `replay_demo` 的 `target_link_libraries`）：
-`uw::domain, uw::core, uw::runtime, uw::estimation, uw::evaluation,
-uw::factor_builders, uw::mapping, uw::frontends`——后四个是合并后的架构层
-target，分别覆盖了旧的 `uw_relative_pose_factor`/`uw_sonar_range_factor`/
-`uw_depth_factor`（现在都在 `uw::factor_builders` 里）、`uw_submap_manager`
-（现在在 `uw::mapping` 里）、`uw_sonar_cfar_frontend`（现在在 `uw::frontends`
-里）这些迁移前的独立 target。
+链接关系（见 `cmake/Libraries.cmake` 和 `cmake/Applications.cmake`）：
+`replay_demo` 只链接 `uw::application`；`uw::application` 再组合 `uw::runtime`、
+`uw::estimation`、`uw::evaluation`、`uw::factor_builders`、`uw::mapping` 和
+`uw::frontends`，避免可执行入口直接持有整条算法依赖图。
 
 ### 9.3 `evaluation/` —— 轨迹、深度、融合与地图指标
 
@@ -1794,7 +1793,7 @@ output:
 `synthetic_smoke.yaml` 基本一样（`rig`/`scenario`/`defaults`/`factor_builders`/
 `map_backend`/`output` 全同），差别只有两处：多了一行 `frontends.optical:
 stereo_depth_frontend_v1`（目前是唯一被校验接受的实现，rig 是否带相机决定声光 pass），
-以及把 `estimator_mode` 换成 `stereo_landmark_vo`，用来触发 `apps/replay_demo` 里
+以及把 `estimator_mode` 换成 `stereo_landmark_vo`，用来触发回放管线里
 真正会分支的那条路径。
 
 `configs/experiment/real_holoocean_vo.yaml` 选择
@@ -1809,7 +1808,7 @@ RMSE `0.5596 m`，求解器仍 `stalled`，所以它是链路证据而不是通�
 完整接入 `synth_bag_gen`；`experiment` 的每个算法选择都先经
 `ValidateExperimentConfigSelections`。`frontends.sonar`/`frontends.optical`/
 `map_backend` 当前仍各只有一个实现，rig 是否带相机决定声光流水线是否运行；未知名称
-会启动失败而不是静默忽略。`apps/replay_demo` 会按 `estimator_mode` 分支（
+会启动失败而不是静默忽略。回放管线会按 `estimator_mode` 分支（
 `stereo_landmark_vo` 需要
 `rig` 带相机，用 6.13 节的 `StereoLandmarkVoFrontend` 从相机帧实时算相对位姿，
 见 `configs/experiment/synthetic_smoke_vo.yaml`）；同一分支下
@@ -1923,8 +1922,14 @@ uw::core（sensor_models + measurement_api）
 ├── uw::runtime
 ├── uw::evaluation
 └── uw::adapters         （合并 svin_bridge + holoocean_ros_bridge 两个无 ROS provider）
-        ↑
-    uw::ros2_adapters   # 仅 UW_BUILD_ROS2=ON，物理隔离在 adapters/ros2/
+     ↑
+uw::application         （组合算法、runtime 与 evaluation）
+     ↑
+apps                    （参数解析与进程入口）
+
+uw::adapters
+     ↑
+uw::ros2_adapters       # 仅 UW_BUILD_ROS2=ON，物理隔离在 adapters/ros2/
 ```
 
 `cmake/UwProtobuf.cmake`：`find_package(Protobuf REQUIRED)` +
@@ -1959,7 +1964,7 @@ check_layer_dependencies.py "$ROOT"`）。真正的检查逻辑解析 `include/`
 `src/<role>/`）判断每个文件属于哪个架构层，再校验：
 - 每层只允许 include 自己 + 依赖图里在它下游的层（domain → core →
   frontends/factor_builders/estimation/mapping/runtime/evaluation/adapters →
-  apps，规则见 `tools/lint/check_layer_dependencies.py` 里的 `ALLOWED` 表）；
+  application → apps，规则见 `tools/lint/check_layer_dependencies.py` 里的 `ALLOWED` 表）；
 - 旧的手写 `uw/...` include 路径一律判定失败（迁移后应统一用去掉 `uw/` 层的路径，
   例如 `"sensor_models/geometry.hpp"` 而不是 `"uw/sensor_models/geometry.hpp"`；
   生成的 `uw/domain/*.pb.h` protobuf 头是唯一例外）；

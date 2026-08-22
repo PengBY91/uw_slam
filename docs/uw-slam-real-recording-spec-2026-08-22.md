@@ -1,15 +1,12 @@
 # 真实 HoloOcean 录制规格：三条固定轨迹
 
-> 状态：规格文档，供 P1 workstream B4（`docs/superpowers/plans/2026-08-21-p1-
-> real-multisensor-closed-loop.md`）落地。实际在 Windows 机器上执行录制仍是
-> 用户动作，不是这份文档或 `record_session.py` 能替代的——见该计划文档的
-> Track B/C 划分。
+> 状态：规格文档。实际在 Windows 机器上执行录制仍是用户动作，不是这份文档
+> 或 `record_session.py` 能替代的。
 
 ## 目标
 
 固定三类 1–3 分钟轨迹（直线、转弯、小回环），用同一套 `record_session.py`
-录制管线产出结构一致的 canonical MCAP bag，供 P1 workstream B5（audit 工具）
-和 workstream C6（四组 baseline 消融）消费。
+录制管线产出结构一致的 canonical MCAP bag，供 audit 工具和 baseline 消融消费。
 
 ## 话题与实际采样率——一个必须诚实说明的限制
 
@@ -22,7 +19,7 @@
 - `/gt/state`：camera keyframe 上若同一 tick 有 `PoseSensor` 读数就写一条。
 - `/evidence/depth`：camera keyframe 上若同一 tick 有 `DepthSensor` 读数就写
   一条。
-- `/raw/sonar_frame`、`/raw/imu`、`/raw/dvl`（本次 workstream B4 新增）：**同样
+- `/raw/sonar_frame`、`/raw/imu`、`/raw/dvl`：**同样
   只在 camera keyframe 命中的 tick 上，若该 tick 恰好也带有对应传感器读数才
   写**。
 
@@ -31,13 +28,13 @@ IMU 常见 100–200Hz，相机常见 10–30Hz），这套管线录到的不是
 而是"每个相机 keyframe 附近恰好命中的那一条 IMU 读数"——是一种降采样到相机
 keyframe 频率的近似，不是真实高频 IMU 数据。这与整个仓库当前"批处理、按
 keyframe 组织证据"的架构是一致的（不是这次实现的疏漏），但如果将来需要真正
-高频 IMU 预积分（P2 的 IMU preintegration frontend），`record_session.py` 需要
+高频 IMU 预积分，`record_session.py` 需要
 独立于相机 keyframe 单独记录 IMU tick，这是明确的后续工作，这里不展开。
 
 ## 三类固定场景
 
 统一用 `OpenWater-HoveringCamera`（`record_session.py --scenario` 默认值）
-场景，通过 `--command`（本次 B4 新增的 CLI 覆盖）控制 HoveringAUV 8 路推进器
+场景，通过 `--command` 控制 HoveringAUV 8 路推进器
 指令（`[垂直x4, 水平x4]`，见 `_default_command()` 的布局注释）区分轨迹形状。
 下面给出的水平推进器不对称值是**未经真实 HoloOcean 安装验证的起点**，不是
 标定好的常数——真正在 Windows 上录制时大概率需要按实际转向响应微调，这里给的
@@ -92,8 +89,8 @@ python -m uw_holoocean_adapter.record_session \
 
 ## 验收
 
-- 三个 bag 各自能被 P1 workstream B5 的 audit 工具正确识别出"哪些 topic 存在
+- 三个 bag 各自能被 audit 工具正确识别出"哪些 topic 存在
   、哪些缺失、采样率是否合理"。
 - 至少 `straight_line.mcap` 能被 `apps/replay_demo`(`estimator_mode:
-  stereo_landmark_vo`)跑出非零的相对位姿因子——这是复用 A3(EuRoC adapter)
-  已经验证过的"真实相机数据能跑出真实 VO"这条能力,不是重新发明。
+  stereo_landmark_vo`)跑出非零的相对位姿因子——这是复用 EuRoC adapter
+  已经验证过的"真实相机数据能跑出真实 VO"能力。

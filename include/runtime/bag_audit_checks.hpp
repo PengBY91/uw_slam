@@ -1,7 +1,6 @@
-// Pure-logic checks for apps/bag_audit.cpp (P1 workstream B5,
-// docs/superpowers/plans/2026-08-21-p1-real-multisensor-closed-loop.md),
-// pulled out of the app itself so they're unit-testable without needing a
-// real MCAP file — matching this repo's general pattern of keeping I/O glue
+// Pure-logic checks for apps/bag_audit.cpp, separated from I/O so they are
+// unit-testable without a real MCAP file — matching this repo's general
+// pattern of keeping I/O glue
 // thin in apps/ and logic in a library (see e.g. evaluation/trajectory_
 // metrics.hpp's pure ComputeAte vs. apps/replay_demo.cpp's I/O around it).
 #pragma once

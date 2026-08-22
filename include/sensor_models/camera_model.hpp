@@ -51,16 +51,15 @@ struct StereoGeometry {
 
 // Fixed axis-convention rotation relating a rig body-frame camera link
 // (x-forward/y-left/z-up — this platform's frame_tree convention, matching
-// the sonar's own local-frame convention, design spec section 8.1) to that
+// the sonar's own local-frame convention) to that
 // same physical camera's OPTICAL frame (z-forward/x-right/y-down, REP-103).
 // This is a hardware-mounting constant, not a per-rig calibration value.
 // Project()/Unproject() above operate in optical convention; any caller
 // that derives a camera-frame point via RigCalibrationSnapshot's
 // frame_tree Pose3 composition (body convention) must rotate through this
-// before calling Project/Unproject — see sonar_arc_projector.hpp, the
-// first caller that needs it (plan 2's StereoOpticalDepthFrontend never
-// did, since it only ever used baseline/fx magnitudes, not a composed
-// Pose3).
+// before calling Project/Unproject. StereoOpticalDepthFrontend does not
+// need this conversion because it only uses baseline/fx magnitudes, not a
+// composed Pose3.
 const Eigen::Matrix3d& OpticalFromBodyRotation();
 
 }  // namespace uw::sensor_models

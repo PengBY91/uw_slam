@@ -80,6 +80,7 @@ add_library(runtime STATIC
   src/runtime/config.cpp
   src/runtime/acoustic_optic_synchronizer.cpp
   src/runtime/bag_audit_checks.cpp
+  src/runtime/synthetic_sonar.cpp
 )
 add_library(uw::runtime ALIAS runtime)
 target_include_directories(runtime PUBLIC "${PROJECT_SOURCE_DIR}/include")
@@ -107,6 +108,17 @@ add_library(uw::adapters ALIAS adapters)
 target_include_directories(adapters PUBLIC "${PROJECT_SOURCE_DIR}/include")
 target_link_libraries(adapters PUBLIC uw::core)
 uw_apply_library_defaults(adapters)
+
+add_library(application STATIC
+  src/application/replay_pipeline.cpp
+)
+add_library(uw::application ALIAS application)
+target_include_directories(application PUBLIC "${PROJECT_SOURCE_DIR}/include")
+target_link_libraries(application PRIVATE
+  uw::domain uw::core uw::runtime uw::estimation uw::evaluation
+  uw::factor_builders uw::mapping uw::frontends
+)
+uw_apply_library_defaults(application)
 
 if(UW_BUILD_ROS2)
   add_library(ros2_adapters INTERFACE)

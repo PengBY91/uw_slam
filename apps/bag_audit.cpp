@@ -1,5 +1,4 @@
-// P1 workstream B5 (docs/superpowers/plans/2026-08-21-p1-real-multisensor-
-// closed-loop.md): audits a canonical MCAP bag against this repo's fixed
+// Audits a canonical MCAP bag against this repo's fixed
 // canonical topic vocabulary and (optionally) a rig calibration, checking:
 // topic presence, per-topic message-count plausibility, capture/receive-time
 // monotonicity, clock-domain consistency, and TF-chain resolution for every
@@ -44,7 +43,7 @@
 // camera-keyframe rate, not their native rate). /raw/sonar_frame is
 // deliberately EXCLUDED from that bound: apps/synth_bag_gen.cpp writes one
 // SonarFrame per in-range target per keyframe (a documented v1
-// simplification, see BuildSyntheticSonarFrame's call site), so a
+// simplification, see RenderSyntheticSonarFrame's call site), so a
 // synthetic bag can and does have MORE sonar messages than camera
 // keyframes — a real architectural fact this tool must not misreport as a
 // violation (an earlier draft of this check assumed a 1:1-or-fewer bound

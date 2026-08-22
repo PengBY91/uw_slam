@@ -1,9 +1,8 @@
-// First end-to-end wiring of plans 1-4's real components (no fabricated
+// End-to-end wiring of the real acoustic-optic components (no fabricated
 // MeasurementEvidence): AcousticOpticSynchronizer -> StereoOpticalDepthFrontend
 // -> SonarCfarFrontend (pre-existing) -> AcousticOpticDepthFusionFrontend,
-// run over the design spec's 9-scenario matrix (section 10). See this
-// plan's header comment for the explicit scope cuts (no MCAP round trip,
-// two ablation slices not three, reduced gate set).
+// run over the 9-scenario matrix. Scope intentionally excludes an MCAP
+// round trip and uses a reduced gate set.
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -87,7 +86,7 @@ uw::evaluation::DepthGrid TwoRegionGt(const uw::scenario_matrix::SyntheticTrial&
 }
 
 // Restricts `gt` to the pixels listed in `indices` (the sonar-covered
-// region slice — design spec section 12's second reporting slice).
+// reporting slice).
 uw::evaluation::DepthGrid RestrictToIndices(const uw::evaluation::DepthGrid& gt,
                                             const std::vector<uint32_t>& indices) {
   uw::evaluation::DepthGrid restricted;
@@ -193,9 +192,8 @@ int main(int argc, char** argv) {
       // analytic sonar reading vs. what SonarCfarFrontend actually
       // detected — useful for separating "scene geometry is wrong" from
       // "CFAR detection/quantization drifted" when a scenario's numbers
-      // look off (this distinction found a real scene-construction bug
-      // during this plan's own development — see MakeStereoPair's header
-      // comment in scenarios.cpp).
+      // look off. This distinction previously exposed a real
+      // scene-construction bug; see MakeStereoPair's header comment.
       if (getenv("SCENARIO_DEBUG") != nullptr && ti == 0) {
         std::cerr << "[debug] " << spec.name << " gt_target_depth_m=" << trial.gt_target_depth_m
                   << " expected sonar range=" << trial.expected_sonar_range_m

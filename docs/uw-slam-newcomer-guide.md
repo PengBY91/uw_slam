@@ -15,11 +15,10 @@
 ```text
 apps
        ↓
-adapters (含 ROS2 隔离在 adapters/ros2/)
+application（用例编排）
        ↓
-runtime + evaluation
-       ↓
-frontends + factor_builders + estimation + mapping
+runtime + evaluation + adapters（ROS2 隔离在 adapters/ros2/）
+       + frontends + factor_builders + estimation + mapping
        ↓
 core (sensor_models + measurement_api)
        ↓
@@ -59,8 +58,9 @@ MeasurementEvidence / HypothesisSet
 | `include/mapping`、`src/mapping` | 局部地图证据管理、融合深度到点云的转换 |
 | `include/runtime`、`src/runtime` | MCAP、配置、同步、队列、状态机、RunManifest 等 runtime 支持原语；尚无已组合的在线调度器 |
 | `include/adapters`、`src/adapters`、`adapters/ros2` | HoloOcean、ROS2、SVIn 等外部系统边界 |
-| `apps` | 将上述模块真正组装起来的可执行程序 |
 | `include/evaluation`、`src/evaluation` | ATE、深度/融合和点云地图质量指标（尚无 RPE） |
+| `include/application`、`src/application` | 跨算法、runtime 与评测层的用例编排；当前包含离线回放管线 |
+| `apps` | 参数解析和进程入口；调用 `application` 服务或单一用途的共享原语 |
 | `tests` | 消息格式与接口一致性测试（`contracts/`）、按层单元测试、确定性回放（`integration/`） |
 | `external_repos` | 只读参考代码，不是本系统运行主体 |
 
@@ -103,7 +103,8 @@ C++ 进程内接口。后者的 `ResidualBlock` 是求解器接口，不属于 P
 
 ### 1. 声呐位姿图回放主链
 
-入口是 [`apps/replay_demo.cpp`](../apps/replay_demo.cpp)：
+CLI 入口是 [`apps/replay_demo.cpp`](../apps/replay_demo.cpp)，实际用例编排位于
+[`src/application/replay_pipeline.cpp`](../src/application/replay_pipeline.cpp)：
 
 1. `synth_bag_gen` 生成圆弧轨迹、相对位姿、深度、声呐帧和 ground truth，写入
    统一 MCAP 录制格式。
@@ -343,8 +344,8 @@ scenario_matrix/main.cpp
 | 修改声光融合 | associator、depth fusion（均在 `include/frontends`、`src/frontends`） | 对应 `unit.frontends.*`、scenario matrix |
 | 修改地图输出 | map bridge、submap manager（`include/mapping`、`src/mapping`） | `unit.mapping.*` |
 | 修改地图指标 | `include/evaluation/map_metrics.hpp`、`src/evaluation/map_metrics.cpp` | `unit.evaluation.MapMetrics.*`；当前只适合小点集 |
-| 修改配置或回放 | `include/runtime`、`src/runtime`、`apps` | `unit.runtime.Config.*`、`integration.*`；未知选择必须启动失败 |
-| 修改 RunManifest provenance | `include/runtime/run_manifest.hpp`、`apps/replay_demo.cpp` | 端到端检查 `<out>_run_manifest.json` |
+| 修改配置或回放 | `include/runtime`、`src/runtime`、`include/application`、`src/application`、`apps` | `unit.runtime.Config.*`、`unit.application.*`、`integration.*`；未知选择必须启动失败 |
+| 修改 RunManifest provenance | `include/runtime/run_manifest.hpp`、`src/application/replay_pipeline.cpp` | 端到端检查 `<out>_run_manifest.json` |
 | 接入真实设备 | `include/adapters`、`src/adapters`、`adapters/ros2` | `unit.adapters.*`，加端到端实机验证 |
 
 ## 当前容易误解的边界

@@ -11,7 +11,7 @@
 //   /gt/state                    uw.domain.StateSnapshot   (ground truth per keyframe)
 //   /evidence/relative_pose      uw.domain.MeasurementEvidence (RelativePoseMeasurement)
 //   /raw/sonar_frame             uw.domain.SonarFrame      (synthetic imaging-sonar ping; see
-//                                 BuildSyntheticSonarFrame below — apps/replay_demo runs this
+//                                 RenderSyntheticSonarFrame below — replay_pipeline runs this
 //                                 through the real sonar_cfar_frontend (include/frontends,
 //                                 src/frontends), it is
 //                                 NOT pre-computed range-bearing evidence)
@@ -37,6 +37,7 @@
 #include "domain/domain.hpp"
 #include "runtime/config.hpp"
 #include "runtime/mcap_io.hpp"
+#include "runtime/synthetic_sonar.hpp"
 #include "sensor_models/camera_model.hpp"
 #include "sensor_models/geometry.hpp"
 #include "sensor_models/sonar_beam_model.hpp"
@@ -111,86 +112,6 @@ std::vector<Eigen::Vector3d> BuildSonarTargets(const ScenarioOptions& opt) {
 }
 
 std::string KeyframeId(int i) { return "kf" + std::to_string(i); }
-
-// Fixed synthetic imaging-sonar geometry — generous enough to keep every
-// target in this scenario's range/bearing well inside the frame (see
-// BuildSyntheticSonarFrame's out-of-frame guard for what happens if a
-// future scenario doesn't fit). Not scenario-configurable: this is a
-// stand-in sensor model for exercising sonar_cfar_frontend end-to-end, not
-// a calibrated device.
-constexpr uint32_t kSonarNumRanges = 600;
-constexpr uint32_t kSonarNumBeams = 300;
-constexpr double kSonarMinRangeM = 0.0;
-constexpr double kSonarMaxRangeM = 15.0;
-// Wide enough to comfortably cover this scenario's full bearing range
-// (observed up to ~2.3 rad at the default radius/arc — trajectory heading
-// tracks the arc while targets stay roughly fixed, so bearing sweeps much
-// further than the arc_radians itself). Not a realistic narrow-FOV FLS
-// model; see the struct-level comment.
-constexpr double kSonarHorizontalFovRad = 6.0;
-constexpr int kBackgroundIntensity = 5;   // matches sonar_cfar_frontend_test's synthetic fixture
-constexpr int kTargetIntensity = 200;     // matches sonar_cfar_frontend_test's synthetic fixture
-
-// Renders one target reflection into an otherwise-empty synthetic SonarFrame
-// — a small 3-column-wide blob, not a single pixel, because DBSCAN
-// (min_samples=2 in sonar_cfar_frontend's defaults) can never cluster a
-// lone point and would report it as noise, not a detection (see
-// sonar_cfar_frontend_test.cpp's MakeSyntheticFrame, which this mirrors).
-// noisy_range_m/noisy_bearing_rad already have sensor noise applied by the
-// caller; quantizing them onto this frame's finite range/bearing bins adds
-// a further (physically realistic) discretization error on top.
-uw::domain::SonarFrame BuildSyntheticSonarFrame(const std::string& kf_id, uint64_t t_ns,
-                                                 double noisy_range_m, double noisy_bearing_rad) {
-  uw::domain::SonarFrame frame;
-  auto& header = *frame.mutable_header();
-  header.mutable_observation_id()->set_value(kf_id);
-  header.mutable_sensor_frame()->set_value("sonar_link");
-  header.mutable_capture_time()->set_seconds(static_cast<int64_t>(t_ns / 1'000'000'000ULL));
-  header.mutable_capture_time()->set_nanos(static_cast<int32_t>(t_ns % 1'000'000'000ULL));
-  header.set_clock_domain(uw::domain::CLOCK_DOMAIN_SIMULATION);
-  header.set_validity(uw::domain::ObservationHeader::VALIDITY_OK);
-  header.set_provenance("synth_bag_gen_v1");
-
-  frame.set_num_ranges(kSonarNumRanges);
-  frame.set_num_beams(kSonarNumBeams);
-  frame.set_min_range(static_cast<float>(kSonarMinRangeM));
-  frame.set_max_range(static_cast<float>(kSonarMaxRangeM));
-  const double range_resolution = (kSonarMaxRangeM - kSonarMinRangeM) / kSonarNumRanges;
-  frame.set_range_resolution(static_cast<float>(range_resolution));
-  frame.set_horizontal_fov(static_cast<float>(kSonarHorizontalFovRad));
-
-  for (uint32_t r = 0; r <= kSonarNumRanges; ++r) {
-    frame.add_range_bins(static_cast<float>(kSonarMinRangeM + r * range_resolution));
-  }
-  const double half_fov = kSonarHorizontalFovRad / 2.0;
-  for (uint32_t c = 0; c < kSonarNumBeams; ++c) {
-    const double t = kSonarNumBeams > 1 ? static_cast<double>(c) / (kSonarNumBeams - 1) : 0.0;
-    frame.add_azimuth_angles(static_cast<float>(-half_fov + kSonarHorizontalFovRad * t));
-  }
-
-  std::string bytes(static_cast<std::size_t>(kSonarNumRanges) * kSonarNumBeams,
-                     static_cast<char>(kBackgroundIntensity));
-
-  const int row = static_cast<int>(std::lround((noisy_range_m - kSonarMinRangeM) / range_resolution));
-  const int col = static_cast<int>(
-      std::lround((noisy_bearing_rad + half_fov) / kSonarHorizontalFovRad * (kSonarNumBeams - 1)));
-  if (row < 0 || row >= static_cast<int>(kSonarNumRanges) || col < 0 ||
-      col >= static_cast<int>(kSonarNumBeams)) {
-    std::cerr << "warning: target for " << kf_id
-              << " falls outside the synthetic sonar frame (range=" << noisy_range_m
-              << "m bearing=" << noisy_bearing_rad << "rad) — frame written background-only\n";
-  } else {
-    for (int dc = -1; dc <= 1; ++dc) {
-      const int c = col + dc;
-      if (c < 0 || c >= static_cast<int>(kSonarNumBeams)) continue;
-      bytes[static_cast<std::size_t>(row) * kSonarNumBeams + static_cast<std::size_t>(c)] =
-          static_cast<char>(kTargetIntensity);
-    }
-  }
-  frame.set_intensity_tensor(std::move(bytes));
-  frame.set_encoding(uw::domain::SonarFrame::ENCODING_UINT8_GRAY);
-  return frame;
-}
 
 // --- Optional per-keyframe stereo images, only emitted when --experiment
 // loads a rig with cameras (see main()'s `rig` capture below). Mirrors
@@ -424,6 +345,8 @@ int main(int argc, char** argv) {
 
   const auto trajectory = BuildGroundTruthTrajectory(opt);
   const auto targets = BuildSonarTargets(opt);
+  uw::runtime::SyntheticSonarFrameSpec sonar_frame_spec;
+  sonar_frame_spec.provenance = "synth_bag_gen_v1";
   // Only meaningful when a camera rig is loaded (see `rig` above); drawn
   // here, after `rng` exists but before the per-keyframe loop below, so it
   // consumes a fixed slice of the seeded stream without perturbing the
@@ -490,7 +413,7 @@ int main(int argc, char** argv) {
     // Sonar: one synthetic ping per target within plausible range, run
     // through the real sonar_cfar_frontend by apps/replay_demo (not
     // pre-computed range-bearing evidence — see file header and
-    // BuildSyntheticSonarFrame). One frame per target-in-range, rather than
+    // RenderSyntheticSonarFrame). One frame per target-in-range, rather than
     // one frame covering all of them, is a synthetic-demo simplification —
     // matches apps/replay_demo's documented landmark-association stand-in,
     // not a general multi-target-per-ping sensor model.
@@ -501,8 +424,17 @@ int main(int argc, char** argv) {
       const double bearing = std::atan2(local.y(), local.x());
       const double noisy_range = range + range_noise(rng);
       const double noisy_bearing = bearing + bearing_noise(rng);
-      const auto frame = BuildSyntheticSonarFrame(kf_id, t_ns, noisy_range, noisy_bearing);
-      writer.WriteMessage("/raw/sonar_frame", t_ns, frame);
+      sonar_frame_spec.observation_id = kf_id;
+      sonar_frame_spec.timestamp_ns = t_ns;
+      auto rendered = uw::runtime::RenderSyntheticSonarFrame(
+          sonar_frame_spec, noisy_range, noisy_bearing);
+      if (!rendered.target_rendered) {
+        std::cerr << "warning: target for " << kf_id
+                  << " falls outside the synthetic sonar frame (range=" << noisy_range
+                  << "m bearing=" << noisy_bearing
+                  << "rad) — frame written background-only\n";
+      }
+      writer.WriteMessage("/raw/sonar_frame", t_ns, rendered.frame);
     }
 
     // Stereo images (only when a rig with cameras was loaded via

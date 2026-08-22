@@ -2,9 +2,8 @@
 # machine_hall sequences (MH_01 through MH_05 share the same rig/
 # calibration — this is not MH_01-specific despite the filename, named
 # after the sequence adapters/datasets/uw_dataset_adapter/euroc_converter.py
-# is verified against). P1 workstream A3 (docs/superpowers/plans/
-# 2026-08-21-p1-real-multisensor-closed-loop.md) — the public-dataset
-# adapter's rig, proving configs/rig/*.yaml + StereoGeometry aren't
+# is verified against). This public-dataset rig verifies that
+# configs/rig/*.yaml + StereoGeometry are not
 # HoloOcean-specific.
 #
 # Values sourced from the OKVIS project's published EuRoC config

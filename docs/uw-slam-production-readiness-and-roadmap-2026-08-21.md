@@ -184,7 +184,7 @@
 
 1. Protobuf 作为跨语言唯一规范化消息模型；
 2. MCAP 作为 live/replay 统一证据载体；
-3. `domain → core → algorithms/runtime/adapters → apps` 的单向依赖；
+3. `domain → core → algorithms/runtime/adapters → application → apps` 的单向依赖；
 4. frontend、FactorBuilder、ResidualBlock 和 StateStore 的职责分离；
 5. 显式 seed 和逐字节确定性回放；
 6. 局部地图数据保存在局部坐标系，后端修正通过 keyframe pose 传播；
@@ -247,7 +247,7 @@ P0 已把 solver 收敛、最小轨迹匹配、可选 ATE、非空地图和场�
 > P0 清单），MCAP 依赖也已固定到具体 commit；`gpu_info` 字段也已填充，写的是
 > `"n/a (CPU-only Eigen pipeline, no GPU dependency in this build)"`，如实反映
 > 当前求解器不用 GPU，不是留空。仍未落地的只有 `model_hash`
-> （`include/runtime/run_manifest.hpp` 有这个字段，但 `apps/replay_demo.cpp`
+> （`include/runtime/run_manifest.hpp` 有这个字段，但 `src/application/replay_pipeline.cpp`
 > 目前没有任何地方给它赋值）——当前系统没有可学习模型权重这一类产物，这个字段
 > 要到 P2/P3 引入学习式组件时才有内容可填。本节原始判断按未改写保留在下方，
 > 供审计基线参照，第 7 节是当前实际完成状态。
@@ -290,7 +290,7 @@ P0 已把 solver 收敛、最小轨迹匹配、可选 ATE、非空地图和场�
   正值朝前——这是审计发现的最大歧义点），`image.proto` 的 `is_rectified`
   标注了"当前无消费者校验、仅合成数据生成器写入"的实际状态；
   `src/domain/domain.cpp` 的 `ValidateDepthValues`、
-  `apps/replay_demo.cpp`/`apps/synth_bag_gen.cpp` 的正负号转换点、
+  `src/application/replay_pipeline.cpp`/`apps/synth_bag_gen.cpp` 的正负号转换点、
   `src/mapping/acoustic_optic_map_bridge.cpp` 的 `depth_m > 0` 过滤都补了
   对应注释；`PressureDepthMeasurement` 本身仍没有 `Validate*` 函数、原样
   透传不做有限性/量级检查——这不算本条范围内的缺口（本条是"讲清楚约定"，
@@ -315,8 +315,8 @@ P0 已把 solver 收敛、最小轨迹匹配、可选 ATE、非空地图和场�
   见 2.3 节该条备注——`turbid_sonar_visible` 在这条测试固定的 seed 下小样本会
   合理地落到 0，8 次是留了余量的下限，不是放宽覆盖率阈值本身）；
 - ~~填充 RunManifest 的代码、配置、标定、bag 路径、seed、环境与起止时间~~——已完成
-  （`apps/replay_demo.cpp` 通过 `UW_GIT_COMMIT` 编译期宏 + 配置/标定内容
-  FNV-1a 哈希 + `DetectOsInfo`/`DetectCpuInfo` 填充，`cmake/Applications.cmake`
+  （`apps/replay_demo.cpp` 注入 `UW_GIT_COMMIT`，`src/application/replay_pipeline.cpp`
+  使用该值并通过配置/标定内容 FNV-1a 哈希 + `DetectOsInfo`/`DetectCpuInfo` 填充，`cmake/Applications.cmake`
   负责 git commit 注入，脏树会带 `-dirty` 后缀）；
 - ~~将 MCAP 等外部依赖固定到 commit/tag~~——已完成（`cmake/UwMcap.cmake` 固定到
   具体 commit，不再跟踪 `main`）；
@@ -484,7 +484,7 @@ rectification 诊断已经完成。下一轮优先做：
 ## 11. 计划维护方式
 
 - 每完成一个阶段，更新本文件的实测基线、成熟度和下一阶段门限；
-- 具体实施任务单独写入 `docs/superpowers/plans/`，本文件只保留团队级路线；
+- 具体实施细节由代码、测试和版本历史承载，本文件只保留团队级路线；
 - 数字必须来自可重复命令或版本化数据，不以一次人工观察替代回归证据；
 - 新增能力时同时说明适用数据域、失败模式和验收门，不以“代码已存在”代替“能力已交付”；
 - 若目标、硬件或传感器组合改变，先更新完成定义和 P1 数据规格，再调整算法路线。

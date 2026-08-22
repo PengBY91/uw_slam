@@ -6,6 +6,7 @@
 #include <tuple>
 #include <utility>
 
+#include "runtime/synthetic_sonar.hpp"
 #include "sensor_models/camera_model.hpp"
 #include "sensor_models/sonar_arc_projector.hpp"
 
@@ -15,17 +16,6 @@ namespace {
 
 constexpr uint32_t kWidth = 640;
 constexpr uint32_t kHeight = 480;
-
-// Same synthetic sonar geometry constants as apps/synth_bag_gen.cpp's
-// BuildSyntheticSonarFrame (generous range/bearing coverage, matches
-// sonar_cfar_frontend_test's background/target intensity convention).
-constexpr uint32_t kSonarNumRanges = 600;
-constexpr uint32_t kSonarNumBeams = 300;
-constexpr double kSonarMinRangeM = 0.0;
-constexpr double kSonarMaxRangeM = 15.0;
-constexpr double kSonarHorizontalFovRad = 6.0;
-constexpr int kBackgroundIntensity = 5;
-constexpr int kTargetIntensity = 200;
 
 const uw::domain::CameraIntrinsics* FindCamera(const uw::domain::RigCalibrationSnapshot& rig,
                                                 const std::string& sensor_id) {
@@ -65,9 +55,8 @@ uint8_t BaseTexture(int u, int v, int block_size, int repeated_period) {
 // 8px from the patch's OWN boundary in the SAME coordinate space — so
 // "clean" recoverable depth only started ~radius+target_disparity_px from
 // the boundary, not ~radius as intended, corrupting depth at and near the
-// patch center itself (caught by comparing the actually-recovered depth
-// against the analytically-expected sonar range in a real end-to-end run —
-// see this plan's execution notes).
+// patch center itself. Comparing the recovered depth against the analytic
+// sonar range in the end-to-end scenario exposed the error.
 std::pair<uw::domain::ImageFrame, uw::domain::ImageFrame> MakeStereoPair(
     int block_size, double noise_std, int repeated_period, int patch_center_u, int patch_center_v,
     int patch_half_size, int target_disparity_px, int background_disparity_px, std::mt19937_64& rng) {
@@ -127,48 +116,6 @@ std::pair<uw::domain::ImageFrame, uw::domain::ImageFrame> MakeStereoPair(
   return {left, right};
 }
 
-uw::domain::SonarFrame BuildSyntheticSonarFrame(double range_m, double bearing_rad) {
-  uw::domain::SonarFrame frame;
-  frame.mutable_header()->mutable_sensor_frame()->set_value("sonar_link");
-  frame.mutable_header()->mutable_sensor_id()->set_value("sonar0");
-  frame.mutable_header()->set_clock_domain(uw::domain::CLOCK_DOMAIN_SIMULATION);
-  frame.mutable_header()->set_validity(uw::domain::ObservationHeader::VALIDITY_OK);
-  frame.mutable_header()->set_provenance("acoustic_optic_scenario_matrix_v1");
-
-  frame.set_num_ranges(kSonarNumRanges);
-  frame.set_num_beams(kSonarNumBeams);
-  frame.set_min_range(static_cast<float>(kSonarMinRangeM));
-  frame.set_max_range(static_cast<float>(kSonarMaxRangeM));
-  const double range_resolution = (kSonarMaxRangeM - kSonarMinRangeM) / kSonarNumRanges;
-  frame.set_range_resolution(static_cast<float>(range_resolution));
-  frame.set_horizontal_fov(static_cast<float>(kSonarHorizontalFovRad));
-  for (uint32_t r = 0; r <= kSonarNumRanges; ++r) {
-    frame.add_range_bins(static_cast<float>(kSonarMinRangeM + r * range_resolution));
-  }
-  const double half_fov = kSonarHorizontalFovRad / 2.0;
-  for (uint32_t c = 0; c < kSonarNumBeams; ++c) {
-    const double t = static_cast<double>(c) / (kSonarNumBeams - 1);
-    frame.add_azimuth_angles(static_cast<float>(-half_fov + kSonarHorizontalFovRad * t));
-  }
-
-  std::string bytes(static_cast<std::size_t>(kSonarNumRanges) * kSonarNumBeams,
-                    static_cast<char>(kBackgroundIntensity));
-  const int row = static_cast<int>(std::lround((range_m - kSonarMinRangeM) / range_resolution));
-  const int col =
-      static_cast<int>(std::lround((bearing_rad + half_fov) / kSonarHorizontalFovRad * (kSonarNumBeams - 1)));
-  if (row >= 0 && row < static_cast<int>(kSonarNumRanges)) {
-    for (int dc = -1; dc <= 1; ++dc) {
-      const int c = col + dc;
-      if (c < 0 || c >= static_cast<int>(kSonarNumBeams)) continue;
-      bytes[static_cast<std::size_t>(row) * kSonarNumBeams + static_cast<std::size_t>(c)] =
-          static_cast<char>(kTargetIntensity);
-    }
-  }
-  frame.set_intensity_tensor(bytes);
-  frame.set_encoding(uw::domain::SonarFrame::ENCODING_UINT8_GRAY);
-  return frame;
-}
-
 }  // namespace
 
 const std::vector<ScenarioSpec>& AllScenarios() {
@@ -206,7 +153,7 @@ SyntheticTrial BuildTrial(ScenarioKind kind, const uw::domain::RigCalibrationSna
   // Round to the nearest integer pixel disparity (the block matcher has no
   // sub-pixel refinement) so the GT depth used for scoring is EXACTLY what
   // the real matcher can recover on a clean, noiseless region — matching
-  // plan 2's synth_stereo_gen precedent (self-consistency caught a real bug
+  // synth_stereo_gen's convention (self-consistency caught a real bug
   // here: an earlier version of this scenario used a hand-picked GT depth
   // that didn't correspond to any achievable integer disparity, producing a
   // spurious ~0.3m systematic RMSE that looked like a pipeline defect).
@@ -220,8 +167,8 @@ SyntheticTrial BuildTrial(ScenarioKind kind, const uw::domain::RigCalibrationSna
   // Small: the arc projector samples elevation at ~5px/step near boresight
   // (aperture_rad/arc_samples * fx) — a patch much larger than that step
   // creates genuine, physically-real elevation ambiguity by containing
-  // several equally-flat candidate pixels, which is a real FLS limitation
-  // (design spec section 14's first listed risk), not a scenario bug. Only
+  // several equally-flat candidate pixels, which is a real FLS limitation,
+  // not a scenario bug. Only
   // needs to clear the block matcher's own window_radius (3px default) as
   // margin now that MakeStereoPair sources pasted content directly from
   // LEFT's own column (see that function's header comment) — half_size=6
@@ -299,7 +246,13 @@ SyntheticTrial BuildTrial(ScenarioKind kind, const uw::domain::RigCalibrationSna
   trial.expected_sonar_bearing_rad = sonar_observation.bearing_rad;
 
   if (!omit_sonar) {
-    trial.sonar = BuildSyntheticSonarFrame(sonar_observation.range_m, sonar_observation.bearing_rad);
+    uw::runtime::SyntheticSonarFrameSpec sonar_spec;
+    sonar_spec.sensor_id = "sonar0";
+    sonar_spec.provenance = "acoustic_optic_scenario_matrix_v1";
+    trial.sonar = uw::runtime::RenderSyntheticSonarFrame(
+                      sonar_spec, sonar_observation.range_m,
+                      sonar_observation.bearing_rad)
+                      .frame;
     if (kind == ScenarioKind::kTimeOffsetFault) {
       trial.sonar->mutable_header()->mutable_capture_time()->set_seconds(1);  // 1s after camera's default 0
     }

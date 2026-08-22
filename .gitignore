@@ -31,10 +31,12 @@
 /outputs/
 *.mcap
 !tests/**/*.mcap
+/configs/*_tmp/
 
 # Editor/OS/tooling
 .vscode/
 .idea/
 .claude/
+/.superpowers/
 *.swp
 .DS_Store

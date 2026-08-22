@@ -1,14 +1,11 @@
 #!/usr/bin/env bash
-# P3 workstream A1 (docs/superpowers/plans/2026-08-22-p3-online-
-# reconstruction-and-productionization.md): quality checks beyond
-# tools/verify_pipeline.sh's main build/test/replay path. Each mode gets
-# its own build dir (build_asan/build_cov) so it never disturbs build/ —
-# safe to run alongside a normal dev build.
+# Quality checks beyond tools/verify_pipeline.sh's main path. Each mode uses
+# its own build directory so it does not disturb a normal development build.
 #
 # Usage: tools/run_quality_checks.sh [sanitizer|coverage|static-analysis|all]
 # Default: all. Exit status: 0 if every requested check passed, 1 otherwise
-# (static-analysis findings are reported, not gated — see the plan doc's
-# A1 workstream for why: no baseline exists yet to pick a sane threshold).
+# (static-analysis findings are reported, not gated because no baseline has
+# been established for a meaningful threshold).
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -51,8 +48,7 @@ run_coverage() {
   cmake --build "$build_dir" -j"$(nproc)" || { FAILED=1; return; }
   echo "==> [coverage] ctest"
   ctest --test-dir "$build_dir" --output-on-failure || FAILED=1
-  echo "==> [coverage] summary (gcov; this environment has no lcov/gcovr —"
-  echo "    see the plan doc's A1 workstream for what was checked)"
+  echo "==> [coverage] summary (gcov; this environment has no lcov/gcovr)"
   # Summarize line coverage only for this repo's own src/*.cpp objects —
   # excludes generated protobuf code and FetchContent'd third-party (MCAP)
   # sources, which aren't meaningful coverage targets for this repo's own

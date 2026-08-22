@@ -67,6 +67,7 @@ add_executable(runtime_tests
   tests/runtime/config_test.cpp
   tests/runtime/acoustic_optic_synchronizer_test.cpp
   tests/runtime/bag_audit_checks_test.cpp
+  tests/runtime/synthetic_sonar_test.cpp
 )
 target_compile_definitions(runtime_tests PRIVATE UW_REPO_ROOT="${PROJECT_SOURCE_DIR}")
 target_link_libraries(runtime_tests PRIVATE
@@ -91,6 +92,14 @@ target_link_libraries(adapters_tests PRIVATE
   uw::adapters GTest::gtest GTest::gtest_main Threads::Threads
 )
 uw_register_gtest(adapters_tests "unit.adapters" "unit;adapters")
+
+add_executable(application_tests
+  tests/application/replay_pipeline_test.cpp
+)
+target_link_libraries(application_tests PRIVATE
+  uw::application GTest::gtest GTest::gtest_main
+)
+uw_register_gtest(application_tests "unit.application" "unit;application")
 
 add_executable(contract_tests
   tests/contracts/domain_contract_test.cpp
