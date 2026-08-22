@@ -41,6 +41,14 @@ PlatformDefaultsConfig LoadPlatformDefaultsConfig(const std::string& path) {
   config.initial_lambda = GetOr<double>(estimation, "initial_lambda", config.initial_lambda);
   config.warmup_seconds = GetOr<double>(estimation, "warmup_seconds", config.warmup_seconds);
 
+  const auto gates = root["gates"];
+  config.require_converged = GetOr<bool>(gates, "require_converged", config.require_converged);
+  config.max_ate_rmse_m = GetOr<double>(gates, "max_ate_rmse_m", config.max_ate_rmse_m);
+  config.min_matched_ate_poses =
+      GetOr<int>(gates, "min_matched_ate_poses", config.min_matched_ate_poses);
+  config.require_nonempty_map =
+      GetOr<bool>(gates, "require_nonempty_map", config.require_nonempty_map);
+
   if (root["reliability"] && root["reliability"]["default_sqrt_information"]) {
     const auto info = root["reliability"]["default_sqrt_information"];
     config.default_sqrt_information.relative_pose =
@@ -212,6 +220,23 @@ ExperimentConfig LoadExperimentConfig(const std::string& path) {
   if (root["output"]) {
     config.write_run_manifest =
         GetOr<bool>(root["output"], "write_run_manifest", config.write_run_manifest);
+  }
+
+  // Experiment-level gate overrides: what counts as an acceptable run
+  // differs sharply between a known-good synthetic scenario and a
+  // real-data experiment still being brought up (docs/uw-slam-production-
+  // readiness-and-roadmap-2026-08-21.md section 5.5). Rather than fork
+  // defaults/platform.yaml per experiment, the experiment file — the most
+  // specific layer — can override individual defaults.* gate fields here.
+  if (root["gates"]) {
+    const auto gates = root["gates"];
+    config.defaults.require_converged =
+        GetOr<bool>(gates, "require_converged", config.defaults.require_converged);
+    config.defaults.max_ate_rmse_m = GetOr<double>(gates, "max_ate_rmse_m", config.defaults.max_ate_rmse_m);
+    config.defaults.min_matched_ate_poses =
+        GetOr<int>(gates, "min_matched_ate_poses", config.defaults.min_matched_ate_poses);
+    config.defaults.require_nonempty_map =
+        GetOr<bool>(gates, "require_nonempty_map", config.defaults.require_nonempty_map);
   }
 
   return config;

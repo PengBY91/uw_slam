@@ -13,11 +13,16 @@
 #                McapReader.
 include(FetchContent)
 
+# Pinned to the commit this workspace was already building against (verified
+# working) rather than tracking `main`, so a from-scratch checkout can't
+# silently pick up an incompatible upstream change (P0 gate: pin external
+# deps, see docs/uw-slam-production-readiness-and-roadmap-2026-08-21.md).
+# Bump deliberately, not implicitly, when there's a reason to.
 FetchContent_Declare(
   mcap_src
   GIT_REPOSITORY https://github.com/foxglove/mcap.git
-  GIT_TAG main
-  GIT_SHALLOW TRUE
+  GIT_TAG b6b85df9927fb8ccb7c76e5437cc0d0bfa966ceb
+  GIT_SHALLOW FALSE
 )
 FetchContent_GetProperties(mcap_src)
 if(NOT mcap_src_POPULATED)

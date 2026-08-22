@@ -39,7 +39,10 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <ctime>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <optional>
 #include <sstream>
@@ -47,6 +50,16 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+#include <sys/utsname.h>
+
+// Set by cmake/Applications.cmake (uw_apply_application_defaults) from `git
+// rev-parse HEAD` at CMake *configure* time — a manual reconfigure is needed
+// to pick up a new commit, not just a rebuild. Falls back to "unknown" for
+// any build that bypasses that target function.
+#ifndef UW_GIT_COMMIT
+#define UW_GIT_COMMIT "unknown"
+#endif
 
 #include "domain/domain.hpp"
 #include "estimation/gauss_newton_solver.hpp"
@@ -97,9 +110,69 @@ std::string ToTumLine(double timestamp_s, const Pose3& pose) {
   return out.str();
 }
 
+// RunManifest population helpers (docs/uw-slam-production-readiness-and-
+// roadmap-2026-08-21.md section 5.6: these fields were all silently empty
+// before). Kept deliberately simple — no new dependency pulled in just to
+// fill provenance metadata.
+
+std::string NowIso8601Utc() {
+  const auto now = std::chrono::system_clock::now();
+  const std::time_t now_c = std::chrono::system_clock::to_time_t(now);
+  std::tm utc_tm{};
+  gmtime_r(&now_c, &utc_tm);
+  std::ostringstream out;
+  out << std::put_time(&utc_tm, "%Y-%m-%dT%H:%M:%SZ");
+  return out.str();
+}
+
+// Not a cryptographic hash — just enough to detect "this config/calibration
+// file's bytes changed since a prior run" for manifest provenance, not to
+// resist tampering.
+std::string Fnv1aHex(const std::string& data) {
+  uint64_t hash = 1469598103934665603ull;  // FNV offset basis
+  for (unsigned char c : data) {
+    hash ^= c;
+    hash *= 1099511628211ull;  // FNV prime
+  }
+  std::ostringstream out;
+  out << std::hex << hash;
+  return out.str();
+}
+
+std::string ReadFileBytesOrEmpty(const std::string& path) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) return "";
+  std::ostringstream buffer;
+  buffer << in.rdbuf();
+  return buffer.str();
+}
+
+std::string DetectOsInfo() {
+  struct utsname info{};
+  if (uname(&info) != 0) return "unknown";
+  return std::string(info.sysname) + " " + info.release + " " + info.machine;
+}
+
+// Linux-specific (this codebase's dev/CI environment per CLAUDE.md); a
+// non-Linux build just gets "unknown" rather than failing to compile.
+std::string DetectCpuInfo() {
+  std::ifstream cpuinfo("/proc/cpuinfo");
+  std::string line;
+  while (std::getline(cpuinfo, line)) {
+    const auto colon = line.find(':');
+    if (colon != std::string::npos && line.compare(0, 10, "model name") == 0) {
+      std::string value = line.substr(colon + 1);
+      const auto first = value.find_first_not_of(' ');
+      return first == std::string::npos ? "unknown" : value.substr(first);
+    }
+  }
+  return "unknown";
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
+  const std::string run_start_time_iso8601 = NowIso8601Utc();
   Options opt;
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
@@ -151,6 +224,13 @@ int main(int argc, char** argv) {
   // that block for why this needs `rig` too, not just this string.
   std::string estimator_mode = "black_box_vio";
   std::string landmark_detector = "bright_blob";
+  // RunManifest provenance (section 5.6): best-effort, not a guarantee — the
+  // seed reflects this experiment's declared scenario seed, which is what
+  // would generate a matching bag via synth_bag_gen, but a bag supplied from
+  // elsewhere (e.g. a real HoloOcean recording) may not have come from it.
+  uint64_t scenario_seed = 0;
+  std::string config_hash;
+  std::string calibration_hash;
   if (!opt.experiment_path.empty()) {
     const auto config = uw::runtime::LoadExperimentConfig(opt.experiment_path);
     defaults = config.defaults;
@@ -158,6 +238,9 @@ int main(int argc, char** argv) {
     if (config.rig.cameras_size() > 0) rig = config.rig;
     estimator_mode = config.estimator_mode;
     landmark_detector = config.landmark_detector;
+    scenario_seed = config.scenario.seed;
+    config_hash = Fnv1aHex(ReadFileBytesOrEmpty(opt.experiment_path));
+    calibration_hash = Fnv1aHex(config.rig.SerializeAsString());
     std::cout << "loaded experiment config: " << opt.experiment_path << " (sonar_frontend="
               << config.sonar_frontend << ", estimator_mode=" << config.estimator_mode << ")\n";
   }
@@ -648,14 +731,53 @@ int main(int argc, char** argv) {
                                             std::chrono::duration_cast<std::chrono::seconds>(
                                                 std::chrono::system_clock::now().time_since_epoch())
                                                 .count());
+    manifest.git_commit = UW_GIT_COMMIT;
+    manifest.config_hash = config_hash;
+    manifest.calibration_hash = calibration_hash;
     manifest.dataset_or_scenario = opt.bag_path;
     manifest.simulator = "synthetic (apps/synth_bag_gen.cpp)";
+    manifest.os_info = DetectOsInfo();
+    manifest.cpu_info = DetectCpuInfo();
+    manifest.gpu_info = "n/a (CPU-only Eigen pipeline, no GPU dependency in this build)";
+    manifest.seed = scenario_seed;
+    manifest.start_time_iso8601 = run_start_time_iso8601;
+    manifest.end_time_iso8601 = NowIso8601Utc();
     std::ofstream manifest_out(opt.out_prefix + "_run_manifest.json");
     manifest_out << manifest.ToJson();
     std::cout << "wrote " << opt.out_prefix << "_trajectory.tum and " << opt.out_prefix
               << "_run_manifest.json\n";
   } else {
     std::cout << "wrote " << opt.out_prefix << "_trajectory.tum (run_manifest disabled by config)\n";
+  }
+
+  // P0 non-void gates (docs/uw-slam-production-readiness-and-roadmap-2026-
+  // 08-21.md section 5.5): outputs above are always written for
+  // diagnosability even on failure — only the exit code changes — so a CI
+  // gate failure still leaves a trajectory/manifest to inspect. Each gate
+  // is individually opt-in via defaults.*/experiment `gates:` (see
+  // include/runtime/config.hpp) except require_converged, which defaults on
+  // because a stalled solver is never an acceptable output.
+  std::vector<std::string> gate_failures;
+  if (defaults.require_converged && !summary.converged) {
+    gate_failures.push_back("solver did not converge (" + std::to_string(summary.iterations) +
+                             " iterations, stalled)");
+  }
+  if (defaults.min_matched_ate_poses > 0 &&
+      static_cast<int>(ate.num_matched_poses) < defaults.min_matched_ate_poses) {
+    gate_failures.push_back("matched ATE poses " + std::to_string(ate.num_matched_poses) +
+                             " < required " + std::to_string(defaults.min_matched_ate_poses));
+  }
+  if (defaults.max_ate_rmse_m >= 0.0 && ate.rmse_m > defaults.max_ate_rmse_m) {
+    gate_failures.push_back("ATE rmse " + std::to_string(ate.rmse_m) + "m > max " +
+                             std::to_string(defaults.max_ate_rmse_m) + "m");
+  }
+  if (defaults.require_nonempty_map && (num_landmarks_discovered + num_map_evidence_points) == 0) {
+    gate_failures.push_back("map is empty (0 landmarks discovered, 0 map evidence points)");
+  }
+  if (!gate_failures.empty()) {
+    std::cerr << "GATE FAILURE:\n";
+    for (const auto& failure : gate_failures) std::cerr << "  - " << failure << "\n";
+    return 2;
   }
   return 0;
 }

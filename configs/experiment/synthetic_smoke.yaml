@@ -23,3 +23,12 @@ map_backend: submap_point_cloud_v1
 output:
   trajectory_format: tum
   write_run_manifest: true
+
+# P0 非放空 gate（见 docs/uw-slam-production-readiness-and-roadmap-2026-08-21.md
+# 5.5/7）：实测 ATE rmse≈0.0666m、12/12 matched poses（README「跨 seed 有波动」，
+# 阈值留了约2倍余量而不是卡实测值，避免正常波动导致 CI flaky）。
+gates:
+  require_converged: true
+  max_ate_rmse_m: 0.15
+  min_matched_ate_poses: 10
+  require_nonempty_map: true

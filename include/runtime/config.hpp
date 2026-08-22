@@ -38,6 +38,19 @@ struct PlatformDefaultsConfig {
   // first surviving keyframe becomes the fixed anchor (see apps/replay_demo
   // for exactly how this is applied).
   double warmup_seconds = 0.0;
+
+  // P0 non-void replay gates (docs/uw-slam-production-readiness-and-roadmap-
+  // 2026-08-21.md section 5.5/7): apps/replay_demo checks these after
+  // solving and exits non-zero when violated, instead of always returning 0
+  // regardless of output quality. All threshold gates default to disabled
+  // (negative/zero) so existing experiments that haven't had a threshold
+  // deliberately chosen for them keep running unblocked; require_converged
+  // defaults to true because a stalled solver is never an acceptable output
+  // regardless of experiment.
+  bool require_converged = true;
+  double max_ate_rmse_m = -1.0;       // <0 = gate disabled
+  int min_matched_ate_poses = 0;      // <=0 = gate disabled
+  bool require_nonempty_map = false;  // landmarks discovered + map evidence points > 0
 };
 
 struct ScenarioNoiseConfig {

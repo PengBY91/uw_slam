@@ -109,6 +109,12 @@ int main(int argc, char** argv) {
   int trials_per_scenario = 20;
   double max_false_fusion_rate = 0.05;
   int min_accepted_for_gate = 5;
+  // <0 = disabled. Current measured P95 (278-308ms, see docs/uw-slam-
+  // production-readiness-and-roadmap-2026-08-21.md 2.3) already exceeds the
+  // architecture's 200ms aspirational target, so defaulting this on would
+  // fail every scenario today for a reason unrelated to correctness — left
+  // opt-in until the latency work in that roadmap's P3 lands.
+  double max_p95_latency_ms = -1.0;
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
@@ -119,6 +125,8 @@ int main(int argc, char** argv) {
       base_seed = std::stoull(next());
     } else if (arg == "--trials-per-scenario" && i + 1 < argc) {
       trials_per_scenario = std::stoi(next());
+    } else if (arg == "--max-p95-latency-ms" && i + 1 < argc) {
+      max_p95_latency_ms = std::stod(next());
     } else {
       std::cerr << "unknown argument: " << arg << "\n";
       return 1;
@@ -303,6 +311,29 @@ int main(int argc, char** argv) {
     if (agg.accepted >= min_accepted_for_gate && false_fusion_rate > max_false_fusion_rate) {
       std::cerr << "GATE FAIL: " << spec.name << " false_fusion_rate " << false_fusion_rate << " exceeds "
                 << max_false_fusion_rate << " (accepted=" << agg.accepted << ")\n";
+      any_gate_failed = true;
+    }
+
+    // Minimum effective coverage gate (docs/uw-slam-production-readiness-
+    // and-roadmap-2026-08-21.md 2.3/5.5): the false-fusion gate above is
+    // silently skipped whenever accepted < min_accepted_for_gate, which
+    // previously let a scenario with 0/N accepted (no candidates at all —
+    // e.g. turbid_sonar_visible) print and exit 0 unnoticed. kSonarDropout
+    // and kOpticalInvalidRegion are deliberately built (see
+    // acoustic_optic_scenarios.cpp) so that fusion has nothing valid to
+    // accept — 0 accepted is their correct, expected outcome, not a
+    // regression, so they're excluded here.
+    if (spec.kind != uw::scenario_matrix::ScenarioKind::kSonarDropout &&
+        spec.kind != uw::scenario_matrix::ScenarioKind::kOpticalInvalidRegion && agg.accepted == 0) {
+      std::cerr << "GATE FAIL: " << spec.name << " had 0/" << agg.trials
+                << " accepted associations — no evidence the fusion pipeline produced any valid "
+                   "output in this scenario\n";
+      any_gate_failed = true;
+    }
+
+    if (max_p95_latency_ms >= 0.0 && p95_latency > max_p95_latency_ms) {
+      std::cerr << "GATE FAIL: " << spec.name << " p95_latency_ms " << p95_latency << " exceeds "
+                << max_p95_latency_ms << "\n";
       any_gate_failed = true;
     }
   }
