@@ -276,6 +276,10 @@ std::pair<uw::domain::ImageFrame, uw::domain::ImageFrame> BuildStereoPair(
         frame_name == "camera_left_link" ? "camera_left" : "camera_right");
     image.mutable_header()->mutable_capture_time()->set_seconds(static_cast<int64_t>(t_ns / 1'000'000'000ULL));
     image.mutable_header()->mutable_capture_time()->set_nanos(static_cast<int32_t>(t_ns % 1'000'000'000ULL));
+    // Synthetic generation has no real transport delay to model — receive_time
+    // equals capture_time (not left at the zero-Stamp default, which
+    // tools/bag_audit reads as "never populated" rather than "instantaneous").
+    *image.mutable_header()->mutable_receive_time() = image.header().capture_time();
     image.mutable_header()->set_clock_domain(uw::domain::CLOCK_DOMAIN_SIMULATION);
     image.mutable_header()->set_validity(uw::domain::ObservationHeader::VALIDITY_OK);
     image.mutable_header()->set_provenance("synth_bag_gen_v1");

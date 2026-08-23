@@ -19,6 +19,10 @@ SyntheticSonarFrameResult RenderSyntheticSonarFrame(
       static_cast<int64_t>(spec.timestamp_ns / 1'000'000'000ULL));
   header.mutable_capture_time()->set_nanos(
       static_cast<int32_t>(spec.timestamp_ns % 1'000'000'000ULL));
+  // Synthetic generation has no real transport delay to model — receive_time
+  // equals capture_time (not left at the zero-Stamp default, which
+  // tools/bag_audit reads as "never populated" rather than "instantaneous").
+  *header.mutable_receive_time() = header.capture_time();
   header.set_clock_domain(uw::domain::CLOCK_DOMAIN_SIMULATION);
   header.set_validity(uw::domain::ObservationHeader::VALIDITY_OK);
   header.set_provenance(spec.provenance);

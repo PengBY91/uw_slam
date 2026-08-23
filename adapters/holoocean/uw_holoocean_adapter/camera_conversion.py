@@ -40,6 +40,7 @@ def holoocean_camera_to_image_frame(
     sensor_frame: str,
     observation_id: str,
     capture_time_s: float,
+    receive_time_s: float | None = None,
     is_rectified: bool = False,
     provenance: str = "uw_holoocean_adapter_v1",
 ):
@@ -53,6 +54,16 @@ def holoocean_camera_to_image_frame(
     schema_pb2 modules as parameters rather than importing them, matching
     time_utils.make_stamp's approach — this module has no hard dependency
     on the generated-code output directory layout.
+
+    `receive_time_s`, when given, is real wall-clock time (Python's
+    `time.time()`, e.g. HoloOceanSession.step()'s RawSensorFrame.
+    receive_time_s) — NOT the same clock domain as `capture_time_s`, which
+    is simulation time. `header.clock_domain` describes `capture_time`'s
+    domain only (schemas/proto/uw/domain/time.proto has one clock_domain
+    field per header, not two); `receive_time` is conventionally wall-clock/
+    system time whenever populated, per that same file's "receive_time is
+    for scheduling/latency accounting" comment. Left unset (zero Stamp) if
+    omitted, same as before this parameter existed.
     """
     if pixels.ndim != 3 or pixels.shape[2] not in (3, 4):
         raise ValueError(f"expected a (H, W, 3-or-4) camera array, got shape {pixels.shape}")
@@ -68,6 +79,8 @@ def holoocean_camera_to_image_frame(
     frame.header.sensor_id.value = sensor_id
     frame.header.sensor_frame.value = sensor_frame
     frame.header.capture_time.CopyFrom(make_stamp(time_pb2_module, capture_time_s))
+    if receive_time_s is not None:
+        frame.header.receive_time.CopyFrom(make_stamp(time_pb2_module, receive_time_s))
     frame.header.clock_domain = time_pb2_module.CLOCK_DOMAIN_SIMULATION
     frame.header.validity = observation_pb2_module.ObservationHeader.VALIDITY_OK
     frame.header.provenance = provenance

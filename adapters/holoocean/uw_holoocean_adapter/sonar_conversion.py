@@ -39,12 +39,17 @@ def holoocean_sonar_to_sonar_frame(
     horizontal_fov_rad: float,
     min_range_m: float,
     max_range_m: float,
+    receive_time_s: float | None = None,
     provenance: str = "uw_holoocean_adapter_v1",
 ):
     """Converts one HoloOcean ImagingSonar tick into a uw.domain.SonarFrame.
 
     `intensity_array` must be a 2D (num_ranges, num_beams) float array
     (HoloOcean's own row-major [range, azimuth] shape).
+
+    `receive_time_s`, when given, is real wall-clock time — see
+    camera_conversion.py's `holoocean_camera_to_image_frame` doc comment for
+    the full clock-domain convention this follows. Left unset if omitted.
     """
     if intensity_array.ndim != 2:
         raise ValueError(f"expected a 2D (num_ranges, num_beams) array, got shape {intensity_array.shape}")
@@ -58,6 +63,8 @@ def holoocean_sonar_to_sonar_frame(
     frame.header.sensor_id.value = sensor_id
     frame.header.sensor_frame.value = sensor_frame
     frame.header.capture_time.CopyFrom(make_stamp(time_pb2_module, capture_time_s))
+    if receive_time_s is not None:
+        frame.header.receive_time.CopyFrom(make_stamp(time_pb2_module, receive_time_s))
     frame.header.clock_domain = time_pb2_module.CLOCK_DOMAIN_SIMULATION
     frame.header.validity = observation_pb2_module.ObservationHeader.VALIDITY_OK
     frame.header.provenance = provenance

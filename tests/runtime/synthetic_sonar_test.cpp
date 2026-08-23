@@ -21,6 +21,11 @@ TEST(SyntheticSonar, RendersThreeBeamTargetAndCanonicalMetadata) {
   EXPECT_EQ(result.frame.header().sensor_frame().value(), "sonar_link");
   EXPECT_EQ(result.frame.header().capture_time().seconds(), 2);
   EXPECT_EQ(result.frame.header().capture_time().nanos(), 500'000'123);
+  // Synthetic generation has no real transport delay — receive_time must
+  // equal capture_time, not be left at the zero-Stamp default (a prior gap;
+  // see this file's git history / apps/bag_audit's findings).
+  EXPECT_EQ(result.frame.header().receive_time().seconds(), 2);
+  EXPECT_EQ(result.frame.header().receive_time().nanos(), 500'000'123);
   EXPECT_EQ(result.frame.header().clock_domain(), uw::domain::CLOCK_DOMAIN_SIMULATION);
   EXPECT_EQ(result.frame.header().provenance(), "unit_test");
   EXPECT_EQ(result.frame.range_bins_size(), static_cast<int>(spec.num_ranges + 1));

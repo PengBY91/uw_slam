@@ -152,6 +152,50 @@ def test_record_frames_writes_sonar_imu_dvl_when_present_on_a_camera_bearing_tic
         assert set(sonar_frame.intensity_tensor) == {128}
 
 
+def test_record_frames_populates_receive_time_distinctly_from_capture_time():
+    # receive_time_s (1.5, real wall-clock in a live recording) deliberately
+    # differs from sim_time_s (0.2, becomes capture_time) so this test can't
+    # pass by accident if the two were ever aliased/swapped — a prior gap
+    # (both synth_bag_gen and this module) left receive_time at the proto
+    # zero-Stamp default on every message, which tools/bag_audit reads as
+    # "never populated" rather than "instantaneous"; see that tool's own
+    # findings for the full story.
+    frames = [
+        RawSensorFrame(
+            sim_time_s=0.2,
+            receive_time_s=1.5,
+            sensors={
+                "LeftCamera": _camera_array(10),
+                "RightCamera": _camera_array(20),
+                "IMUSensor": np.array([[0.0, 0.0, 9.81], [0.01, -0.02, 0.03]]),
+                "DVLSensor": np.array([0.5, -0.1, 0.02]),
+                "ImagingSonar": np.full((4, 6), 0.5, dtype=np.float32),
+            },
+        ),
+    ]
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = str(Path(tmp_dir) / "receive_time.mcap")
+        assert record_frames(_MODULES, frames, path) == 1
+
+        def _receive_seconds(topic, pb2_type):
+            messages = list(read_canonical_messages(path, topic, pb2_type))
+            assert len(messages) == 1
+            header = messages[0][1].header
+            assert header.capture_time.seconds == 0
+            assert header.capture_time.nanos == 200_000_000
+            return header.receive_time.seconds + header.receive_time.nanos / 1e9
+
+        for topic, pb2_type in (
+            ("/raw/camera/left", image_pb2.ImageFrame),
+            ("/raw/camera/right", image_pb2.ImageFrame),
+            ("/raw/sonar_frame", sonar_pb2.SonarFrame),
+            ("/raw/imu", imu_pb2.ImuSample),
+            ("/raw/dvl", dvl_pb2.DvlSample),
+        ):
+            assert math.isclose(_receive_seconds(topic, pb2_type), 1.5, rel_tol=1e-9), topic
+
+
 def test_record_frames_omits_sonar_imu_dvl_topics_when_absent():
     frames = [
         RawSensorFrame(

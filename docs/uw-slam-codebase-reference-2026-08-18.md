@@ -886,6 +886,11 @@ NLL 和真实调度器 P95 延迟门仍是后续工作。
 
 ### 6.11 `include/mapping/acoustic_optic_map_bridge.hpp`（声光 plan 6：局部地图数据交接，系列收尾）
 
+**2026-08-22 更新**：这个文件现在有两个函数，不是一个——见本节末尾新增的
+`FuseDepthIntoSurfels` 小节（P3 roadmap item 2「visual-only 和 sonar-grounded
+两条局部几何路径」）。下面这几段描述的仍是原有的 `BuildMapEvidenceFromFusedDepth`，
+**未被这次改动触碰**（`git log` 上是纯新增，不是修改）。
+
 只有一个函数：`BuildMapEvidenceFromFusedDepth`。把 plan 4 的 `FusedDepthMeasurement`
 转成 `MapEvidence`（`POINT_CLOUD` 表示），喂给 `include/mapping/submap_manager.hpp`——
 **这个模块是声光系列开始之前就已经存在的**，本 plan 一行都没改它
@@ -920,6 +925,60 @@ cross-modal geometry → probabilistic fusion → simulation/evaluation → 局�
 六个 plan 交付的是一套经过单测和端到端场景矩阵验证过的、可复用的组件集合。见 6.12 节——
 回放管线现在会在加载了带相机的 rig 时真正构造并调用这些组件，但这是一次
 独立的、后续的集成工作（见下），不是六个 plan 本身自带的。
+
+#### `FuseDepthIntoSurfels`（P3 roadmap item 2，2026-08-22）
+
+第二个函数，同文件、同 CMake target（`mapping`/`mapping_tests`），复用同一份
+`FindCamera`/`FindEdgePose` 匿名命名空间辅助函数，跟 `BuildMapEvidenceFromFusedDepth`
+并列存在，**不是替换**——两者都还在，签名和行为都没变。
+
+**决策：一条统一路径，不是两个独立入口。** roadmap 说的"visual-only 和
+sonar-grounded 两条局部几何路径"，直接对应 `measurement.proto` 里
+`FusedDepthMeasurement.contribution_mask` 已经在用的 `DepthContribution` 枚举
+（`DEPTH_CONTRIBUTION_OPTICAL_ONLY` / `DEPTH_CONTRIBUTION_ACOUSTIC_OPTIC`）——这不是
+新发明的分类，是 `src/frontends/acoustic_optic_depth_fusion_frontend.cpp`（plan 4）
+早就在写、但 `BuildMapEvidenceFromFusedDepth` 一直没用上的字段。验证过一个关键前提：
+只有当 posterior（声呐修正后）方差比 optical prior 方差**证明性地**更好（差距超过
+`min_variance_improvement_fraction`）时，像素才会被标成 `ACOUSTIC_OPTIC`（见该文件
+87-90 行的 reject 分支）——也就是说，"sonar-grounded"像素在数据模型层面就保证比
+"visual-only"像素置信度更高，不需要额外判断。`FuseDepthIntoSurfels` 把
+`confidence = 1/variance_m2`（`Surfel::confidence` 文档注释里写好的约定）直接喂给
+`include/mapping/surfel_map.hpp`（P3 D8）的置信度加权合并——两条路径的区别，落到代码
+里就是同一个像素携带的 confidence 数值不同，`SurfelMap::MergeInto` 已有的加权平均逻辑
+自动让声呐修正过的观测在合并时占主导，不需要在这个新函数里加任何 if/else 分支区分
+两条路径。
+
+**法向量估计**：`FusedDepthMeasurement` 是按 `width x height` 行主序排列的规则网格
+（不是无序点云），所以每个像素的右邻居 `(u+1,v)` 和下邻居 `(u,v+1)` 若也有效，就能
+反投影三个点、取切向量叉乘得到一个真实的局部法向量——`tangent_down.cross(tangent_right)`
+这个叉乘顺序对着摄像机方向的正面平面会给出朝向摄像机的法向（optical 系里 -Z），跟本
+仓库大多数地方一样，只是"面向传感器"的第一版约定，没有做多视角一致性的符号归一化。
+只有同时具备右、下邻居的像素才会调用 `SurfelMap::AddPointWithNormal`；其余像素仍走
+`AddPoint`（法向未知）。
+
+**真实数据验证**（不只是手搭的单测 fixture）：临时在
+`apps/acoustic_optic_scenario_matrix.cpp` 里加了一个只触发一次的探针（验证完已经
+`git checkout` 撤销，不是永久改动），喂真实 `clean_textured` 场景第一条 trial 产出的
+`FusedDepthMeasurement`：285322 个像素喂入，合并成 34662 个 surfel，其中 34624 个
+（99.9%）成功估计出法向量，confidence 取值范围 `[0.0016, 522.5]`——全部是有限数值，
+没有 inf/nan/负数。这也顺带实测验证了 `SurfelMap` 头文件里早就写明的暴力 O(n) 扩展性
+限制是真的：探针最初写成跨整个 9 场景矩阵累积进同一个 `SurfelMap`，直接让整个
+`acoustic_optic_scenario_matrix` 二进制从平时的约 38s 变成 75s+ 还没跑完（被手动
+kill），改成只触发一次之后才在正常时间内跑完。
+
+**跟 D8 的关系**：D8 自己的 scope 边界写得很清楚——`SurfelMap` 要接进真实
+pipeline（比如 `replay_demo`/`SubmapManager`）之前，空间索引是硬前提，不是可以往后
+拖的优化项。这次的改动同样没有碰这个边界：`FuseDepthIntoSurfels` 证明了"给定真实
+`FusedDepthMeasurement`，能不能算出正确的 confidence 加权和法向量"这个问题，
+**没有**让 `SurfelMap` 变成 `MapEvidence`/`replay_demo` 的第四个证据源；那仍然需要
+先解决 O(n) 扩展性问题，属于后续工作。
+
+**单测**（`tests/mapping/acoustic_optic_map_bridge_test.cpp` 新增 3 个 case）：
+(1) 无 `FusedDepthMeasurement` payload 时返回 0，不崩溃；(2) 一个 2x2 正面平面 patch，
+手算出预期法向量 `(-1,0,0)`（推导过程写在测试注释里），跟代码算出来的比对；
+(3) 两个相距 0.02m（在默认 0.05m 合并半径内）、但 variance 差 100 倍的观测点，验证
+合并后的 confidence 恰好是两者之和、位置明显偏向高置信度（sonar-grounded）那一侧，
+不是简单平均。
 
 ### 6.12 回放管线接入声光融合（rig-gated，位姿图本身不受影响）
 

@@ -20,6 +20,7 @@ def holoocean_dvl_to_dvl_sample(
     sensor_frame: str,
     observation_id: str,
     capture_time_s: float,
+    receive_time_s: float | None = None,
     provenance: str = "uw_holoocean_adapter_v1",
 ):
     """Converts one HoloOcean DVLSensor tick into a uw.domain.DvlSample.
@@ -30,6 +31,10 @@ def holoocean_dvl_to_dvl_sample(
     `ReturnRange` config option is set (the default). Shape is therefore
     (3,) or (3+N,) for N in [1, 4]; the beam-range count is whatever
     HoloOcean actually returned, not assumed to always be exactly 4.
+
+    `receive_time_s`, when given, is real wall-clock time — see
+    camera_conversion.py's `holoocean_camera_to_image_frame` doc comment for
+    the full clock-domain convention this follows. Left unset if omitted.
     """
     if dvl_array.ndim != 1 or dvl_array.shape[0] < 3:
         raise ValueError(f"expected a 1D array of at least 3 values, got shape {dvl_array.shape}")
@@ -39,6 +44,8 @@ def holoocean_dvl_to_dvl_sample(
     sample.header.sensor_id.value = sensor_id
     sample.header.sensor_frame.value = sensor_frame
     sample.header.capture_time.CopyFrom(make_stamp(time_pb2_module, capture_time_s))
+    if receive_time_s is not None:
+        sample.header.receive_time.CopyFrom(make_stamp(time_pb2_module, receive_time_s))
     sample.header.clock_domain = time_pb2_module.CLOCK_DOMAIN_SIMULATION
     sample.header.validity = observation_pb2_module.ObservationHeader.VALIDITY_OK
     sample.header.provenance = provenance

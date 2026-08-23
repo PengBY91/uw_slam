@@ -124,6 +124,7 @@ def _write_keyframe(
         sensor_frame="camera_left_link",
         observation_id=kf_id,
         capture_time_s=frame.sim_time_s,
+        receive_time_s=frame.receive_time_s,
     )
     right_image = holoocean_camera_to_image_frame(
         modules.image,
@@ -134,6 +135,7 @@ def _write_keyframe(
         sensor_frame="camera_right_link",
         observation_id=kf_id,
         capture_time_s=frame.sim_time_s,
+        receive_time_s=frame.receive_time_s,
     )
     writer.write_message("/raw/camera/left", log_time_ns, left_image)
     writer.write_message("/raw/camera/right", log_time_ns, right_image)
@@ -167,6 +169,7 @@ def _write_keyframe(
             sensor_frame="sonar_link",
             observation_id=kf_id,
             capture_time_s=frame.sim_time_s,
+            receive_time_s=frame.receive_time_s,
             horizontal_fov_rad=sonar_horizontal_fov_rad,
             min_range_m=sonar_min_range_m,
             max_range_m=sonar_max_range_m,
@@ -183,6 +186,7 @@ def _write_keyframe(
             sensor_frame="imu_link",
             observation_id=kf_id,
             capture_time_s=frame.sim_time_s,
+            receive_time_s=frame.receive_time_s,
         )
         writer.write_message("/raw/imu", log_time_ns, imu_sample)
 
@@ -196,6 +200,7 @@ def _write_keyframe(
             sensor_frame="dvl_link",
             observation_id=kf_id,
             capture_time_s=frame.sim_time_s,
+            receive_time_s=frame.receive_time_s,
         )
         writer.write_message("/raw/dvl", log_time_ns, dvl_sample)
 

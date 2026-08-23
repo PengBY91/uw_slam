@@ -21,6 +21,7 @@ def holoocean_imu_to_imu_sample(
     sensor_frame: str,
     observation_id: str,
     capture_time_s: float,
+    receive_time_s: float | None = None,
     provenance: str = "uw_holoocean_adapter_v1",
 ):
     """Converts one HoloOcean IMUSensor tick into a uw.domain.ImuSample.
@@ -32,6 +33,10 @@ def holoocean_imu_to_imu_sample(
     option is set — are [accel_bias_xyz, angular_velocity_bias_xyz]. Shape
     is therefore (2, 3) or (4, 3); anything else is rejected rather than
     guessed at.
+
+    `receive_time_s`, when given, is real wall-clock time — see
+    camera_conversion.py's `holoocean_camera_to_image_frame` doc comment for
+    the full clock-domain convention this follows. Left unset if omitted.
     """
     if imu_array.ndim != 2 or imu_array.shape[1] != 3 or imu_array.shape[0] not in (2, 4):
         raise ValueError(f"expected a (2,3) or (4,3) IMU array, got shape {imu_array.shape}")
@@ -41,6 +46,8 @@ def holoocean_imu_to_imu_sample(
     sample.header.sensor_id.value = sensor_id
     sample.header.sensor_frame.value = sensor_frame
     sample.header.capture_time.CopyFrom(make_stamp(time_pb2_module, capture_time_s))
+    if receive_time_s is not None:
+        sample.header.receive_time.CopyFrom(make_stamp(time_pb2_module, receive_time_s))
     sample.header.clock_domain = time_pb2_module.CLOCK_DOMAIN_SIMULATION
     sample.header.validity = observation_pb2_module.ObservationHeader.VALIDITY_OK
     sample.header.provenance = provenance
