@@ -115,7 +115,15 @@ step ctest ctest --test-dir "$BUILD_DIR" --output-on-failure
 # ... requirements are unsatisfiable"). `pip install -e ".[dev]"` in a plain
 # venv sidesteps this (no universal cross-platform resolution) and is what
 # actually gives the 9/9 pass README.md/CLAUDE.md describe.
+#
+# 4a) Regenerate schema_pb2/ from schemas/proto/ first. These *_pb2.py files
+# are gitignored (see tools/codegen/gen_py.sh's comment), so a fresh clone
+# (e.g. a CI runner) has none of them on disk — only the checked-in
+# __init__.py package markers. Without this step pytest_holoocean fails with
+# ImportError on a fresh checkout even though it passes locally on a machine
+# that has run gen_py.sh at some point in the past.
 if [ -d adapters/holoocean ]; then
+  step gen_py tools/codegen/gen_py.sh
   step pytest_holoocean bash -c '
     cd adapters/holoocean
     if [ ! -x .venv/bin/pytest ]; then
