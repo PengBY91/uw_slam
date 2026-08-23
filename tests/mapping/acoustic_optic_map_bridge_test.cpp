@@ -200,7 +200,7 @@ TEST(FuseDepthIntoSurfels, ReturnsZeroWhenEvidenceHasNoFusedDepthPayload) {
   const auto not_fused_evidence = uw::domain::MakeEvidence(id, {}, wrong_payload, 1.0, "irrelevant_v1");
   uw::mapping::AcousticOpticMapBridgeParams params;
   uw::mapping::SurfelMap surfels;
-  EXPECT_EQ(uw::mapping::FuseDepthIntoSurfels(not_fused_evidence, rig, params, uw::sensor_models::Pose3(),
+  EXPECT_EQ(uw::mapping::FuseDepthIntoSurfels(not_fused_evidence, rig, params, "kf0", uw::sensor_models::Pose3(),
                                               surfels),
             0);
   EXPECT_EQ(surfels.NumSurfels(), 0u);
@@ -228,8 +228,8 @@ TEST(FuseDepthIntoSurfels, EstimatesNormalFromGridNeighborsOfAFrontalFlatPatch) 
   // confidence-weighting test below for a merge-distance-sensitive case).
   uw::mapping::SurfelMap surfels(uw::mapping::SurfelMapParams{/*merge_distance_m=*/1.0});
 
-  const int added = uw::mapping::FuseDepthIntoSurfels(fused_evidence, rig, params, uw::sensor_models::Pose3(),
-                                                       surfels);
+  const int added =
+      uw::mapping::FuseDepthIntoSurfels(fused_evidence, rig, params, "kf0", uw::sensor_models::Pose3(), surfels);
   EXPECT_EQ(added, 4);
   ASSERT_EQ(surfels.NumSurfels(), 1u);
   const auto& normal = surfels.Surfels()[0].normal_W;
@@ -265,8 +265,8 @@ TEST(FuseDepthIntoSurfels, AcousticOpticContributionDominatesOpticalOnlyOnMerge)
   uw::mapping::SurfelMap surfels;  // default merge_distance_m = 0.05
   const uw::sensor_models::Pose3 identity_pose;
 
-  EXPECT_EQ(uw::mapping::FuseDepthIntoSurfels(optical_only, rig, params, identity_pose, surfels), 1);
-  EXPECT_EQ(uw::mapping::FuseDepthIntoSurfels(acoustic_optic, rig, params, identity_pose, surfels), 1);
+  EXPECT_EQ(uw::mapping::FuseDepthIntoSurfels(optical_only, rig, params, "kf0", identity_pose, surfels), 1);
+  EXPECT_EQ(uw::mapping::FuseDepthIntoSurfels(acoustic_optic, rig, params, "kf0", identity_pose, surfels), 1);
 
   ASSERT_EQ(surfels.NumSurfels(), 1u) << "0.02m apart must merge under the default 0.05m gate";
   const auto& surfel = surfels.Surfels()[0];
@@ -288,4 +288,37 @@ TEST(FuseDepthIntoSurfels, AcousticOpticContributionDominatesOpticalOnlyOnMerge)
   // acoustic-optic (higher-confidence) observation than to the
   // optical-only one.
   EXPECT_LT(std::abs(surfel.position_W.x() - kAcousticOpticX), std::abs(surfel.position_W.x() - kOpticalOnlyX));
+}
+
+TEST(FuseDepthIntoSurfels, ReintegratingAKeyframeAfterFusionCorrectlyRefusesItsContribution) {
+  // Proves D9 (FuseDepthIntoSurfels) actually benefits from D11
+  // (SurfelMap::ReintegrateKeyframe) — not just SurfelMap in isolation.
+  const auto rig = MakeRig();
+  constexpr int kBoresightIndex = 5 * 20 + 10;
+  const auto evidence = MakeFusedEvidence(20, 10, kBoresightIndex, /*depth_m=*/5.0f, /*variance_m2=*/1.0f);
+
+  uw::mapping::AcousticOpticMapBridgeParams params;
+  uw::mapping::SurfelMap surfels;  // default merge_distance_m = 0.05
+  const uw::sensor_models::Pose3 identity_pose;
+
+  ASSERT_EQ(uw::mapping::FuseDepthIntoSurfels(evidence, rig, params, "kf0", identity_pose, surfels), 1);
+
+  // kf1 observes the same pixel at a pose offset by 2cm along Z — well
+  // within the merge gate, so its base_link point (5.1, 0, 0) + this
+  // offset lands close enough to kf0's world point to merge.
+  uw::sensor_models::Pose3 kf1_pose_initial;
+  kf1_pose_initial.translation = Eigen::Vector3d(0.0, 0.0, 0.02);
+  ASSERT_EQ(uw::mapping::FuseDepthIntoSurfels(evidence, rig, params, "kf1", kf1_pose_initial, surfels), 1);
+
+  ASSERT_EQ(surfels.NumSurfels(), 1u) << "kf0/kf1 observe nearly the same physical point, must merge";
+  EXPECT_NEAR(surfels.Surfels()[0].confidence, 2.0, 1e-3);
+
+  // Pose-graph correction: kf1 moves 2m away along Z — a real correction,
+  // not a numerical nudge.
+  uw::sensor_models::Pose3 kf1_pose_corrected;
+  kf1_pose_corrected.translation = Eigen::Vector3d(0.0, 0.0, 2.0);
+  surfels.ReintegrateKeyframe("kf1", kf1_pose_corrected);
+
+  ASSERT_EQ(surfels.NumSurfels(), 2u)
+      << "after correction, kf0's and kf1's contributions must be refused at the new pose, not stay merged";
 }

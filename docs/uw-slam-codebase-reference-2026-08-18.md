@@ -980,6 +980,161 @@ pipeline（比如 `replay_demo`/`SubmapManager`）之前，空间索引是硬前
 合并后的 confidence 恰好是两者之和、位置明显偏向高置信度（sonar-grounded）那一侧，
 不是简单平均。
 
+#### `SurfelMap` 的 pose correction reintegration（P3 roadmap item 4，D11，2026-08-22）
+
+**要解决的真实架构张力**：`SubmapManager`（点云那条路径）的 reintegration 几乎是免费
+的，因为它从不跨 keyframe 融合证据——`MapEvidence` 按 keyframe 存局部坐标系原始点，
+`WorldPointsForKeyframe` 每次调用都用**当前**位姿重新变换，位姿变了只是变换矩阵变了，
+局部点本身从来没被改写过。`SurfelMap`（D8/D9）完全不同：它的核心价值就是**跨
+keyframe** 的置信度加权融合——`MergeInto` 维护的是一个运行加权平均，一个 `Surfel`
+当前的 `position_W`/`normal_W`/`confidence` 是若干个 keyframe 观测混合之后的结果，
+且不记录是谁贡献了什么、贡献时的原始值是多少。如果某个 keyframe 的位姿后来被位姿图
+修正了，没法简单"重新变换"一个已经跟别的 keyframe 混合过的 surfel——那次混合是在
+**旧位姿**下算出来的，而且（这是决策的关键）`MergeInto` 只保留归一化后的
+`normal_W`，不保留归一化前的加权和，所以就算想做"减去旧贡献、按新位姿重新加"的
+增量式回退（retract-and-redo），法向量这一半在数学上都不是无损可逆的。
+
+**决策：局部观测账本 + 按需整体重建，不是增量式 retract。** 新增
+`SurfelMap::AddKeyframeObservation(WithNormal)(keyframe_id, point_local, ...,
+local_to_world)`：每次调用既立刻按当前 `local_to_world` 融合进 `surfels_`（跟
+`AddPoint`/`AddPointWithNormal` 一样便宜），又把这条原始局部观测存进一个按
+`keyframe_id` 分组的账本（`keyframe_records_`）。`ReintegrateKeyframe(keyframe_id,
+new_local_to_world)` 更新该 keyframe 记录的位姿，然后**清空 `surfels_`、用账本里
+每个 keyframe 各自当前的位姿把所有观测重新跑一遍融合**——不是增量回退，是精确重算。
+代价是 O(账本里全部观测数)，不是 `AddPoint` 那种 O(1) 摊还；这个代价是刻意接受的：
+`SurfelMap` 本来就还没接入真实 pipeline（D8/D9 都反复确认这一点，见下），O(n) 暴力
+最近邻本身就还没解决扩展性问题，在"还没解决扩展性之前，先保证正确性"这个前提下，
+精确重算比增量回退更简单、不会跨多次 retract/redo 累积浮点误差，权衡是合理的。
+
+**刻意不做的事：没有配一个 `StaleKeyframes()` 式的"脏标记"查询。** 本仓库自己的
+点云路径（`SubmapManager::StaleKeyframes()`）已经有一个这样的机制，但 P1 workstream
+B5（audit 工具那轮）验证过一个事实：**除了它自己的单测，仓库里没有任何代码调用
+`StaleKeyframes()`**——一个"检测到 stale、但没人消费"的机制不解决任何实际问题。
+`ReintegrateKeyframe` 反过来是"位姿修正落地的那一刻就地重算"，正确性由调用约定
+保证，不依赖"以后某个东西会去轮询一个标记"这种从没被验证过的假设。
+
+**顺手修的一个真实 bug，不是事后补充**：写第一版 `ReintegrateKeyframe` 时，
+`RebuildFromKeyframeRecords()` 无条件 `surfels_.clear()` 再只按账本重建——这会把
+通过 `AddPoint`/`AddPointWithNormal`（不挂靠任何 keyframe）加进来的 surfel 在第一次
+调用任意一次 `ReintegrateKeyframe` 时**直接销毁**，跟头文件本来准备写的"未挂靠点不受
+影响"矛盾。修法：`AddPoint`/`AddPointWithNormal` 内部也把观测记进账本，用一个保留
+的、真实 keyframe_id 永远不会撞上的空字符串键（`kUnattributedKeyframeId`，
+`surfel_map.cpp` 匿名命名空间），身份是 identity 位姿——这样任何一次重建都会把它们
+原样重放回去，不会丢。`SurfelMap.PlainAddPointSurfelsSurviveReintegrationOf
+AnUnrelatedKeyframe` 这个单测的注释里写明了这个 bug 和修法，不是事后补的说明，是
+写测试时真实发现、真实修的。`NumTrackedKeyframes()` 特意排除这个保留键，语义上只数
+"真的通过 `AddKeyframeObservation` 挂靠过的 keyframe"。
+
+**D9 的接入**：`FuseDepthIntoSurfels` 签名加了 `keyframe_id` 参数（此前
+`SurfelMap`/`FuseDepthIntoSurfels` 都没有任何真实调用方，只有自己的单测用它——改签名
+不影响任何已落地的 pipeline 代码），内部从算 world-frame 点改成算 base_link-frame
+点（跟 `BuildMapEvidenceFromFusedDepth` 用的是同一个"local"约定），再调用
+`AddKeyframeObservation(WithNormal)` 而不是原来的 `AddPoint(WithNormal)`——这样
+`FuseDepthIntoSurfels` 自己文档里写过的那句"SurfelMap has no deferred-reintegration
+concept yet"就不再成立了。
+
+**验证（真实跑出来的，不是推算）**：
+- `SurfelMap` 层新增 4 个单测：两个 keyframe 观测同一物理点先合并、纠正其中一个的
+  位姿后按新位姿正确分裂成两个 surfel（`ReintegratingAKeyframeAfterPoseCorrection
+  RefusesItsObservationsAtTheNewPose`）；位姿修正后仍在合并半径内、验证融合后位置
+  按新权重正确更新（`ReintegratingAKeyframeThatStillMergesUpdatesTheFusedPosition
+  Correctly`）；未挂靠点在别的 keyframe 重整合时不受影响（上面提到的那个 bug
+  回归测试）；对没记录过的 `keyframe_id` 调用 `ReintegrateKeyframe` 是空操作
+  （`ReintegrateKeyframeIsNoOpForAnUntrackedKeyframeId`）。
+- `FuseDepthIntoSurfels` 层新增 1 个衔接测试
+  （`ReintegratingAKeyframeAfterFusionCorrectlyRefusesItsContribution`）：两次真实
+  `FuseDepthIntoSurfels` 调用（同一像素、不同 keyframe_id、初始位姿相距 2cm）先合并
+  成 1 个 surfel、confidence 正确累加到 2.0，再对其中一个 keyframe 做 2m 量级的真实
+  位姿修正、调用 `ReintegrateKeyframe` 后正确分裂成 2 个 surfel。
+- 已有的 D8/D9 单测（`AddPoint`/`AddPointWithNormal`/`ConsumesSubmapManager
+  WorldPointsForKeyframeOutput` 等 17 个、`FuseDepthIntoSurfels` 原有 3 个）全部
+  不改行为、全部继续通过——只是三处调用点加了一个 `keyframe_id` 实参。
+- `cmake --build`：干净。`ctest --test-dir build --output-on-failure`：**165/165**
+  （D11 开始前是 160/160——5 个新 case：`SurfelMap` 4 个 + `FuseDepthIntoSurfels`
+  1 个）。`tools/lint/check_no_ros_in_core.sh`：OK。
+
+**跟 D8/D9 的关系，没有越界**：`SurfelMap`/`FuseDepthIntoSurfels` 仍然没有接入
+`apps/replay_demo`/`MapEvidence`/`SubmapManager` 成为真实 pipeline 的证据源——那仍然
+需要先解决 D8 自己文档写明的 O(n) 暴力最近邻扩展性问题，这次的改动没有碰这个边界，
+也没有试图绕过去。
+
+#### 异常点抑制与自由空间/遮挡处理（P3 roadmap item 3，D10，2026-08-22）
+
+roadmap 这一条"uncertainty-aware 融合、自由空间/遮挡处理和异常点抑制"里，
+"uncertainty-aware 融合"那一半 D9 已经做了（confidence 加权合并）；D10 补的是剩下
+两半。
+
+**异常点抑制：一个统计门限，直接复用仓库已有的 sigma-multiple 门限惯例。**
+`SurfelMapParams` 新增 `outlier_gate_sigma`（默认 3.0），跟
+`AcousticOpticAssociatorParams::depth_agreement_sigma`、
+`AcousticOpticDepthFusionParams::innovation_gate_sigma` 用的是同一套约定和默认值——
+`FindNearest` 在 `merge_distance_m` 内找到候选后，还要再过一道门：新观测和既有 surfel
+的位置差平方是否超过`（1/existing.confidence + 1/新观测confidence）* sigma²`（跟
+`acoustic_optic_associator.cpp` 里 `depth_agreement_sigma` 的平方比较公式完全一样，只是
+从标量深度换成了 3D 距离）。**决策：门限没过不是丢弃观测，是让它单独成为一个新
+surfel**，不是简单拒绝——这保留了信息（可能是真的第二个表面，或者一个移动物体，不只是
+传感器噪声），跟简单丢弃相比更保守，也更符合仓库一贯"宁可保留两个假设，不强行平均出一个
+可能错的结果"的风格。新增 `NumOutliersRejected()` 诊断计数器（风格上跟
+`BoundedQueue::DroppedCount()` 一致）。
+
+**验证过一件事，而不是假设它成立**：`DEPTH_CONTRIBUTION_ACOUSTIC_OPTIC` 像素（更高
+confidence、更低 variance）跟一个已有的、置信度较低的 `OPTICAL_ONLY` surfel 冲突时，
+到底该走"融合并让声呐修正的观测主导"（D9 已验证的行为）还是"判成异常点、拆成两个
+surfel"？推导下来：**同一套统计门限自动做出了正确区分，不需要额外的 if/else 按
+contribution 类型分支**——因为门限用的是两者的*组合*方差，既有 surfel 自己越不确定，
+组合方差就越大，门限就越松，一个适度的差异会落在门限内正常合并（D9 那种"高置信度
+观测主导"场景）；只有当差异大到连组合不确定性都盖不住时，才会被判成真正的冲突。这跟
+D9 自己"一条统一路径，不用按来源分支"的思路是同一个洞察的延续。
+
+**自由空间/遮挡处理：`SurfelMap::CarveFreeSpace(ray_origin_W, ray_end_W)`，范围有意
+限定在光学路径。** 一个观测点意味着从传感器到这个点的整条视线上都没有遮挡物——任何
+已有的、真正落在传感器和这个新观测点之间（不是恰好在新观测点自己这里，也不是超出新
+观测点更远）、且垂直距离在 `free_space_corridor_radius_m`（默认等于
+`merge_distance_m`）内的 surfel，都被这条视线证伪了。策略：**不是直接删除，是每次
+碰撞把 confidence 乘以 `free_space_confidence_decay`（默认 0.5），跌破
+`free_space_removal_confidence_threshold`（默认 0.01）才真正移除**——单次视线本身也是
+有噪声的证据，跟这个类一贯"靠多次观测累积、不靠单次判定"的风格一致。**范围决策**：只
+处理相机/光学深度这条几何（`FuseDepthIntoSurfels` 调用点，见下），没有覆盖声呐——本
+仓库稀疏声呐 landmark 走的是完全独立的另一条路（`SubmapManager::QueryNearestPoint`，
+`src/application/replay_pipeline.cpp` 声呐那段代码驱动），根本不喂给 `SurfelMap`，没有
+现成的接入点可以扩展，所以没做，不是漏掉。
+
+**写测试时抓到、修在合并前的一个真实 bug**：`FuseDepthIntoSurfels` 对每个像素先调用
+`AddKeyframeObservation(WithNormal)` 再调用 `CarveFreeSpace`，用的是*同一个*观测点。
+如果这个点跟附近已有 surfel 合并、confidence 加权平均把位置拉到离像素自己的精确反投影
+点差了几毫米，`CarveFreeSpace` 原始实现里"t 参数是否 <1"这个判断可能因为浮点误差把这个
+刚合并出来的 surfel 自己判成"挡在视线中间"，当场把自己碳化掉。修法：加了一道跟 t 参数
+无关的直接保护——任何在 `ray_end_W`（终点本身，不是投影点）`free_space_corridor_radius_m`
+范围内的 surfel，一律不参与碳化，不管 t 算出来是多少。`SurfelMap.CarveFreeSpaceDoesNot
+CarveASurfelNearButNotExactlyAtTheEndpoint` 这个单测用手算的 t=0.995（应该被原始 t<1
+判断误伤，但被新保护挡住）精确复现了这个 bug 和修法。
+
+**接入点**：`FuseDepthIntoSurfels` 里每个像素融合完之后紧跟着调用一次
+`surfels.CarveFreeSpace(camera_origin_W, pose_WB.Apply(point_base_link))`——`camera_
+origin_W` 只在循环外算一次（相机位置对同一帧所有像素是常量）。
+
+**验证（真实跑出来的，不是推算）**：
+- `SurfelMap` 层新增 7 个单测：异常点门限内接受（0.3m 差、门限约 0.4243m）/门限外拒绝
+  拆成两个 surfel（0.5m 差）各一个，都在测试注释里手算了门限的具体数值；`CarveFreeSpace`
+  的衰减到移除（两次碰撞：1.0→0.5→0.25，配合自定义移除阈值 0.4 精确复现）、走廊外不受
+  影响、终点处/终点之外不受影响、终点附近但 t<1 不被误伤（上面那个 bug 的回归测试）、
+  以及碳化效果不会在 `ReintegrateKeyframe` 重建后保留（碳化只改 `surfels_`，不记进
+  `keyframe_records_` 账本，这是刻意的、写进了头文件的已知边界，不是遗漏）各一个。
+- `cmake --build`：干净，无新增警告。`ctest --test-dir build --output-on-failure`：
+  **172/172**（D10 开始前是 165/165——7 个新 case，全部在 `SurfelMap` 这一层；
+  `FuseDepthIntoSurfels` 的 4 个已有单测不变，因为新增的 `CarveFreeSpace` 调用对它们
+  用到的小规模、宽松间距的 fixture 没有产生足够近的伴随 surfel 去触发碳化）。
+  `tools/lint/check_no_ros_in_core.sh`：OK。真实 `synth_bag_gen`+`replay_demo` 跑一遍，
+  ATE 和迭代次数跟基线完全一致（0.0665821m，6 次迭代）——`SurfelMap` 仍未接入这条
+  pipeline，这次改动不可能影响它。
+
+**跟 D8/D9/D11 的关系，没有越界**：`SurfelMap`/`FuseDepthIntoSurfels` 仍然没有接入
+`apps/replay_demo`/`MapEvidence`/`SubmapManager` 成为真实 pipeline 的证据源——同一个
+O(n) 扩展性前提没有被这次改动碰过。异常点抑制和自由空间碳化都只用单测验证正确性，没有
+像 D9 那样额外跑一次真实场景数据的探针——已有的 hand-derived 单测已经把两个新机制的
+判定边界钉得很精确，真实数据能验证的主要是"规模够不够用"，而规模问题本身就是 D8 那个
+还没解决的前提，不是这次工作范围内的事。
+
 ### 6.12 回放管线接入声光融合（rig-gated，位姿图本身不受影响）
 
 `replay_demo`/`synth_bag_gen` 现在会在 `--experiment` 加载的 rig 含相机时，真正构造并跑

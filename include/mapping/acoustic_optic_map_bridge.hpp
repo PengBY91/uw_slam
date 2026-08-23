@@ -48,17 +48,23 @@ std::optional<uw::domain::MapEvidence> BuildMapEvidenceFromFusedDepth(
 // Also estimates a per-pixel surface normal from grid neighbors (fused's
 // row-major width x height layout: unprojects the pixel's right and down
 // neighbors, when both are valid, and takes their cross product) and calls
-// SurfelMap::AddPointWithNormal instead of AddPoint when one is available —
-// this is the "local geometry" half: without it, every surfel's normal stays
-// unknown (Zero()) forever, since nothing else in this codebase computes one.
+// SurfelMap::AddKeyframeObservationWithNormal instead of
+// AddKeyframeObservation when one is available — this is the "local
+// geometry" half: without it, every surfel's normal stays unknown (Zero())
+// forever, since nothing else in this codebase computes one.
 //
-// Unlike BuildMapEvidenceFromFusedDepth (base_link frame, deferred world
-// transform via SubmapManager's per-call WorldPointsForKeyframe), this
-// computes WORLD-frame points and normals directly using `pose_WB` —
-// SurfelMap has no deferred-reintegration concept yet (extending it to one
-// is separate, later work, matching this file's own note on the point-cloud
-// side about REINTEGRATION_POLICY); this is a one-shot fusion at the
-// keyframe's pose at call time, not a live-updating view.
+// P3 roadmap item 4 (pose-correction reintegration, see
+// SurfelMap::ReintegrateKeyframe's doc comment): points/normals are
+// unprojected into BASE_LINK frame (camera extrinsic already applied, same
+// "local" convention BuildMapEvidenceFromFusedDepth uses) and handed to
+// SurfelMap via AddKeyframeObservation(WithNormal) under `keyframe_id`, with
+// `pose_WB` as the local-to-world transform — NOT the raw world-frame
+// AddPoint/AddPointWithNormal path this function used before. This means a
+// caller that later corrects `keyframe_id`'s pose can call
+// SurfelMap::ReintegrateKeyframe directly to get a correctly re-fused
+// result, instead of this fusion being silently stale forever (this file's
+// own prior note — "SurfelMap has no deferred-reintegration concept yet" —
+// is the gap this closes).
 //
 // Returns the number of points actually added to `surfels` (0 if
 // fused_evidence has no FusedDepthMeasurement payload, or the rig cannot
@@ -66,7 +72,7 @@ std::optional<uw::domain::MapEvidence> BuildMapEvidenceFromFusedDepth(
 // BuildMapEvidenceFromFusedDepth).
 int FuseDepthIntoSurfels(const uw::domain::MeasurementEvidence& fused_evidence,
                          const uw::domain::RigCalibrationSnapshot& rig,
-                         const AcousticOpticMapBridgeParams& params, const uw::sensor_models::Pose3& pose_WB,
-                         SurfelMap& surfels);
+                         const AcousticOpticMapBridgeParams& params, const std::string& keyframe_id,
+                         const uw::sensor_models::Pose3& pose_WB, SurfelMap& surfels);
 
 }  // namespace uw::mapping

@@ -118,8 +118,8 @@ Eigen::Vector3d UnprojectOptical(const uw::sensor_models::PinholeCamera& camera,
 
 int FuseDepthIntoSurfels(const uw::domain::MeasurementEvidence& fused_evidence,
                          const uw::domain::RigCalibrationSnapshot& rig,
-                         const AcousticOpticMapBridgeParams& params, const uw::sensor_models::Pose3& pose_WB,
-                         SurfelMap& surfels) {
+                         const AcousticOpticMapBridgeParams& params, const std::string& keyframe_id,
+                         const uw::sensor_models::Pose3& pose_WB, SurfelMap& surfels) {
   if (!uw::domain::HasPayload<uw::domain::FusedDepthMeasurement>(fused_evidence)) return 0;
   const auto& fused = uw::domain::GetPayload<uw::domain::FusedDepthMeasurement>(fused_evidence);
 
@@ -128,13 +128,21 @@ int FuseDepthIntoSurfels(const uw::domain::MeasurementEvidence& fused_evidence,
   if (camera_intrinsics == nullptr || !camera_pose.has_value()) return 0;
   const auto camera = uw::sensor_models::PinholeCamera::FromIntrinsics(*camera_intrinsics);
 
-  // Direction-only transform optical -> base_link -> world: rotation alone
-  // (no translation), since a surface normal is a direction, not a point —
-  // point transforms below additionally apply each Pose3's translation via
-  // Apply(), normals must not.
-  const Eigen::Matrix3d optical_to_world_rotation =
-      pose_WB.rotation.toRotationMatrix() * camera_pose->rotation.toRotationMatrix() *
-      uw::sensor_models::OpticalFromBodyRotation().transpose();
+  // Direction-only transform optical -> base_link: rotation alone (no
+  // translation, a surface normal is a direction, not a point). Stops at
+  // base_link, NOT world — the pose_WB (world) half of the rotation is
+  // applied inside SurfelMap::AddKeyframeObservationWithNormal instead, so
+  // ReintegrateKeyframe can redo it later against a corrected pose without
+  // this function being involved again.
+  const Eigen::Matrix3d optical_to_base_link_rotation =
+      camera_pose->rotation.toRotationMatrix() * uw::sensor_models::OpticalFromBodyRotation().transpose();
+
+  // P3 roadmap item 3 (D10), free-space/occlusion half: the camera's own
+  // WORLD position for this keyframe — every pixel's ray originates here,
+  // so it's computed once, not per pixel. camera_pose->Apply(Zero()) is the
+  // camera's origin in base_link (translation only, since Apply(0) drops
+  // the rotation's contribution); pose_WB then carries it to world.
+  const Eigen::Vector3d camera_origin_W = pose_WB.Apply(camera_pose->Apply(Eigen::Vector3d::Zero()));
 
   const std::size_t width = fused.width();
   const std::size_t pixels = static_cast<std::size_t>(width) * fused.height();
@@ -146,9 +154,13 @@ int FuseDepthIntoSurfels(const uw::domain::MeasurementEvidence& fused_evidence,
     const double confidence = 1.0 / variance_m2;
 
     const Eigen::Vector3d point_optical = UnprojectOptical(camera, fused, i);
-    const Eigen::Vector3d point_base_link =
+    const Eigen::Vector3d point_camera_body =
         uw::sensor_models::OpticalFromBodyRotation().transpose() * point_optical;
-    const Eigen::Vector3d point_world = pose_WB.Apply(camera_pose->Apply(point_base_link));
+    // BASE_LINK frame (camera extrinsic applied, pose_WB NOT applied yet) —
+    // same "local" convention BuildMapEvidenceFromFusedDepth stores in
+    // MapEvidence, and what SurfelMap::AddKeyframeObservation(WithNormal)
+    // expects as `point_local`.
+    const Eigen::Vector3d point_base_link = camera_pose->Apply(point_camera_body);
 
     // Grid-neighbor normal estimate: needs a right (u+1) and a down (v+1)
     // neighbor, both usable. (P_down - P) x (P_right - P), in that order,
@@ -157,7 +169,7 @@ int FuseDepthIntoSurfels(const uw::domain::MeasurementEvidence& fused_evidence,
     // this is a sensor-facing convention, not viewpoint-canonicalized
     // against multiple observers of the same surfel; good enough for a
     // first local estimate, not attempted to be more than that here.
-    std::optional<Eigen::Vector3d> normal_world;
+    std::optional<Eigen::Vector3d> normal_base_link;
     const std::size_t u = i % width;
     const std::size_t v = i / width;
     const std::size_t right = i + 1;
@@ -168,15 +180,22 @@ int FuseDepthIntoSurfels(const uw::domain::MeasurementEvidence& fused_evidence,
       const Eigen::Vector3d normal_optical = tangent_down.cross(tangent_right);
       const double norm = normal_optical.norm();
       if (norm > 1e-12) {  // guards a degenerate (near-collinear/duplicate-point) neighborhood
-        normal_world = optical_to_world_rotation * (normal_optical / norm);
+        normal_base_link = optical_to_base_link_rotation * (normal_optical / norm);
       }
     }
 
-    if (normal_world.has_value()) {
-      surfels.AddPointWithNormal(point_world, *normal_world, confidence);
+    if (normal_base_link.has_value()) {
+      surfels.AddKeyframeObservationWithNormal(keyframe_id, point_base_link, *normal_base_link, confidence,
+                                                pose_WB);
     } else {
-      surfels.AddPoint(point_world, confidence);
+      surfels.AddKeyframeObservation(keyframe_id, point_base_link, confidence, pose_WB);
     }
+    // Free-space carving: this pixel's ray, from the camera to the point
+    // just fused above, passed through space unobstructed — any existing
+    // surfel strictly between the two (and not itself at/near this same
+    // endpoint — see CarveFreeSpace's own doc comment for that guard) is
+    // contradicted.
+    surfels.CarveFreeSpace(camera_origin_W, pose_WB.Apply(point_base_link));
     ++added;
   }
   return added;
