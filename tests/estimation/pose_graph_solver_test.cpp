@@ -98,7 +98,7 @@ TEST(PoseGraphProblem, ResidualBindingsMatchAddOrderAndInvolvedKeyframes) {
   problem.AddKeyframe("kf2", Pose3{});
 
   auto* relative_block =
-      new RelativePoseResidual(Pose3{}, /*sqrt_info_t=*/1.0, /*sqrt_info_r=*/1.0);
+      new RelativePoseResidual(Pose3{}, Eigen::Matrix<double, 6, 6>::Identity() * 1.0);
   auto* depth_block = new DepthResidual(/*measured_depth_m=*/1.0, /*sqrt_information=*/1.0);
   problem.AddResidualBlock(std::unique_ptr<RelativePoseResidual>(relative_block), {"kf0", "kf1"});
   problem.AddResidualBlock(std::unique_ptr<DepthResidual>(depth_block), {"kf2"});

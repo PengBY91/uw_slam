@@ -45,10 +45,10 @@ PoseGraphProblem BuildThreeKeyframeChain(Pose3* out_true_kf1, Pose3* out_true_kf
   problem.AddKeyframe("kf2", init_kf2);
 
   problem.AddResidualBlock(
-      std::make_unique<RelativePoseResidual>(relative_01, /*sqrt_info_t=*/10.0, /*sqrt_info_r=*/10.0),
+      std::make_unique<RelativePoseResidual>(relative_01, Eigen::Matrix<double, 6, 6>::Identity() * 10.0),
       {"kf0", "kf1"});
   problem.AddResidualBlock(
-      std::make_unique<RelativePoseResidual>(relative_12, /*sqrt_info_t=*/10.0, /*sqrt_info_r=*/10.0),
+      std::make_unique<RelativePoseResidual>(relative_12, Eigen::Matrix<double, 6, 6>::Identity() * 10.0),
       {"kf1", "kf2"});
   problem.AddResidualBlock(std::make_unique<DepthResidual>(*out_true_depth, /*sqrt_information=*/5.0),
                            {"kf2"});
