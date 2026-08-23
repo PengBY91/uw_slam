@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up conda-forge toolchain (Eigen, Protobuf, GTest, yaml-cpp, CMake)
+      - name: Set up conda-forge toolchain (Eigen, Protobuf, GTest, yaml-cpp, OpenCV, CMake)
         uses: conda-incubator/setup-miniconda@v3
         with:
           miniforge-version: latest
@@ -29,7 +29,7 @@ jobs:
 
       - name: Install C++ dependencies
         shell: bash -l {0}
-        run: conda install -y eigen libprotobuf protobuf gtest yaml-cpp cmake
+        run: conda install -y eigen libprotobuf protobuf gtest yaml-cpp "opencv=4.*" cmake
 
       - name: Run full verification pipeline (build, ctest, pytest, lint, synth_bag_gen, replay_demo)
         shell: bash -l {0}
@@ -56,7 +56,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up conda-forge toolchain (Eigen, Protobuf, GTest, yaml-cpp, CMake)
+      - name: Set up conda-forge toolchain (Eigen, Protobuf, GTest, yaml-cpp, OpenCV, CMake)
         uses: conda-incubator/setup-miniconda@v3
         with:
           miniforge-version: latest
@@ -66,7 +66,7 @@ jobs:
 
       - name: Install C++ dependencies
         shell: bash -l {0}
-        run: conda install -y eigen libprotobuf protobuf gtest yaml-cpp cmake
+        run: conda install -y eigen libprotobuf protobuf gtest yaml-cpp "opencv=4.*" cmake
 
       - name: ASan + UBSan build and ctest
         shell: bash -l {0}
@@ -85,7 +85,7 @@ jobs:
       - name: Install cppcheck
         run: sudo apt-get update && sudo apt-get install -y cppcheck
 
-      - name: Set up conda-forge toolchain (Eigen, Protobuf, GTest, yaml-cpp, CMake)
+      - name: Set up conda-forge toolchain (Eigen, Protobuf, GTest, yaml-cpp, OpenCV, CMake)
         uses: conda-incubator/setup-miniconda@v3
         with:
           miniforge-version: latest
@@ -95,7 +95,7 @@ jobs:
 
       - name: Install C++ dependencies
         shell: bash -l {0}
-        run: conda install -y eigen libprotobuf protobuf gtest yaml-cpp cmake
+        run: conda install -y eigen libprotobuf protobuf gtest yaml-cpp "opencv=4.*" cmake
 
       - name: Static analysis (cppcheck) and coverage build
         shell: bash -l {0}

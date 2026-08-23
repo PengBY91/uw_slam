@@ -36,3 +36,10 @@ gates:
   max_ate_rmse_m: 0.15
   min_matched_ate_poses: 10
   require_nonempty_map: true
+  # min_acoustic_optic_accepted/min_acoustic_optic_map_points stay disabled
+  # (default 0) here on purpose: scenario/synthetic_smoke.yaml's three
+  # targets never fall inside the camera's narrow FOV by real geometry (see
+  # this scenario's own comment and configs/experiment/acoustic_optic_demo.yaml,
+  # the one experiment whose scenario is built specifically to be visible to
+  # both sensors). Enabling these here would require faking acceptance to
+  # keep this experiment green, which we don't do — see CountDepthContributions.

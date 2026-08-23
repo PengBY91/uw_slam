@@ -8,6 +8,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <vector>
@@ -18,10 +19,55 @@
 
 namespace uw::runtime {
 
+// Translation and rotation get INDEPENDENT sqrt-information caps (rather
+// than one scalar for both) since RelativePoseFactorBuilder now whitens
+// from the VO frontend's actual 6x6 covariance (Task 9) — a single shared
+// cap would either over-constrain rotation to translation's noise scale
+// or vice versa. See relative_pose_factor_builder.cpp for how these two
+// caps combine with the covariance.
+struct RelativePoseSqrtInformationCaps {
+  double translation = 20.0;
+  double rotation = 20.0;
+};
+
 struct SqrtInformationDefaults {
-  double relative_pose = 20.0;
+  RelativePoseSqrtInformationCaps relative_pose;
   double sonar_range = 15.0;
   double depth = 20.0;
+};
+
+// Config for opencv_adapters::StereoRectificationParams -- see that
+// struct's own doc comment for what alpha/crop_policy/frame_suffix mean.
+// crop_policy is validated to be exactly "full_canvas" or
+// "common_valid_roi" (mapped 1:1 to RectificationCropPolicy); no
+// near-spelling tolerance.
+struct StereoRectificationConfig {
+  double alpha = 0.0;
+  std::string crop_policy = "full_canvas";
+  std::string frame_suffix = "_rectified";
+};
+
+// Config for frontends::StereoLandmarkVoFrontendParams::max_consecutive_failures.
+// Config for frontends::BlockMatcherParams's texture/uniqueness/LR-
+// consistency filters -- see that struct's own field comments.
+struct StereoMatchingConfig {
+  double min_texture_variance = 25.0;
+  double min_uniqueness_margin = 2.0;
+  double left_right_max_diff_px = 1.0;
+};
+
+struct VisualOdometryConfig {
+  int max_consecutive_failures = 3;
+  // See frontends::CovarianceEstimationParams (rigid_transform_fit.hpp)
+  // for what these gate.
+  double max_condition_number = 1.0e8;
+  double residual_variance_floor_m2 = 1.0e-8;
+  // <=0 (or omitted, defaulting to +inf) disables this gate. See
+  // CovarianceEstimationParams::max_inlier_rmse_m's own doc comment for
+  // why this catches a failure mode conditioning alone does not: a
+  // spurious small "consensus" of coincidentally-consistent false
+  // correspondences.
+  double max_inlier_rmse_m = std::numeric_limits<double>::infinity();
 };
 
 struct PlatformDefaultsConfig {
@@ -29,6 +75,9 @@ struct PlatformDefaultsConfig {
   int max_iterations = 30;
   double initial_lambda = 1e-3;
   SqrtInformationDefaults default_sqrt_information;
+  StereoRectificationConfig stereo_rectification;
+  VisualOdometryConfig visual_odometry;
+  StereoMatchingConfig stereo_matching;
 
   // Discard evidence from the first N seconds of a run before fusing it
   // (0 = disabled). Motivated by a specific deployment lesson from a
@@ -52,6 +101,17 @@ struct PlatformDefaultsConfig {
   double max_ate_rmse_m = -1.0;       // <0 = gate disabled
   int min_matched_ate_poses = 0;      // <=0 = gate disabled
   bool require_nonempty_map = false;  // landmarks discovered + map evidence points > 0
+  // Distinct from require_nonempty_map: that gate is satisfied by
+  // optical-only depth alone. These two gate on ACOUSTIC-OPTIC
+  // contribution specifically (contribution_mask ==
+  // DEPTH_CONTRIBUTION_ACOUSTIC_OPTIC), counted BEFORE
+  // BuildMapEvidenceFromFusedDepth (which does not preserve per-point
+  // origin) — see application::CountDepthContributions. <=0 = disabled;
+  // only meant for experiments that expect a visible acoustic-optic
+  // target (e.g. configs/experiment/acoustic_optic_demo.yaml), not for
+  // scenarios whose targets are outside the camera's narrow FOV.
+  int min_acoustic_optic_accepted = 0;
+  int min_acoustic_optic_map_points = 0;
 };
 
 struct ScenarioNoiseConfig {

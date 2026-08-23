@@ -59,7 +59,8 @@ void PaintSquare(std::vector<uint8_t>& image, uint32_t width, uint32_t height, i
 }
 
 uw::domain::ImageFrame MakeImageFrame(const std::string& frame, const std::string& observation_id,
-                                       uint32_t width, uint32_t height, std::vector<uint8_t> pixels) {
+                                       uint32_t width, uint32_t height, std::vector<uint8_t> pixels,
+                                       bool is_rectified = true) {
   uw::domain::ImageFrame image;
   image.mutable_header()->mutable_sensor_frame()->set_value(frame);
   image.mutable_header()->mutable_observation_id()->set_value(observation_id);
@@ -67,6 +68,7 @@ uw::domain::ImageFrame MakeImageFrame(const std::string& frame, const std::strin
   image.set_height(height);
   image.set_row_stride_bytes(width);
   image.set_encoding(uw::domain::ImageFrame::IMAGE_ENCODING_MONO8);
+  image.set_is_rectified(is_rectified);
   image.set_pixel_data(std::string(reinterpret_cast<const char*>(pixels.data()), pixels.size()));
   return image;
 }
@@ -253,6 +255,118 @@ TEST(StereoLandmarkVoFrontend, RejectsWhenTooFewLandmarksMatchBetweenFrames) {
   EXPECT_FALSE(frontend.Process(bundle2, rig).has_value());
 }
 
+TEST(StereoLandmarkVoFrontend, RetainsLastSuccessfulReferenceAcrossAFailedKeyframe) {
+  const uint32_t width = 1000, height = 1000;
+  const auto rig = MakeRig(/*fx=*/1000.0, /*cx=*/500.0, /*cy=*/500.0, /*baseline_half=*/1.0, width, height);
+  const auto geometry = StereoGeometry::Resolve(rig, "camera_left", "camera_left_link", "camera_right",
+                                                 "camera_right_link");
+  ASSERT_TRUE(geometry.valid);
+
+  const double depth = 8.0;
+  std::vector<Eigen::Vector3d> good_points;
+  for (auto [u, v] : std::vector<std::pair<double, double>>{
+           {200, 200}, {800, 200}, {200, 800}, {800, 800}, {500, 500}}) {
+    good_points.push_back(geometry.left.Unproject(u, v, depth));
+  }
+  const std::vector<uint8_t> good_intensities = {130, 150, 170, 190, 210};
+
+  // kf1: deliberately too few landmarks (below min_landmarks_for_pose=3) --
+  // must NOT overwrite the reference kf0 establishes.
+  const std::vector<Eigen::Vector3d> bad_points = {geometry.left.Unproject(400, 400, depth)};
+  const std::vector<uint8_t> bad_intensities = {160};
+
+  const auto [left0, right0] = BuildStereoFrames(geometry.left, geometry.right, geometry.baseline_m,
+                                                  good_points, good_intensities, "kf0", width, height);
+  const auto [left1, right1] = BuildStereoFrames(geometry.left, geometry.right, geometry.baseline_m,
+                                                  bad_points, bad_intensities, "kf1", width, height);
+  // kf2: identical scene to kf0 (zero relative motion) -- must match
+  // against kf0 (the last SUCCESSFUL reference), skipping over kf1.
+  const auto [left2, right2] = BuildStereoFrames(geometry.left, geometry.right, geometry.baseline_m,
+                                                  good_points, good_intensities, "kf2", width, height);
+
+  uw::frontends::StereoLandmarkVoFrontend frontend(MakeParams());
+
+  uw::measurement_api::CameraFrameBundle bundle0;
+  bundle0.primary = left0;
+  bundle0.secondary = right0;
+  EXPECT_FALSE(frontend.Process(bundle0, rig).has_value());  // establishes reference, no evidence yet
+
+  uw::measurement_api::CameraFrameBundle bundle1;
+  bundle1.primary = left1;
+  bundle1.secondary = right1;
+  EXPECT_FALSE(frontend.Process(bundle1, rig).has_value());  // tracking failure: reference NOT advanced
+
+  uw::measurement_api::CameraFrameBundle bundle2;
+  bundle2.primary = left2;
+  bundle2.secondary = right2;
+  const auto result = frontend.Process(bundle2, rig);
+  ASSERT_TRUE(result.has_value());
+  const auto& measurement = uw::domain::GetPayload<uw::domain::RelativePoseMeasurement>(*result);
+  EXPECT_EQ(measurement.from_keyframe().value(), "kf0");
+  EXPECT_EQ(measurement.to_keyframe().value(), "kf2");
+}
+
+TEST(StereoLandmarkVoFrontend, HealthTracksConsecutiveFailuresThenRecovers) {
+  const uint32_t width = 1000, height = 1000;
+  const auto rig = MakeRig(1000.0, 500.0, 500.0, 1.0, width, height);
+  const auto geometry = StereoGeometry::Resolve(rig, "camera_left", "camera_left_link", "camera_right",
+                                                 "camera_right_link");
+  ASSERT_TRUE(geometry.valid);
+
+  const double depth = 8.0;
+  std::vector<Eigen::Vector3d> good_points;
+  for (auto [u, v] : std::vector<std::pair<double, double>>{
+           {200, 200}, {800, 200}, {200, 800}, {800, 800}, {500, 500}}) {
+    good_points.push_back(geometry.left.Unproject(u, v, depth));
+  }
+  const std::vector<uint8_t> good_intensities = {130, 150, 170, 190, 210};
+  const std::vector<Eigen::Vector3d> bad_points = {geometry.left.Unproject(400, 400, depth)};
+  const std::vector<uint8_t> bad_intensities = {160};
+
+  auto params = MakeParams();
+  params.max_consecutive_failures = 3;
+  uw::frontends::StereoLandmarkVoFrontend frontend(params);
+
+  const auto [left0, right0] = BuildStereoFrames(geometry.left, geometry.right, geometry.baseline_m,
+                                                  good_points, good_intensities, "kf0", width, height);
+  uw::measurement_api::CameraFrameBundle bundle0;
+  bundle0.primary = left0;
+  bundle0.secondary = right0;
+  frontend.Process(bundle0, rig);
+  EXPECT_EQ(frontend.Health().status(), uw::domain::HealthReport::STATUS_HEALTHY);
+
+  for (int i = 1; i <= 2; ++i) {
+    const auto [left, right] =
+        BuildStereoFrames(geometry.left, geometry.right, geometry.baseline_m, bad_points,
+                          bad_intensities, "kf" + std::to_string(i), width, height);
+    uw::measurement_api::CameraFrameBundle bundle;
+    bundle.primary = left;
+    bundle.secondary = right;
+    frontend.Process(bundle, rig);
+  }
+  EXPECT_EQ(frontend.Health().status(), uw::domain::HealthReport::STATUS_SUSPECT);
+
+  const auto [left3, right3] = BuildStereoFrames(geometry.left, geometry.right, geometry.baseline_m,
+                                                  bad_points, bad_intensities, "kf3", width, height);
+  uw::measurement_api::CameraFrameBundle bundle3;
+  bundle3.primary = left3;
+  bundle3.secondary = right3;
+  frontend.Process(bundle3, rig);
+  EXPECT_EQ(frontend.Health().status(), uw::domain::HealthReport::STATUS_UNAVAILABLE);
+  EXPECT_EQ(frontend.Health().reason_code(), "vo_tracking_lost");
+
+  // Recovery: a successful match against the still-intact kf0 reference
+  // clears consecutive_failures_ and restores HEALTHY.
+  const auto [left4, right4] = BuildStereoFrames(geometry.left, geometry.right, geometry.baseline_m,
+                                                  good_points, good_intensities, "kf4", width, height);
+  uw::measurement_api::CameraFrameBundle bundle4;
+  bundle4.primary = left4;
+  bundle4.secondary = right4;
+  const auto recovered = frontend.Process(bundle4, rig);
+  ASSERT_TRUE(recovered.has_value());
+  EXPECT_EQ(frontend.Health().status(), uw::domain::HealthReport::STATUS_HEALTHY);
+}
+
 TEST(StereoLandmarkVoFrontend, RejectsBundleWithoutSecondaryFrame) {
   const auto rig = MakeRig(100.0, 50.0, 50.0, 0.25, 100, 100);
   uw::frontends::StereoLandmarkVoFrontend frontend(MakeParams());
@@ -261,4 +375,66 @@ TEST(StereoLandmarkVoFrontend, RejectsBundleWithoutSecondaryFrame) {
   bundle.primary = MakeImageFrame("camera_left_link", "kf0", 100, 100,
                                    std::vector<uint8_t>(100 * 100, kBackground));
   EXPECT_FALSE(frontend.Process(bundle, rig).has_value());
+}
+
+TEST(StereoLandmarkVoFrontend, RejectsUnrectifiedImagesEvenWithValidGeometry) {
+  const uint32_t width = 100, height = 100;
+  const auto rig = MakeRig(100.0, 50.0, 50.0, 0.25, width, height);
+  const auto geometry = StereoGeometry::Resolve(rig, "camera_left", "camera_left_link", "camera_right",
+                                                 "camera_right_link");
+  ASSERT_TRUE(geometry.valid);
+
+  std::vector<Eigen::Vector3d> points = {geometry.left.Unproject(30, 30, 8.0),
+                                          geometry.left.Unproject(70, 70, 8.0),
+                                          geometry.left.Unproject(50, 50, 8.0)};
+  const std::vector<uint8_t> intensities = {130, 190, 210};
+
+  auto [left1, right1] = BuildStereoFrames(geometry.left, geometry.right, geometry.baseline_m, points,
+                                            intensities, "kf0", width, height);
+  left1.set_is_rectified(false);
+  auto [left2, right2] = BuildStereoFrames(geometry.left, geometry.right, geometry.baseline_m, points,
+                                            intensities, "kf1", width, height);
+  left2.set_is_rectified(false);
+
+  uw::frontends::StereoLandmarkVoFrontend frontend(MakeParams());
+  uw::measurement_api::CameraFrameBundle bundle1;
+  bundle1.primary = left1;
+  bundle1.secondary = right1;
+  frontend.Process(bundle1, rig);
+
+  uw::measurement_api::CameraFrameBundle bundle2;
+  bundle2.primary = left2;
+  bundle2.secondary = right2;
+  EXPECT_FALSE(frontend.Process(bundle2, rig).has_value());
+}
+
+TEST(StereoLandmarkVoFrontend, RejectsHeaderFrameMismatchedWithParams) {
+  const uint32_t width = 100, height = 100;
+  const auto rig = MakeRig(100.0, 50.0, 50.0, 0.25, width, height);
+  const auto geometry = StereoGeometry::Resolve(rig, "camera_left", "camera_left_link", "camera_right",
+                                                 "camera_right_link");
+  ASSERT_TRUE(geometry.valid);
+
+  std::vector<Eigen::Vector3d> points = {geometry.left.Unproject(30, 30, 8.0),
+                                          geometry.left.Unproject(70, 70, 8.0),
+                                          geometry.left.Unproject(50, 50, 8.0)};
+  const std::vector<uint8_t> intensities = {130, 190, 210};
+
+  auto [left1, right1] = BuildStereoFrames(geometry.left, geometry.right, geometry.baseline_m, points,
+                                            intensities, "kf0", width, height);
+  left1.mutable_header()->mutable_sensor_frame()->set_value("some_other_frame");
+  auto [left2, right2] = BuildStereoFrames(geometry.left, geometry.right, geometry.baseline_m, points,
+                                            intensities, "kf1", width, height);
+  left2.mutable_header()->mutable_sensor_frame()->set_value("some_other_frame");
+
+  uw::frontends::StereoLandmarkVoFrontend frontend(MakeParams());
+  uw::measurement_api::CameraFrameBundle bundle1;
+  bundle1.primary = left1;
+  bundle1.secondary = right1;
+  frontend.Process(bundle1, rig);
+
+  uw::measurement_api::CameraFrameBundle bundle2;
+  bundle2.primary = left2;
+  bundle2.secondary = right2;
+  EXPECT_FALSE(frontend.Process(bundle2, rig).has_value());
 }

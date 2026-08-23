@@ -39,8 +39,11 @@ uw_register_gtest(frontends_tests "unit.frontends" "unit;frontends")
 
 add_executable(factor_builders_tests
   tests/factor_builders/relative_pose_residual_test.cpp
+  tests/factor_builders/relative_pose_factor_builder_test.cpp
   tests/factor_builders/depth_residual_test.cpp
+  tests/factor_builders/depth_factor_builder_test.cpp
   tests/factor_builders/sonar_range_residual_test.cpp
+  tests/factor_builders/sonar_range_factor_builder_test.cpp
 )
 target_link_libraries(factor_builders_tests PRIVATE
   uw::factor_builders GTest::gtest GTest::gtest_main
@@ -87,9 +90,10 @@ uw_register_gtest(evaluation_tests "unit.evaluation" "unit;evaluation")
 add_executable(adapters_tests
   tests/adapters/svin_bridge_test.cpp
   tests/adapters/holoocean_ros_bridge_sonar_frame_provider_test.cpp
+  tests/adapters/opencv_stereo_rectifier_test.cpp
 )
 target_link_libraries(adapters_tests PRIVATE
-  uw::adapters GTest::gtest GTest::gtest_main Threads::Threads
+  uw::adapters uw::opencv_adapters GTest::gtest GTest::gtest_main Threads::Threads
 )
 uw_register_gtest(adapters_tests "unit.adapters" "unit;adapters")
 
@@ -97,7 +101,7 @@ add_executable(application_tests
   tests/application/replay_pipeline_test.cpp
 )
 target_link_libraries(application_tests PRIVATE
-  uw::application GTest::gtest GTest::gtest_main
+  uw::application uw::domain uw::core uw::runtime GTest::gtest GTest::gtest_main
 )
 uw_register_gtest(application_tests "unit.application" "unit;application")
 

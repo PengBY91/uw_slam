@@ -25,3 +25,13 @@ map_backend: submap_point_cloud_v1
 output:
   trajectory_format: tum
   write_run_manifest: true
+
+# This is the one experiment whose scenario (scenario/acoustic_optic_demo.yaml)
+# deliberately places a sonar target inside the camera's narrow FOV at kf0, so
+# a real ACCEPTED acoustic-optic association is actually achievable here (as
+# of 2026-08-23, seed 42 gives 3 accepted / 3 acoustic-optic map points across
+# 12 keyframes) -- see configs/README.md and application::CountDepthContributions
+# for why this is the only experiment where these two gates are enabled.
+gates:
+  min_acoustic_optic_accepted: 1
+  min_acoustic_optic_map_points: 1

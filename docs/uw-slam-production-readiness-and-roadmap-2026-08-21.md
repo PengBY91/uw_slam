@@ -147,21 +147,84 @@
 ### 2.4 真实 HoloOcean 录制回放
 
 本机保留的真实录制约 76 MB、50 个 keyframe，只包含双目图像、GT pose 和 depth，
-没有声呐、IMU 或 DVL。用当前 `real_holoocean_vo.yaml` 回放得到：
+没有声呐、IMU 或 DVL。
 
-- 49 条双目 VO 相对位姿；
-- 50 条深度因子；
-- 0 条声呐因子；
-- 求解器运行 30 次后 `stalled`；
-- 对齐后的 ATE RMSE 为 `0.5596 m`；
-- 稠密地图点为 0。
+> **2026-08-23 frontend-correctness-closure 复核，数字已变，且是退化**：下面
+> 前一段列的 5 项是 P0 审计时刻的数字。frontend-correctness-closure 把一般离轴
+> stereo rectification（`opencv_adapters::StereoRectificationContext`）真正接进了
+> `replay_demo`（见代码库参考文档 9.2 节第 2 步），带相机的 rig 现在**总是**先过一遍
+> rectification 再喂给 VO/稠密光学前端——这条真实 rig（`example_auv_real_camera.yaml`，
+> 真实标定的畸变系数）此前从未真正走过这条路径。用当前 `real_holoocean_vo.yaml`
+> 重新回放（`--align-ate`，两次独立运行数字一致，不是随机波动）得到：
+>
+> - 46 条双目 VO 相对位姿、47 个 keyframe（此前 49 条/50 个——变少了）；
+> - 47 条深度因子；
+> - 0 条声呐因子（不变，这份录制本就没有声呐）；
+> - 求解器运行 30 次后仍 `stalled`（定性结论不变）；
+> - 对齐后的 ATE RMSE 为 `4.32138 m`（此前 `0.5596 m`——明显变差）；
+> - 稠密地图点 907779 个，全部 `OPTICAL_ONLY`（此前 0 个——`StereoOpticalDepthFrontend`
+>   之前在这个真实 rig 上因为 `StereoGeometry::Resolve` 要求纯平移基线、原始外参不满足
+>   而静默失败，现在喂的是 rectified 后必然满足这个假设的 derived rig，稠密光学 pass
+>   反而第一次真正跑起来了）。
+>
+> **这是一个真实退化，机制已定位、修复留待后续**：不是重采样削弱纹理这个猜测（那是
+> `CameraRectifier` 那条独立、仍未接入的路径的已知教训，下一段还在讲它）——具体查过
+> 之后，根因是这台真实机体左右相机的标定基线不是纯 y 轴平移
+> （`example_auv_real_camera.yaml` 头部注释：x/z 分量占基线量级的 15-17%），
+> `cv::stereoRectify` 为了让两个虚拟相机满足行对齐（row-epipolar）约束必须对两个相机
+> 施加一个不小的旋转，这个旋转把 left 相机的主点从标定值 `cx≈256`（图像中心）搬到了
+> `cx≈170`；用 `alpha=-1`（更保守的缩放/裁切）复核过，`cx` 分毫不差还是
+> `170.043`——证明这个偏移完全来自旋转本身，跟 `alpha`/裁切策略无关，排除了"是裁切
+> 参数选得不好"和"是实现 bug"两种猜测。`alpha=-1` 下 keyframe 数从 47 回升到 49（仍少于
+> 基线的 50）、ATE 从 `4.32138 m` 降到 `1.55571 m`（仍远高于基线的 `0.5596 m`）——说明
+> `alpha` 只是次要因素，主因是 `stereo_landmark_vo_frontend` 的 Harris 角点检测/时序
+> 匹配/RANSAC 参数只在近乎平行基线的合成数据上验证过，面对这组主点大幅偏移、需要真实
+> 旋转对齐的真实标定时表现变差——是否是可修的参数问题（重新联合调 VO 参数）还是需要
+> 更换检测/匹配策略，仍待专门的后续工作验证，本次改动没有去动它。**在这项后续工作完成
+> 之前，不应该认为"真实数据 VO 现在更好了"或者"和以前一样"**——已经变了，而且是往差的
+> 方向变。下面这句"离线 VO 能生成连续相对位姿"的结论仍然成立，只是数字要用上面这份
+> 复核的为准。
+>
+> **2026-08-23 同日后续：尝试修复，未成功，附带一个真正找到但已回退的架构限制**。
+> 逐条 dump 每条 relative-pose 边的 `|t|`/`inlier_rmse_m` 后发现：坏结果集中在少数几条
+> "单步"边上（如 kf31→kf32 单步 `|t|=7.8m`，物理上不可能），这些边的
+> `fit->inlier_rmse_m` 普遍在 0.11-0.25m（`RansacParams::inlier_threshold_m` 默认
+> 0.3m 只是"够格计入 inlier"的单点门槛，不代表这些 inlier 真的相互一致），而正常边普遍
+> 在 0.01-0.09m——一个此前算出来但从未被任何地方消费的质量信号。据此加了新的
+> `CovarianceEstimationParams::max_inlier_rmse_m`（`visual_odometry.max_inlier_rmse_m`
+> YAML 字段，`<=0`/不设为禁用，当前所有 `configs/defaults/*.yaml`
+> 均未启用，不影响任何已有实验），拒绝"inlier 集合本身不够紧"的 fit，即使它已经通过
+> conditioning 检查——但扫了 `0.08~0.20m` 一整段阈值，没有一个能把真实数据结果拉回接近
+> 基线的 `0.5596m`：更紧的阈值（`0.10m` 以下）几乎拒绝了这条 bag 里除最初几个 keyframe
+> 外的全部候选（只剩 4 条边/5 个 keyframe，ATE `0.0636m`——单独看很漂亮，但代价是
+> 几乎放弃了整段轨迹）；更松的阈值（`0.12~0.20m`）保留更多 keyframe（32~43 个）但 ATE
+> 仍在 `1.7~3.6m`，仍远差于基线。还尝试了另一个方向：`consecutive_failures_` 达到
+> `max_consecutive_failures` 后不再死磕越来越"过时"的 reference，而是直接把当前帧提升
+> 为新 reference（放弃这段失败的 evidence，但让后续帧能匹配一个新鲜、邻近的
+> reference）——这个思路被真实数据证伪了，而且证伪的原因本身是个值得记录的架构限制：
+> 一旦 reanchor 触发，新 reference 所在的这段轨迹如果此后再没能连回原来那条从 kf0 出发
+> 的链，`PoseGraphProblem`/`replay_pipeline.cpp` 目前的实现只会保留能从 kf0
+> 沿关联边可达的那部分——重新锚定等于把断掉的那段轨迹整体丢弃，而不是"多一个健康的
+> 局部轨迹段"，结果比什么都不做更差（同样只剩 5 个 keyframe，但连锁失败点更早）。这条
+> 尝试已经从代码里完全回退，不在当前分支里——记录在这里是因为如果以后有人想用
+> "分段重定位/多轨迹段合并"来解决真实数据 VO 追踪丢失的问题，需要先解决图连通性这个
+> 前提，不是一个孤立的 VO frontend 改动能做到的。综上：`max_inlier_rmse_m`
+> 这个质量信号是真实的、有真实数据证据支撑的，作为默认关闭的新选项保留下来对后续调参
+> 有用，但**这次没能找到让真实 HoloOcean 数据回到改动前质量水平的修复**，问题仍然
+> 开放。
 
-这份数据说明真实双目 VO 已经能够产生连续相对位姿，但真实重建尚未跑通。当前工作区
-已有 plumb-bob same-K 去畸变原语和 9 个单元测试，但尚未接入 replay，也不是支持任意
-离轴双目 rig 的通用 rectifier。对该真实 bag 的离线试验中，校正后影像使当前 VO 默认
-参数的跟踪从 50/50 降至 8/50，表明前端配置还需随影像域重调。由于该 bag 未纳入
-版本化数据集，它只能
-作为审计证据，尚不能作为团队长期回归基准。
+用 P0 审计时刻的 `real_holoocean_vo.yaml` 回放（当时一般 rectification 还没接入）
+得到过：49 条双目 VO 相对位姿、50 条深度因子、0 条声呐因子、求解器运行 30 次后
+`stalled`、对齐后的 ATE RMSE 为 `0.5596 m`、稠密地图点为 0。
+
+这份数据说明真实双目 VO 已经能够产生连续相对位姿，但真实重建尚未跑通。
+`include/sensor_models/camera_rectifier.hpp` 的 `CameraRectifier` 是个更局限的
+plumb-bob same-K 去畸变原语，有 9 个单元测试，但仍未接入 replay，也不是支持任意
+离轴双目 rig 的通用 rectifier——对该真实 bag 的离线试验中，它校正后的影像使当前 VO
+默认参数的跟踪从 50/50 降至 8/50，表明前端配置还需随影像域重调。`opencv_adapters`
+的一般 rectification 是另一条独立路径，已接入 `replay_demo`（见上面的复核框），但
+如上所述，它在这条真实数据上的实际效果目前是让数字变差，还需要专门调查。由于该 bag
+未纳入版本化数据集，它只能作为审计证据，尚不能作为团队长期回归基准。
 
 ## 3. 分项成熟度
 
@@ -169,13 +232,13 @@
 |---|---:|---|---|
 | 架构、核心消息与接口 | 7/10 | Protobuf、模块 DAG、边界 lint、带类型的量测与局部地图数据 | 消息版本迁移、单位/符号约束和兼容策略不足 |
 | 声呐前端 | 5/10 | CFAR、极坐标转换、DBSCAN、range factor | 真实声呐数据、registration、部分位姿协方差、环境自适应 |
-| 光学 VO/VIO | 3/10 | 合成双目 VO、Harris/NCC/RANSAC | rectification、IMU 预积分、滑窗、边缘化、真实退化处理 |
+| 光学 VO/VIO | 3/10 | 合成双目 VO、Harris/NCC/RANSAC、一般离轴 stereo rectification（`opencv_adapters`，已接入 replay，见 2.4 节复核——真实数据上的实际质量效果还没调查清楚） | IMU 预积分、滑窗、边缘化、真实退化处理 |
 | 声光融合定位 | 3/10 | range-only 因子进入位姿图 | 联合路标、可靠性调度、声呐 registration、消融证据 |
 | 声光融合重建 | 2/10 | 像素级后验深度、局部点云数据交接、点云地图指标原语 | 声学有效覆盖、稠密几何、地图融合/重积分、reference 数据与指标门禁 |
 | SLAM 后端 | 2/10 | 小规模 Eigen LM、FactorBuilder 接口 | 流形稀疏求解、鲁棒核、fixed-lag、协方差、回环/重定位 |
 | 在线运行时 | 2/10 | bounded queue、状态机和 lane 原语 | scheduler、异步数据流、背压、降级、恢复、实时预算 |
 | 真实数据与标定 | 3/10 | HoloOcean recorder、相机标定工具、统一格式写入器 | 全传感器录制、版本化数据、time/TF audit、公开数据集 adapter |
-| 测试与评测 | 4/10 | 136 个 CTest、确定性回放、场景矩阵最低覆盖门禁、点云地图指标 API | 真实 benchmark、地图指标接线与门禁、质量/延迟硬门、长稳和更完整故障注入 |
+| 测试与评测 | 4/10 | 275 个 CTest（2026-08-23）、确定性回放、场景矩阵最低覆盖门禁、点云地图指标 API、acoustic-optic 贡献非零 gate | 真实 benchmark、地图指标接线与门禁、质量/延迟硬门、长稳和更完整故障注入 |
 | 工程生产化 | 3/10 | CMake、pytest、主 CI、ASan+UBSan job、gcov/cppcheck 报告工具 | 可信 TSan、coverage/static 阈值、包发布、依赖锁定、soak、完整 manifest |
 
 ## 4. 值得保留的工程资产
@@ -239,6 +302,15 @@ P0 已把 solver 收敛、最小轨迹匹配、可选 ATE、非空地图和场�
 - P95 latency 必须满足预算；
 - 地图必须包含有效点且达到精度/完整度要求；指标 API 已有，但数据接线和 gate 未完成；
 - RPE、旋转误差及对应门禁尚未实现。
+
+> **2026-08-23 frontend-correctness-closure 补充**：新增了一个与上面"地图必须包含
+> 有效点"相邻但更窄的 gate——`min_acoustic_optic_accepted`/`min_acoustic_optic_map_points`
+> （`application::EvaluateReplayGates`），只在 `configs/experiment/acoustic_optic_demo.yaml`
+> 打开，检查地图证据里 `contribution_mask == DEPTH_CONTRIBUTION_ACOUSTIC_OPTIC` 的点数是否
+> 非零（区分"有稠密光学深度"和"声光关联真的接受了至少一次"）。这**不是**上面列的
+> `ComputeMapMetrics` 精度/完整度 gate——那个仍未接线，暴力最近邻实现也仍未替换成
+> KD-tree/octree（见代码库参考文档 9.3 节）；RPE、旋转误差、baseline 改善收益、P95
+> latency 四项 gap 均未被这次改动触及，仍是未完成状态。
 
 ### 5.6 可复现记录已部分落地
 

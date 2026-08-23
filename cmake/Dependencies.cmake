@@ -3,6 +3,7 @@ option(UW_BUILD_TESTS "Build the contract, unit, and integration tests" ON)
 
 find_package(Eigen3 REQUIRED NO_MODULE)
 find_package(yaml-cpp REQUIRED)
+find_package(OpenCV 4 REQUIRED COMPONENTS core calib3d imgproc)
 
 include(UwProtobuf)
 include(UwMcap)

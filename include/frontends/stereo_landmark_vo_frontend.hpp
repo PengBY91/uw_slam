@@ -38,6 +38,15 @@ struct StereoLandmarkVoFrontendParams {
   double min_disparity_px = 1.0;        // matches BlockMatcher's convention: disparity 0 => infinite depth
   int min_landmarks_for_pose = 3;       // floor applied before RANSAC even runs
   RansacParams ransac;                  // outlier rejection for the pose fit — see rigid_transform_fit.hpp
+  // Conditioning thresholds for RANSAC's covariance estimate — see
+  // rigid_transform_fit.hpp's CovarianceEstimationParams doc comment.
+  CovarianceEstimationParams covariance_estimation;
+  // How many CONSECUTIVE Process() failures (any reason -- too few
+  // landmarks, too few temporal matches, RANSAC failure) are tolerated
+  // before Health() reports STATUS_UNAVAILABLE ("vo_tracking_lost")
+  // instead of STATUS_SUSPECT. A successful fit resets the counter to 0
+  // regardless of how high it had climbed.
+  int max_consecutive_failures = 3;
   // Seeds this instance's own RNG, used only for RANSAC's minimal-sample
   // draws — never reseeded after construction (CLAUDE.md's RNG
   // discipline / the L2 determinism test: same bag in, same output out).
@@ -91,9 +100,20 @@ class StereoLandmarkVoFrontend : public uw::measurement_api::VisualOdometryFront
   PatchMatcher temporal_matcher_;
   std::mt19937_64 rng_;
 
-  bool has_previous_ = false;
-  std::string previous_keyframe_id_;
-  std::vector<TriangulatedLandmark> previous_landmarks_;
+  // The LAST SUCCESSFULLY MATCHED keyframe's landmarks -- distinct from
+  // "the last frame processed" on purpose (see Process()'s own comment):
+  // a failed frame must never overwrite this, or one bad frame would sever
+  // the whole downstream chain instead of costing just that one
+  // relative-pose edge.
+  bool has_reference_ = false;
+  std::string reference_keyframe_id_;
+  std::vector<TriangulatedLandmark> reference_landmarks_;
+  // Consecutive Process() failures since the last successful fit (or since
+  // construction) -- drives Health()'s SUSPECT/UNAVAILABLE distinction.
+  uint64_t consecutive_failures_ = 0;
+
+  void RecordTrackingFailure();
+  void PromoteReference(std::vector<TriangulatedLandmark> landmarks, std::string keyframe_id);
 
   uint64_t frames_processed_ = 0;
   uint64_t frames_rejected_ = 0;

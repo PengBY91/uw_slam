@@ -52,4 +52,53 @@ if [ "$MATRIX_EXIT" -ne 0 ]; then
   exit 1
 fi
 
-echo "OK: deterministic scenario-matrix report confirmed (latency field excluded), coverage gate passed"
+# Beyond byte-identical replay and the binary's own exit code, pin down what
+# each scenario category is actually supposed to report -- a determinism
+# check alone would happily pass on two runs that are both wrong (e.g. both
+# reporting 0 accepted everywhere). These field names/values mirror the
+# per-scenario summary line printed by acoustic_optic_scenario_matrix.cpp
+# (see its own "scenario=... accepted=... rejected=..." std::cout line).
+scenario_field() {
+  # $1 = scenario name, $2 = field name (e.g. accepted, sync_rejected, trials)
+  grep "^scenario=$1 " "$WORKDIR/run1.txt" | sed -E "s/.*[[:space:]]$2=([0-9.]+).*/\1/"
+}
+
+FUSING_SCENARIOS="clean_textured low_texture_sonar_visible turbid_sonar_visible elevation_stress"
+for scenario in $FUSING_SCENARIOS; do
+  accepted="$(scenario_field "$scenario" accepted)"
+  if [ -z "$accepted" ] || [ "$accepted" -le 0 ]; then
+    echo "FAIL: $scenario is spec'd to demonstrate a real acoustic-optic fusion (see acoustic_optic_scenarios.cpp) but accepted=$accepted"
+    exit 1
+  fi
+done
+
+# sonar_dropout: no sonar frame at all (see BuildTrial's omit_sonar), so the
+# associator never runs -- but that must NOT stop the optical stereo
+# frontend from producing depth. optical_full_rmse > 0 is the signal that
+# StereoOpticalDepthFrontend actually ran and produced comparable output
+# (sync_rejected must stay 0 -- SynchronizeAcousticOptic's own comment: a
+# missing sonar frame is not a sync failure).
+dropout_sync_rejected="$(scenario_field sonar_dropout sync_rejected)"
+dropout_accepted="$(scenario_field sonar_dropout accepted)"
+dropout_optical_rmse="$(scenario_field sonar_dropout optical_full_rmse)"
+if [ "$dropout_sync_rejected" -ne 0 ] || [ "$dropout_accepted" -ne 0 ] || \
+   ! awk -v v="$dropout_optical_rmse" 'BEGIN { exit !(v > 0) }'; then
+  echo "FAIL: sonar_dropout expected sync_rejected=0 accepted=0 optical_full_rmse>0 (optical-only continues), got sync_rejected=$dropout_sync_rejected accepted=$dropout_accepted optical_full_rmse=$dropout_optical_rmse"
+  exit 1
+fi
+
+# time_offset_fault: a full 1s capture-time offset (acoustic_optic_scenarios.cpp)
+# must be caught by the synchronizer's own time gate, rejecting every trial
+# BEFORE the associator ever runs -- so sync_rejected should equal the trial
+# count, and accepted/rejected (the associator's own counters) must stay 0
+# since the associator is never reached.
+offset_trials="$(scenario_field time_offset_fault trials)"
+offset_sync_rejected="$(scenario_field time_offset_fault sync_rejected)"
+offset_accepted="$(scenario_field time_offset_fault accepted)"
+offset_rejected="$(scenario_field time_offset_fault rejected)"
+if [ "$offset_sync_rejected" -ne "$offset_trials" ] || [ "$offset_accepted" -ne 0 ] || [ "$offset_rejected" -ne 0 ]; then
+  echo "FAIL: time_offset_fault expected sync_rejected=trials=$offset_trials accepted=0 rejected=0 (rejected by the synchronizer's time gate, not the associator), got sync_rejected=$offset_sync_rejected accepted=$offset_accepted rejected=$offset_rejected"
+  exit 1
+fi
+
+echo "OK: deterministic scenario-matrix report confirmed (latency field excluded), coverage gate passed, fusing/dropout/time-offset scenario semantics confirmed"

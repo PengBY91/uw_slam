@@ -30,12 +30,17 @@ struct PinholeCamera {
   Eigen::Vector3d Unproject(double u, double v, double depth_m) const;
 };
 
-// Validated geometry for a stereo pair. v1 REQUIRES the two cameras to
-// share identical orientation and a purely-translational baseline (true of
-// configs/rig/example_auv.yaml's camera_left_link/camera_right_link
-// edges) — general off-axis rectification is explicitly out of scope;
-// `valid` is false rather than silently producing wrong depth for a
-// misaligned pair.
+// Validated geometry for a RECTIFIED stereo pair. Resolve() requires: both
+// cameras' K matrices to be well-formed and finite, identical image size,
+// and the frame_tree edges (converted to OPTICAL convention) to describe
+// an orientation-identical, purely-horizontal baseline with a POSITIVE x
+// component -- i.e. exactly the geometry opencv_adapters::
+// StereoRectificationContext produces (identity fast path or the general
+// OpenCV-calibration path alike). `baseline_m` is always positive and
+// matches the disparity_px = left_u - right_u sign convention used
+// throughout frontends/ (BlockMatcher, StereoLandmarkVoFrontend). `valid`
+// is false rather than silently producing wrong/negated depth for a
+// misaligned or left/right-swapped pair.
 struct StereoGeometry {
   PinholeCamera left;
   PinholeCamera right;

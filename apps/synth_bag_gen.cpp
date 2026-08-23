@@ -350,6 +350,11 @@ int main(int argc, char** argv) {
   const auto trajectory = BuildGroundTruthTrajectory(opt);
   const auto targets = BuildSonarTargets(opt);
   uw::runtime::SyntheticSonarFrameSpec sonar_frame_spec;
+  // Matches configs/rig/*.yaml's sonar_beam_models[0].sensor_id and
+  // AcousticOpticAssociatorParams::sonar_sensor_id's default -- required
+  // (not optional metadata) since SynchronizeAcousticOptic() rejects an
+  // empty sensor_id as an invalid timestamp header.
+  sonar_frame_spec.sensor_id = "sonar0";
   sonar_frame_spec.provenance = "synth_bag_gen_v1";
   // Only meaningful when a camera rig is loaded (see `rig` above); drawn
   // here, after `rng` exists but before the per-keyframe loop below, so it
@@ -466,6 +471,31 @@ int main(int argc, char** argv) {
               continue;  // outside the camera's (narrower than sonar) field of view
             }
             visible.push_back(VisibleLandmark{static_cast<int>(li), local_optical});
+          }
+          // Also paint sonar targets that happen to fall inside the
+          // camera's (narrower than sonar) FOV: without this, the stereo
+          // pair's disparity at a sonar target's projected pixel always
+          // reads back the flat kBackgroundDepthM plane (BuildStereoPair
+          // never otherwise knows a target is there), so
+          // AcousticOpticAssociator's range gate can never find a matching
+          // optical candidate and every association is REJECTED/
+          // NO_CANDIDATE regardless of geometry -- scenarios that exist
+          // specifically to demonstrate a real ACCEPTED association (e.g.
+          // configs/scenario/acoustic_optic_demo.yaml) need this. A large id
+          // offset keeps each target's patch pattern (see
+          // LandmarkPatchIntensity) distinct from any visual landmark's.
+          for (std::size_t ti = 0; ti < targets.size(); ++ti) {
+            const Eigen::Vector3d local_body = trajectory[i].Inverse().Apply(targets[ti]);
+            const Eigen::Vector3d local_camera_body = camera_pose.Inverse().Apply(local_body);
+            const Eigen::Vector3d local_optical =
+                uw::sensor_models::OpticalFromBodyRotation() * local_camera_body;
+            if (local_optical.z() <= 0.5) continue;
+            const Eigen::Vector2d pixel = stereo_geometry.left.Project(local_optical);
+            if (pixel.x() < 0 || pixel.x() >= stereo_geometry.left.width || pixel.y() < 0 ||
+                pixel.y() >= stereo_geometry.left.height) {
+              continue;
+            }
+            visible.push_back(VisibleLandmark{static_cast<int>(100000 + ti), local_optical});
           }
           auto stereo_pair = BuildStereoPair(stereo_geometry, visible, t_ns);
           writer.WriteMessage("/raw/camera/left", t_ns, stereo_pair.first);

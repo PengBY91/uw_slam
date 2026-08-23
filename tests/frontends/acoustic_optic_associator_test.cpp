@@ -147,6 +147,26 @@ TEST(AcousticOpticAssociator, AcceptsConsistentBoresightDetection) {
   EXPECT_EQ(record.posterior_variance_m2(), 0.0);
 }
 
+TEST(AcousticOpticAssociator, RejectsTimeDeltaBeforeAnyProjectionEvenWithPerfectGeometry) {
+  const auto rig = MakeCoLocatedRig();
+  const auto sonar_hypotheses = MakeSonarHypothesis(/*range_m=*/5.0, /*bearing_rad=*/0.0);
+  const auto optical_evidence =
+      MakeOpticalEvidence(20, 10, /*valid_index=*/110, /*depth_m=*/5.0,
+                          uw::domain::OPTICAL_DEPTH_SCALE_STATUS_METRIC);
+
+  uw::frontends::AcousticOpticAssociatorParams params;  // max_time_delta_s defaults to 0.05
+  uw::frontends::AcousticOpticAssociator associator(params);
+  const auto result =
+      associator.Associate(sonar_hypotheses, optical_evidence, rig, /*time_delta_seconds=*/0.051);
+
+  ASSERT_EQ(result.records.size(), 1u);
+  const auto& record = result.records[0];
+  EXPECT_EQ(record.status(), uw::domain::ACOUSTIC_OPTIC_ASSOCIATION_STATUS_REJECTED);
+  EXPECT_EQ(record.reason(), uw::domain::ACOUSTIC_OPTIC_ASSOCIATION_REASON_TIME_DELTA);
+  EXPECT_NEAR(record.time_delta_seconds(), 0.051, 1e-9);
+  EXPECT_FALSE(record.has_selected_pixel());
+}
+
 TEST(AcousticOpticAssociator, RejectsWhenNoOpticalPixelSurvivesTheRangeGate) {
   const auto rig = MakeCoLocatedRig();
   const auto sonar_hypotheses = MakeSonarHypothesis(5.0, 0.0);

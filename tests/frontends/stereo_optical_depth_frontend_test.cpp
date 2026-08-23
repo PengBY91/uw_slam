@@ -34,13 +34,15 @@ uw::domain::RigCalibrationSnapshot MakeRig(double fx, double baseline_half) {
   return rig;
 }
 
-uw::domain::ImageFrame MakeImage(const std::string& frame, int width, int height, int shift) {
+uw::domain::ImageFrame MakeImage(const std::string& frame, int width, int height, int shift,
+                                  bool is_rectified = true) {
   uw::domain::ImageFrame image;
   image.mutable_header()->mutable_sensor_frame()->set_value(frame);
   image.set_width(width);
   image.set_height(height);
   image.set_row_stride_bytes(width);
   image.set_encoding(uw::domain::ImageFrame::IMAGE_ENCODING_MONO8);
+  image.set_is_rectified(is_rectified);
   std::string pixels(static_cast<std::size_t>(width) * height, '\0');
   for (int v = 0; v < height; ++v) {
     for (int u = 0; u < width; ++u) {
@@ -114,4 +116,42 @@ TEST(StereoOpticalDepthFrontend, RejectsUnresolvableRigGeometry) {
   uw::frontends::StereoOpticalDepthFrontend frontend(params);
 
   EXPECT_FALSE(frontend.Process(bundle, empty_rig).has_value());
+}
+
+TEST(StereoOpticalDepthFrontend, RejectsUnrectifiedImagesEvenWithValidGeometry) {
+  const auto rig = MakeRig(100.0, 0.25);
+  uw::measurement_api::CameraFrameBundle bundle;
+  bundle.primary = MakeImage("camera_left_link", 20, 3, 0, /*is_rectified=*/false);
+  bundle.secondary = MakeImage("camera_right_link", 20, 3, 4, /*is_rectified=*/true);
+
+  uw::frontends::StereoOpticalDepthFrontendParams params;
+  params.left_sensor_id = "camera_left";
+  params.left_frame = "camera_left_link";
+  params.right_sensor_id = "camera_right";
+  params.right_frame = "camera_right_link";
+  params.matcher.window_radius = 1;
+  params.matcher.min_disparity = 1;
+  params.matcher.max_disparity = 6;
+  uw::frontends::StereoOpticalDepthFrontend frontend(params);
+
+  EXPECT_FALSE(frontend.Process(bundle, rig).has_value());
+}
+
+TEST(StereoOpticalDepthFrontend, RejectsHeaderFrameMismatchedWithParams) {
+  const auto rig = MakeRig(100.0, 0.25);
+  uw::measurement_api::CameraFrameBundle bundle;
+  bundle.primary = MakeImage("some_other_frame", 20, 3, 0);
+  bundle.secondary = MakeImage("camera_right_link", 20, 3, 4);
+
+  uw::frontends::StereoOpticalDepthFrontendParams params;
+  params.left_sensor_id = "camera_left";
+  params.left_frame = "camera_left_link";
+  params.right_sensor_id = "camera_right";
+  params.right_frame = "camera_right_link";
+  params.matcher.window_radius = 1;
+  params.matcher.min_disparity = 1;
+  params.matcher.max_disparity = 6;
+  uw::frontends::StereoOpticalDepthFrontend frontend(params);
+
+  EXPECT_FALSE(frontend.Process(bundle, rig).has_value());
 }

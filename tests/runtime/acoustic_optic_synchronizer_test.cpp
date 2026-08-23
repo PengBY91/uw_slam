@@ -1,8 +1,12 @@
+#include <limits>
+
 #include <gtest/gtest.h>
 
 #include "runtime/acoustic_optic_synchronizer.hpp"
 
 namespace {
+
+using uw::runtime::SynchronizationStatus;
 
 uw::domain::ImageFrame MakeImage(const std::string& sensor_id, int64_t seconds, int32_t nanos) {
   uw::domain::ImageFrame image;
@@ -38,20 +42,27 @@ TEST(AcousticOpticSynchronizer, AcceptsFramesWithinToleranceAfterOffsetCorrectio
 
   uw::runtime::SynchronizerParams params;
   params.max_time_delta_s = 0.02;
-  const auto bundle = uw::runtime::SynchronizeAcousticOptic(left, std::nullopt, sonar, rig, params);
-  ASSERT_TRUE(bundle.has_value());
-  EXPECT_NEAR(bundle->max_pairwise_time_delta_s, 0.0, 1e-6);
+  const auto decision = uw::runtime::SynchronizeAcousticOptic(left, std::nullopt, sonar, rig, params);
+  EXPECT_EQ(decision.status, SynchronizationStatus::kSynchronized);
+  ASSERT_TRUE(decision.bundle.has_value());
+  EXPECT_NEAR(decision.max_pairwise_time_delta_s, 0.0, 1e-6);
+  EXPECT_NEAR(decision.bundle->max_pairwise_time_delta_s, 0.0, 1e-6);
 }
 
-TEST(AcousticOpticSynchronizer, RejectsFramesBeyondTolerance) {
+TEST(AcousticOpticSynchronizer, RejectsFramesBeyondToleranceButReportsRealDelta) {
   const auto rig = MakeRigWithOffsets();
   const auto left = MakeImage("camera_left", 100, 0);
   const auto sonar = MakeSonar("sonar0", 100, 200'000'000);  // 200ms raw drift, dwarfs the 10ms offset
 
   uw::runtime::SynchronizerParams params;
   params.max_time_delta_s = 0.02;
-  const auto bundle = uw::runtime::SynchronizeAcousticOptic(left, std::nullopt, sonar, rig, params);
-  EXPECT_FALSE(bundle.has_value());
+  const auto decision = uw::runtime::SynchronizeAcousticOptic(left, std::nullopt, sonar, rig, params);
+  EXPECT_EQ(decision.status, SynchronizationStatus::kTimeDeltaExceeded);
+  EXPECT_FALSE(decision.bundle.has_value());
+  // Real delta (corrected sonar 100.2 + 0.01 offset = 100.21 vs. left's
+  // 100.0 = 0.21s), NOT 0.0 -- a caller must be able to see how badly out
+  // of sync this was.
+  EXPECT_NEAR(decision.max_pairwise_time_delta_s, 0.21, 1e-6);
 }
 
 TEST(AcousticOpticSynchronizer, DefaultsMissingSensorOffsetToZero) {
@@ -61,7 +72,92 @@ TEST(AcousticOpticSynchronizer, DefaultsMissingSensorOffsetToZero) {
 
   uw::runtime::SynchronizerParams params;
   params.max_time_delta_s = 0.02;
-  const auto bundle = uw::runtime::SynchronizeAcousticOptic(left, std::nullopt, sonar, rig, params);
-  ASSERT_TRUE(bundle.has_value());
-  EXPECT_NEAR(bundle->max_pairwise_time_delta_s, 0.005, 1e-6);
+  const auto decision = uw::runtime::SynchronizeAcousticOptic(left, std::nullopt, sonar, rig, params);
+  EXPECT_EQ(decision.status, SynchronizationStatus::kSynchronized);
+  ASSERT_TRUE(decision.bundle.has_value());
+  EXPECT_NEAR(decision.max_pairwise_time_delta_s, 0.005, 1e-6);
+}
+
+TEST(AcousticOpticSynchronizer, NoSonarIsNotAFailure) {
+  uw::domain::RigCalibrationSnapshot rig;
+  const auto left = MakeImage("camera_left", 100, 0);
+
+  uw::runtime::SynchronizerParams params;
+  const auto decision =
+      uw::runtime::SynchronizeAcousticOptic(left, std::nullopt, std::nullopt, rig, params);
+  EXPECT_EQ(decision.status, SynchronizationStatus::kNoSonar);
+  EXPECT_FALSE(decision.bundle.has_value());
+  EXPECT_NEAR(decision.max_pairwise_time_delta_s, 0.0, 1e-9);
+}
+
+TEST(AcousticOpticSynchronizer, AllZeroStampIsALegalTimestamp) {
+  uw::domain::RigCalibrationSnapshot rig;
+  const auto left = MakeImage("camera_left", 0, 0);
+  const auto sonar = MakeSonar("sonar0", 0, 0);
+
+  uw::runtime::SynchronizerParams params;
+  const auto decision = uw::runtime::SynchronizeAcousticOptic(left, std::nullopt, sonar, rig, params);
+  EXPECT_EQ(decision.status, SynchronizationStatus::kSynchronized);
+  ASSERT_TRUE(decision.bundle.has_value());
+  EXPECT_NEAR(decision.max_pairwise_time_delta_s, 0.0, 1e-9);
+}
+
+TEST(AcousticOpticSynchronizer, RejectsNegativeNanos) {
+  uw::domain::RigCalibrationSnapshot rig;
+  auto left = MakeImage("camera_left", 100, 0);
+  left.mutable_header()->mutable_capture_time()->set_nanos(-1);
+  const auto sonar = MakeSonar("sonar0", 100, 0);
+
+  uw::runtime::SynchronizerParams params;
+  const auto decision = uw::runtime::SynchronizeAcousticOptic(left, std::nullopt, sonar, rig, params);
+  EXPECT_EQ(decision.status, SynchronizationStatus::kInvalidTimestamp);
+  EXPECT_FALSE(decision.bundle.has_value());
+  EXPECT_NEAR(decision.max_pairwise_time_delta_s, 0.0, 1e-9);
+}
+
+TEST(AcousticOpticSynchronizer, RejectsNanosAtOrAboveOneBillion) {
+  uw::domain::RigCalibrationSnapshot rig;
+  auto left = MakeImage("camera_left", 100, 0);
+  left.mutable_header()->mutable_capture_time()->set_nanos(1'000'000'000);
+  const auto sonar = MakeSonar("sonar0", 100, 0);
+
+  uw::runtime::SynchronizerParams params;
+  const auto decision = uw::runtime::SynchronizeAcousticOptic(left, std::nullopt, sonar, rig, params);
+  EXPECT_EQ(decision.status, SynchronizationStatus::kInvalidTimestamp);
+  EXPECT_FALSE(decision.bundle.has_value());
+}
+
+TEST(AcousticOpticSynchronizer, RejectsEmptySensorId) {
+  uw::domain::RigCalibrationSnapshot rig;
+  const auto left = MakeImage("", 100, 0);
+  const auto sonar = MakeSonar("sonar0", 100, 0);
+
+  uw::runtime::SynchronizerParams params;
+  const auto decision = uw::runtime::SynchronizeAcousticOptic(left, std::nullopt, sonar, rig, params);
+  EXPECT_EQ(decision.status, SynchronizationStatus::kInvalidTimestamp);
+  EXPECT_FALSE(decision.bundle.has_value());
+}
+
+TEST(AcousticOpticSynchronizer, RejectsNonFiniteOffset) {
+  uw::domain::RigCalibrationSnapshot rig;
+  (*rig.mutable_time_offset_seconds())["camera_left"] = std::numeric_limits<double>::infinity();
+  const auto left = MakeImage("camera_left", 100, 0);
+  const auto sonar = MakeSonar("sonar0", 100, 0);
+
+  uw::runtime::SynchronizerParams params;
+  const auto decision = uw::runtime::SynchronizeAcousticOptic(left, std::nullopt, sonar, rig, params);
+  EXPECT_EQ(decision.status, SynchronizationStatus::kInvalidTimestamp);
+  EXPECT_FALSE(decision.bundle.has_value());
+}
+
+TEST(AcousticOpticSynchronizer, InvalidSonarTimestampIsInvalidNotNoSonar) {
+  uw::domain::RigCalibrationSnapshot rig;
+  const auto left = MakeImage("camera_left", 100, 0);
+  auto sonar = MakeSonar("sonar0", 100, 0);
+  sonar.mutable_header()->mutable_sensor_id()->set_value("");
+
+  uw::runtime::SynchronizerParams params;
+  const auto decision = uw::runtime::SynchronizeAcousticOptic(left, std::nullopt, sonar, rig, params);
+  EXPECT_EQ(decision.status, SynchronizationStatus::kInvalidTimestamp);
+  EXPECT_FALSE(decision.bundle.has_value());
 }

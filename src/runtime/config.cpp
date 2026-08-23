@@ -1,13 +1,28 @@
 #include "runtime/config.hpp"
 
+#include <algorithm>
+#include <cmath>
+#include <limits>
 #include <filesystem>
 #include <stdexcept>
+#include <vector>
 
 #include <yaml-cpp/yaml.h>
 
 namespace uw::runtime {
 
 namespace {
+
+void RejectUnknownKeys(const YAML::Node& node, const std::vector<std::string>& allowed,
+                       const std::string& context) {
+  if (!node || !node.IsMap()) return;
+  for (const auto& entry : node) {
+    const std::string key = entry.first.as<std::string>();
+    if (std::find(allowed.begin(), allowed.end(), key) == allowed.end()) {
+      throw std::runtime_error("unknown key '" + key + "' in " + context);
+    }
+  }
+}
 
 std::string ResolveRelative(const std::string& base_dir, const std::string& maybe_relative) {
   std::filesystem::path p(maybe_relative);
@@ -48,15 +63,125 @@ PlatformDefaultsConfig LoadPlatformDefaultsConfig(const std::string& path) {
       GetOr<int>(gates, "min_matched_ate_poses", config.min_matched_ate_poses);
   config.require_nonempty_map =
       GetOr<bool>(gates, "require_nonempty_map", config.require_nonempty_map);
+  config.min_acoustic_optic_accepted =
+      GetOr<int>(gates, "min_acoustic_optic_accepted", config.min_acoustic_optic_accepted);
+  config.min_acoustic_optic_map_points =
+      GetOr<int>(gates, "min_acoustic_optic_map_points", config.min_acoustic_optic_map_points);
+
+  if (root["frontends"] && root["frontends"]["stereo_rectification"]) {
+    const auto sr = root["frontends"]["stereo_rectification"];
+    RejectUnknownKeys(sr, {"alpha", "crop_policy", "frame_suffix"}, "frontends.stereo_rectification");
+    config.stereo_rectification.alpha = GetOr<double>(sr, "alpha", config.stereo_rectification.alpha);
+    config.stereo_rectification.crop_policy =
+        GetOr<std::string>(sr, "crop_policy", config.stereo_rectification.crop_policy);
+    config.stereo_rectification.frame_suffix =
+        GetOr<std::string>(sr, "frame_suffix", config.stereo_rectification.frame_suffix);
+
+    if (!std::isfinite(config.stereo_rectification.alpha) || config.stereo_rectification.alpha < -1.0 ||
+        config.stereo_rectification.alpha > 1.0) {
+      throw std::runtime_error("frontends.stereo_rectification.alpha must be finite and in [-1, 1]");
+    }
+    if (config.stereo_rectification.crop_policy != "full_canvas" &&
+        config.stereo_rectification.crop_policy != "common_valid_roi") {
+      throw std::runtime_error(
+          "frontends.stereo_rectification.crop_policy must be 'full_canvas' or 'common_valid_roi'");
+    }
+    if (config.stereo_rectification.frame_suffix.empty()) {
+      throw std::runtime_error("frontends.stereo_rectification.frame_suffix must not be empty");
+    }
+  }
 
   if (root["reliability"] && root["reliability"]["default_sqrt_information"]) {
     const auto info = root["reliability"]["default_sqrt_information"];
-    config.default_sqrt_information.relative_pose =
-        GetOr<double>(info, "relative_pose", config.default_sqrt_information.relative_pose);
+    if (info["relative_pose"]) {
+      const auto relative_pose = info["relative_pose"];
+      if (!relative_pose.IsMap()) {
+        throw std::runtime_error(
+            "reliability.default_sqrt_information.relative_pose must be a mapping with "
+            "translation/rotation keys (e.g. 'relative_pose: {translation: 20.0, rotation: 20.0}'), "
+            "not a single scalar -- translation and rotation now take independent caps");
+      }
+      RejectUnknownKeys(relative_pose, {"translation", "rotation"},
+                        "reliability.default_sqrt_information.relative_pose");
+      config.default_sqrt_information.relative_pose.translation = GetOr<double>(
+          relative_pose, "translation", config.default_sqrt_information.relative_pose.translation);
+      config.default_sqrt_information.relative_pose.rotation = GetOr<double>(
+          relative_pose, "rotation", config.default_sqrt_information.relative_pose.rotation);
+      if (!std::isfinite(config.default_sqrt_information.relative_pose.translation) ||
+          config.default_sqrt_information.relative_pose.translation <= 0.0) {
+        throw std::runtime_error(
+            "reliability.default_sqrt_information.relative_pose.translation must be finite and positive");
+      }
+      if (!std::isfinite(config.default_sqrt_information.relative_pose.rotation) ||
+          config.default_sqrt_information.relative_pose.rotation <= 0.0) {
+        throw std::runtime_error(
+            "reliability.default_sqrt_information.relative_pose.rotation must be finite and positive");
+      }
+    }
     config.default_sqrt_information.sonar_range =
         GetOr<double>(info, "sonar_range", config.default_sqrt_information.sonar_range);
     config.default_sqrt_information.depth =
         GetOr<double>(info, "depth", config.default_sqrt_information.depth);
+  }
+
+  if (root["visual_odometry"]) {
+    const auto vo = root["visual_odometry"];
+    RejectUnknownKeys(
+        vo, {"max_consecutive_failures", "max_condition_number", "residual_variance_floor_m2", "max_inlier_rmse_m"},
+        "visual_odometry");
+    config.visual_odometry.max_consecutive_failures =
+        GetOr<int>(vo, "max_consecutive_failures", config.visual_odometry.max_consecutive_failures);
+    if (config.visual_odometry.max_consecutive_failures < 1 ||
+        config.visual_odometry.max_consecutive_failures > 1000) {
+      throw std::runtime_error("visual_odometry.max_consecutive_failures must be in [1, 1000]");
+    }
+    config.visual_odometry.max_condition_number =
+        GetOr<double>(vo, "max_condition_number", config.visual_odometry.max_condition_number);
+    if (!std::isfinite(config.visual_odometry.max_condition_number) ||
+        config.visual_odometry.max_condition_number <= 0.0) {
+      throw std::runtime_error("visual_odometry.max_condition_number must be finite and positive");
+    }
+    config.visual_odometry.residual_variance_floor_m2 = GetOr<double>(
+        vo, "residual_variance_floor_m2", config.visual_odometry.residual_variance_floor_m2);
+    if (!std::isfinite(config.visual_odometry.residual_variance_floor_m2) ||
+        config.visual_odometry.residual_variance_floor_m2 <= 0.0) {
+      throw std::runtime_error("visual_odometry.residual_variance_floor_m2 must be finite and positive");
+    }
+    config.visual_odometry.max_inlier_rmse_m =
+        GetOr<double>(vo, "max_inlier_rmse_m", config.visual_odometry.max_inlier_rmse_m);
+    if (std::isnan(config.visual_odometry.max_inlier_rmse_m)) {
+      throw std::runtime_error("visual_odometry.max_inlier_rmse_m must not be NaN");
+    }
+    // <=0 means disabled (matches PlatformDefaultsConfig's gate convention)
+    // -- map to +inf so CovarianceEstimationParams::max_inlier_rmse_m's
+    // comparison never rejects.
+    if (config.visual_odometry.max_inlier_rmse_m <= 0.0) {
+      config.visual_odometry.max_inlier_rmse_m = std::numeric_limits<double>::infinity();
+    }
+  }
+
+  if (root["stereo_matching"]) {
+    const auto sm = root["stereo_matching"];
+    RejectUnknownKeys(sm, {"min_texture_variance", "min_uniqueness_margin", "left_right_max_diff_px"},
+                      "stereo_matching");
+    config.stereo_matching.min_texture_variance =
+        GetOr<double>(sm, "min_texture_variance", config.stereo_matching.min_texture_variance);
+    if (!std::isfinite(config.stereo_matching.min_texture_variance) ||
+        config.stereo_matching.min_texture_variance < 0.0) {
+      throw std::runtime_error("stereo_matching.min_texture_variance must be finite and >= 0");
+    }
+    config.stereo_matching.min_uniqueness_margin =
+        GetOr<double>(sm, "min_uniqueness_margin", config.stereo_matching.min_uniqueness_margin);
+    if (!std::isfinite(config.stereo_matching.min_uniqueness_margin) ||
+        config.stereo_matching.min_uniqueness_margin < 0.0) {
+      throw std::runtime_error("stereo_matching.min_uniqueness_margin must be finite and >= 0");
+    }
+    config.stereo_matching.left_right_max_diff_px =
+        GetOr<double>(sm, "left_right_max_diff_px", config.stereo_matching.left_right_max_diff_px);
+    if (!std::isfinite(config.stereo_matching.left_right_max_diff_px) ||
+        config.stereo_matching.left_right_max_diff_px < 0.0) {
+      throw std::runtime_error("stereo_matching.left_right_max_diff_px must be finite and >= 0");
+    }
   }
   return config;
 }
@@ -237,6 +362,10 @@ ExperimentConfig LoadExperimentConfig(const std::string& path) {
         GetOr<int>(gates, "min_matched_ate_poses", config.defaults.min_matched_ate_poses);
     config.defaults.require_nonempty_map =
         GetOr<bool>(gates, "require_nonempty_map", config.defaults.require_nonempty_map);
+    config.defaults.min_acoustic_optic_accepted =
+        GetOr<int>(gates, "min_acoustic_optic_accepted", config.defaults.min_acoustic_optic_accepted);
+    config.defaults.min_acoustic_optic_map_points = GetOr<int>(
+        gates, "min_acoustic_optic_map_points", config.defaults.min_acoustic_optic_map_points);
   }
 
   return config;

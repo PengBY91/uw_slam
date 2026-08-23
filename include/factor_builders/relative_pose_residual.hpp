@@ -9,10 +9,15 @@ namespace uw::factor_builders {
 
 // New (not ported) — black-box VIO mode relative-pose factor between two
 // keyframes (platform architecture section 8.1: SVIn/VIO adapter output ->
-// RelativePoseEvidence -> this factor). Residual (6D):
+// RelativePoseEvidence -> this factor). Raw (unwhitened) residual (6D):
 //   translation: R_i^T (t_j - t_i) - measured_translation
 //   rotation:    2 * vec( measured_q^{-1} * (q_i^{-1} * q_j) )   (small-angle
 //                quaternion-error approximation, standard in VIO literature)
+// Whitened residual = sqrt_information * raw_residual (full 6x6 matrix
+// multiply, not a per-axis scalar scale) — see
+// RelativePoseFactorBuilder::Build() for how that matrix gets constructed
+// from the evidence's actual covariance, with translation/rotation caps
+// applied.
 //
 // Jacobian: computed by INTERNAL central finite differences over both
 // parameter blocks rather than a hand-derived closed form. This is a
@@ -27,7 +32,7 @@ namespace uw::factor_builders {
 class RelativePoseResidual : public uw::measurement_api::ResidualBlock {
  public:
   RelativePoseResidual(uw::sensor_models::Pose3 measured_relative_pose,
-                        double sqrt_information_translation, double sqrt_information_rotation);
+                        Eigen::Matrix<double, 6, 6> sqrt_information);
 
   int ResidualDim() const override { return 6; }
   std::vector<int> ParameterBlockSizes() const override { return {7, 7}; }
@@ -40,8 +45,7 @@ class RelativePoseResidual : public uw::measurement_api::ResidualBlock {
                                            const uw::sensor_models::Pose3& pose_j) const;
 
   uw::sensor_models::Pose3 measured_relative_pose_;
-  double sqrt_information_translation_;
-  double sqrt_information_rotation_;
+  Eigen::Matrix<double, 6, 6> sqrt_information_;
 };
 
 }  // namespace uw::factor_builders
