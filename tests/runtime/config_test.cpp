@@ -1,5 +1,6 @@
 #include "runtime/config.hpp"
 
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -73,6 +74,273 @@ TEST(Config, ParsesNonDefaultWarmupSeconds) {
   }
   const auto config = uw::runtime::LoadPlatformDefaultsConfig(tmp_path.string());
   EXPECT_DOUBLE_EQ(config.warmup_seconds, 1.5);
+  std::remove(tmp_path.string().c_str());
+}
+
+TEST(Config, StereoRectificationDefaultsWhenSectionAbsent) {
+  const auto config = uw::runtime::PlatformDefaultsConfig{};
+  EXPECT_DOUBLE_EQ(config.stereo_rectification.alpha, 0.0);
+  EXPECT_EQ(config.stereo_rectification.crop_policy, "full_canvas");
+  EXPECT_EQ(config.stereo_rectification.frame_suffix, "_rectified");
+}
+
+TEST(Config, ParsesStereoRectificationOverrides) {
+  const auto tmp_path = std::filesystem::temp_directory_path() / "uw_config_test_rectification.yaml";
+  {
+    std::ofstream out(tmp_path);
+    out << "frontends:\n"
+           "  stereo_rectification:\n"
+           "    alpha: 0.3\n"
+           "    crop_policy: common_valid_roi\n"
+           "    frame_suffix: _rect2\n";
+  }
+  const auto config = uw::runtime::LoadPlatformDefaultsConfig(tmp_path.string());
+  EXPECT_DOUBLE_EQ(config.stereo_rectification.alpha, 0.3);
+  EXPECT_EQ(config.stereo_rectification.crop_policy, "common_valid_roi");
+  EXPECT_EQ(config.stereo_rectification.frame_suffix, "_rect2");
+  std::remove(tmp_path.string().c_str());
+}
+
+TEST(Config, RejectsStereoRectificationAlphaOutOfRange) {
+  const auto tmp_path = std::filesystem::temp_directory_path() / "uw_config_test_rect_alpha.yaml";
+  {
+    std::ofstream out(tmp_path);
+    out << "frontends:\n  stereo_rectification:\n    alpha: 1.5\n";
+  }
+  EXPECT_THROW(uw::runtime::LoadPlatformDefaultsConfig(tmp_path.string()), std::runtime_error);
+  std::remove(tmp_path.string().c_str());
+}
+
+TEST(Config, RejectsStereoRectificationEmptyFrameSuffix) {
+  const auto tmp_path = std::filesystem::temp_directory_path() / "uw_config_test_rect_suffix.yaml";
+  {
+    std::ofstream out(tmp_path);
+    out << "frontends:\n  stereo_rectification:\n    frame_suffix: \"\"\n";
+  }
+  EXPECT_THROW(uw::runtime::LoadPlatformDefaultsConfig(tmp_path.string()), std::runtime_error);
+  std::remove(tmp_path.string().c_str());
+}
+
+TEST(Config, RejectsStereoRectificationUnknownCropPolicy) {
+  const auto tmp_path = std::filesystem::temp_directory_path() / "uw_config_test_rect_crop.yaml";
+  {
+    std::ofstream out(tmp_path);
+    out << "frontends:\n  stereo_rectification:\n    crop_policy: full_canv\n";
+  }
+  EXPECT_THROW(uw::runtime::LoadPlatformDefaultsConfig(tmp_path.string()), std::runtime_error);
+  std::remove(tmp_path.string().c_str());
+}
+
+TEST(Config, RejectsStereoRectificationUnknownKey) {
+  const auto tmp_path = std::filesystem::temp_directory_path() / "uw_config_test_rect_unknown.yaml";
+  {
+    std::ofstream out(tmp_path);
+    out << "frontends:\n  stereo_rectification:\n    bogus_key: 1\n";
+  }
+  EXPECT_THROW(uw::runtime::LoadPlatformDefaultsConfig(tmp_path.string()), std::runtime_error);
+  std::remove(tmp_path.string().c_str());
+}
+
+TEST(Config, VisualOdometryMaxConsecutiveFailuresDefaultsToThree) {
+  const auto config = uw::runtime::PlatformDefaultsConfig{};
+  EXPECT_EQ(config.visual_odometry.max_consecutive_failures, 3);
+}
+
+TEST(Config, ParsesVisualOdometryMaxConsecutiveFailuresOverride) {
+  const auto tmp_path = std::filesystem::temp_directory_path() / "uw_config_test_vo_failures.yaml";
+  {
+    std::ofstream out(tmp_path);
+    out << "visual_odometry:\n  max_consecutive_failures: 5\n";
+  }
+  const auto config = uw::runtime::LoadPlatformDefaultsConfig(tmp_path.string());
+  EXPECT_EQ(config.visual_odometry.max_consecutive_failures, 5);
+  std::remove(tmp_path.string().c_str());
+}
+
+TEST(Config, RejectsVisualOdometryMaxConsecutiveFailuresOutOfRange) {
+  const auto tmp_path = std::filesystem::temp_directory_path() / "uw_config_test_vo_failures_bad.yaml";
+  {
+    std::ofstream out(tmp_path);
+    out << "visual_odometry:\n  max_consecutive_failures: 0\n";
+  }
+  EXPECT_THROW(uw::runtime::LoadPlatformDefaultsConfig(tmp_path.string()), std::runtime_error);
+  std::remove(tmp_path.string().c_str());
+}
+
+TEST(Config, ParsesVisualOdometryCovarianceThresholdOverrides) {
+  const auto tmp_path = std::filesystem::temp_directory_path() / "uw_config_test_vo_cov.yaml";
+  {
+    std::ofstream out(tmp_path);
+    out << "visual_odometry:\n"
+           "  max_condition_number: 1.0e6\n"
+           "  residual_variance_floor_m2: 1.0e-6\n";
+  }
+  const auto config = uw::runtime::LoadPlatformDefaultsConfig(tmp_path.string());
+  EXPECT_DOUBLE_EQ(config.visual_odometry.max_condition_number, 1.0e6);
+  EXPECT_DOUBLE_EQ(config.visual_odometry.residual_variance_floor_m2, 1.0e-6);
+  std::remove(tmp_path.string().c_str());
+}
+
+TEST(Config, RejectsVisualOdometryNonFiniteMaxConditionNumber) {
+  const auto tmp_path = std::filesystem::temp_directory_path() / "uw_config_test_vo_cov_bad.yaml";
+  {
+    std::ofstream out(tmp_path);
+    out << "visual_odometry:\n  max_condition_number: -1.0\n";
+  }
+  EXPECT_THROW(uw::runtime::LoadPlatformDefaultsConfig(tmp_path.string()), std::runtime_error);
+  std::remove(tmp_path.string().c_str());
+}
+
+TEST(Config, RejectsVisualOdometryNonPositiveResidualVarianceFloor) {
+  const auto tmp_path = std::filesystem::temp_directory_path() / "uw_config_test_vo_floor_bad.yaml";
+  {
+    std::ofstream out(tmp_path);
+    out << "visual_odometry:\n  residual_variance_floor_m2: 0.0\n";
+  }
+  EXPECT_THROW(uw::runtime::LoadPlatformDefaultsConfig(tmp_path.string()), std::runtime_error);
+  std::remove(tmp_path.string().c_str());
+}
+
+TEST(Config, ParsesVisualOdometryMaxInlierRmseOverride) {
+  const auto tmp_path = std::filesystem::temp_directory_path() / "uw_config_test_vo_rmse.yaml";
+  {
+    std::ofstream out(tmp_path);
+    out << "visual_odometry:\n  max_inlier_rmse_m: 0.12\n";
+  }
+  const auto config = uw::runtime::LoadPlatformDefaultsConfig(tmp_path.string());
+  EXPECT_DOUBLE_EQ(config.visual_odometry.max_inlier_rmse_m, 0.12);
+  std::remove(tmp_path.string().c_str());
+}
+
+TEST(Config, NonPositiveVisualOdometryMaxInlierRmseDisablesTheGate) {
+  const auto tmp_path = std::filesystem::temp_directory_path() / "uw_config_test_vo_rmse_disabled.yaml";
+  {
+    std::ofstream out(tmp_path);
+    out << "visual_odometry:\n  max_inlier_rmse_m: 0.0\n";
+  }
+  const auto config = uw::runtime::LoadPlatformDefaultsConfig(tmp_path.string());
+  EXPECT_TRUE(std::isinf(config.visual_odometry.max_inlier_rmse_m));
+  std::remove(tmp_path.string().c_str());
+}
+
+TEST(Config, RejectsVisualOdometryUnknownKey) {
+  const auto tmp_path = std::filesystem::temp_directory_path() / "uw_config_test_vo_unknown.yaml";
+  {
+    std::ofstream out(tmp_path);
+    out << "visual_odometry:\n  bogus_key: 1\n";
+  }
+  EXPECT_THROW(uw::runtime::LoadPlatformDefaultsConfig(tmp_path.string()), std::runtime_error);
+  std::remove(tmp_path.string().c_str());
+}
+
+TEST(Config, ParsesRelativePoseSqrtInformationCapsIndependently) {
+  const auto tmp_path = std::filesystem::temp_directory_path() / "uw_config_test_relpose_caps.yaml";
+  {
+    std::ofstream out(tmp_path);
+    out << "reliability:\n"
+           "  default_sqrt_information:\n"
+           "    relative_pose:\n"
+           "      translation: 15.0\n"
+           "      rotation: 25.0\n"
+           "    sonar_range: 15.0\n"
+           "    depth: 20.0\n";
+  }
+  const auto config = uw::runtime::LoadPlatformDefaultsConfig(tmp_path.string());
+  EXPECT_DOUBLE_EQ(config.default_sqrt_information.relative_pose.translation, 15.0);
+  EXPECT_DOUBLE_EQ(config.default_sqrt_information.relative_pose.rotation, 25.0);
+  std::remove(tmp_path.string().c_str());
+}
+
+TEST(Config, RejectsZeroRelativePoseTranslationCap) {
+  const auto tmp_path = std::filesystem::temp_directory_path() / "uw_config_test_relpose_zero.yaml";
+  {
+    std::ofstream out(tmp_path);
+    out << "reliability:\n  default_sqrt_information:\n    relative_pose:\n      translation: 0.0\n";
+  }
+  EXPECT_THROW(uw::runtime::LoadPlatformDefaultsConfig(tmp_path.string()), std::runtime_error);
+  std::remove(tmp_path.string().c_str());
+}
+
+TEST(Config, RejectsNegativeRelativePoseRotationCap) {
+  const auto tmp_path = std::filesystem::temp_directory_path() / "uw_config_test_relpose_neg.yaml";
+  {
+    std::ofstream out(tmp_path);
+    out << "reliability:\n  default_sqrt_information:\n    relative_pose:\n      rotation: -1.0\n";
+  }
+  EXPECT_THROW(uw::runtime::LoadPlatformDefaultsConfig(tmp_path.string()), std::runtime_error);
+  std::remove(tmp_path.string().c_str());
+}
+
+TEST(Config, RejectsOldScalarRelativePoseFormat) {
+  const auto tmp_path = std::filesystem::temp_directory_path() / "uw_config_test_relpose_old.yaml";
+  {
+    std::ofstream out(tmp_path);
+    out << "reliability:\n  default_sqrt_information:\n    relative_pose: 20.0\n";
+  }
+  EXPECT_THROW(uw::runtime::LoadPlatformDefaultsConfig(tmp_path.string()), std::runtime_error);
+  std::remove(tmp_path.string().c_str());
+}
+
+TEST(Config, ParsesStereoMatchingOverrides) {
+  const auto tmp_path = std::filesystem::temp_directory_path() / "uw_config_test_stereo_matching.yaml";
+  {
+    std::ofstream out(tmp_path);
+    out << "stereo_matching:\n"
+           "  min_texture_variance: 10.0\n"
+           "  min_uniqueness_margin: 1.5\n"
+           "  left_right_max_diff_px: 2.0\n";
+  }
+  const auto config = uw::runtime::LoadPlatformDefaultsConfig(tmp_path.string());
+  EXPECT_DOUBLE_EQ(config.stereo_matching.min_texture_variance, 10.0);
+  EXPECT_DOUBLE_EQ(config.stereo_matching.min_uniqueness_margin, 1.5);
+  EXPECT_DOUBLE_EQ(config.stereo_matching.left_right_max_diff_px, 2.0);
+  std::remove(tmp_path.string().c_str());
+}
+
+TEST(Config, StereoMatchingDefaultsWhenSectionAbsent) {
+  const auto config = uw::runtime::PlatformDefaultsConfig{};
+  EXPECT_DOUBLE_EQ(config.stereo_matching.min_texture_variance, 25.0);
+  EXPECT_DOUBLE_EQ(config.stereo_matching.min_uniqueness_margin, 2.0);
+  EXPECT_DOUBLE_EQ(config.stereo_matching.left_right_max_diff_px, 1.0);
+}
+
+TEST(Config, RejectsNegativeStereoMatchingTextureVariance) {
+  const auto tmp_path = std::filesystem::temp_directory_path() / "uw_config_test_stereo_var_neg.yaml";
+  {
+    std::ofstream out(tmp_path);
+    out << "stereo_matching:\n  min_texture_variance: -1.0\n";
+  }
+  EXPECT_THROW(uw::runtime::LoadPlatformDefaultsConfig(tmp_path.string()), std::runtime_error);
+  std::remove(tmp_path.string().c_str());
+}
+
+TEST(Config, RejectsNegativeStereoMatchingUniquenessMargin) {
+  const auto tmp_path = std::filesystem::temp_directory_path() / "uw_config_test_stereo_margin_neg.yaml";
+  {
+    std::ofstream out(tmp_path);
+    out << "stereo_matching:\n  min_uniqueness_margin: -0.5\n";
+  }
+  EXPECT_THROW(uw::runtime::LoadPlatformDefaultsConfig(tmp_path.string()), std::runtime_error);
+  std::remove(tmp_path.string().c_str());
+}
+
+TEST(Config, RejectsNonFiniteStereoMatchingLeftRightThreshold) {
+  const auto tmp_path = std::filesystem::temp_directory_path() / "uw_config_test_stereo_lr_bad.yaml";
+  {
+    std::ofstream out(tmp_path);
+    out << "stereo_matching:\n  left_right_max_diff_px: -1.0\n";
+  }
+  EXPECT_THROW(uw::runtime::LoadPlatformDefaultsConfig(tmp_path.string()), std::runtime_error);
+  std::remove(tmp_path.string().c_str());
+}
+
+TEST(Config, RejectsStereoMatchingUnknownKey) {
+  const auto tmp_path = std::filesystem::temp_directory_path() / "uw_config_test_stereo_unknown.yaml";
+  {
+    std::ofstream out(tmp_path);
+    out << "stereo_matching:\n  bogus_key: 1\n";
+  }
+  EXPECT_THROW(uw::runtime::LoadPlatformDefaultsConfig(tmp_path.string()), std::runtime_error);
   std::remove(tmp_path.string().c_str());
 }
 

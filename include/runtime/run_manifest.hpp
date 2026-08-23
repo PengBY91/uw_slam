@@ -14,6 +14,12 @@ struct RunManifest {
   std::string git_commit;
   std::string config_hash;
   std::string calibration_hash;
+  // Hash of the OpenCV-rectified derived rig (opencv_adapters::
+  // StereoRectificationContext::DerivedRig()) actually fed to stereo
+  // frontends -- independent of calibration_hash (the raw rig's hash), and
+  // empty (not a copy of calibration_hash) when no rectification context
+  // was constructed for this run.
+  std::string derived_calibration_hash;
   std::string model_hash;
   std::string dataset_or_scenario;
   std::string simulator;

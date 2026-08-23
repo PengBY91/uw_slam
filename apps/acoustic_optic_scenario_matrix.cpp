@@ -159,12 +159,13 @@ int main(int argc, char** argv) {
       const auto trial = uw::scenario_matrix::BuildTrial(spec.kind, true_rig, trial_seed);
 
       uw::runtime::SynchronizerParams sync_params;
-      const auto sync_bundle = uw::runtime::SynchronizeAcousticOptic(
-          trial.left, std::optional<uw::domain::ImageFrame>(trial.right),
-          trial.sonar.value_or(uw::domain::SonarFrame{}), trial.pipeline_rig, sync_params);
+      const auto sync_decision = uw::runtime::SynchronizeAcousticOptic(
+          trial.left, std::optional<uw::domain::ImageFrame>(trial.right), trial.sonar,
+          trial.pipeline_rig, sync_params);
       // A missing sonar frame (dropout) is not a sync failure; only treat
       // a failed sync as a rejection when a sonar frame actually exists.
-      if (trial.sonar.has_value() && !sync_bundle.has_value()) {
+      if (trial.sonar.has_value() &&
+          sync_decision.status != uw::runtime::SynchronizationStatus::kSynchronized) {
         ++agg.sync_rejected;
         continue;
       }
@@ -210,7 +211,7 @@ int main(int argc, char** argv) {
 
       uw::frontends::AcousticOpticDepthFusionParams fusion_params;
       uw::frontends::AcousticOpticDepthFusionFrontend fusion(fusion_params);
-      const double time_delta = sync_bundle.has_value() ? sync_bundle->max_pairwise_time_delta_s : 0.0;
+      const double time_delta = sync_decision.max_pairwise_time_delta_s;
       const auto fused_result = fusion.Fuse(sonar_hypotheses, *optical_evidence, trial.pipeline_rig, time_delta);
 
       const auto end = std::chrono::steady_clock::now();
@@ -343,10 +344,19 @@ int main(int argc, char** argv) {
     // this was told apart from the real bug that used to also produce 0/N
     // here (clean_textured/elevation_stress, now fixed in
     // acoustic_optic_associator.cpp's depth-agreement check).
+    // kRepeatedStructure sets its periodic texture's period equal to the
+    // true disparity BY DESIGN ("aliasing hazard", see
+    // acoustic_optic_scenarios.cpp) — this is exactly the ambiguous-
+    // disparity case BlockMatcherParams::min_uniqueness_margin exists to
+    // reject (frontends/block_matcher.cpp), so once that filter is real
+    // (not just documented) this scenario correctly produces zero valid
+    // optical depth, and therefore zero associations, same as the other
+    // deliberate fail-closed scenarios above.
     if (spec.kind != uw::scenario_matrix::ScenarioKind::kSonarDropout &&
         spec.kind != uw::scenario_matrix::ScenarioKind::kOpticalInvalidRegion &&
         spec.kind != uw::scenario_matrix::ScenarioKind::kTimeOffsetFault &&
-        spec.kind != uw::scenario_matrix::ScenarioKind::kExtrinsicPerturbation && agg.accepted == 0) {
+        spec.kind != uw::scenario_matrix::ScenarioKind::kExtrinsicPerturbation &&
+        spec.kind != uw::scenario_matrix::ScenarioKind::kRepeatedStructure && agg.accepted == 0) {
       std::cerr << "GATE FAIL: " << spec.name << " had 0/" << agg.trials
                 << " accepted associations — no evidence the fusion pipeline produced any valid "
                    "output in this scenario\n";

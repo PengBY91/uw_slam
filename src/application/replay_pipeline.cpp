@@ -76,6 +76,7 @@
 #include "frontends/stereo_optical_depth_frontend.hpp"
 #include "mapping/acoustic_optic_map_bridge.hpp"
 #include "mapping/submap_manager.hpp"
+#include "opencv_adapters/stereo_rectifier.hpp"
 #include "runtime/acoustic_optic_synchronizer.hpp"
 #include "runtime/config.hpp"
 #include "runtime/mcap_io.hpp"
@@ -157,6 +158,86 @@ std::string DetectCpuInfo() {
 
 }  // namespace
 
+uw::domain::StateSnapshot::TrackingStatus uw::application::DecideTrackingStatus(
+    const ReplayTrackingInputs& inputs) {
+  if (inputs.vo_enabled && inputs.vo_health == uw::domain::HealthReport::STATUS_UNAVAILABLE) {
+    return uw::domain::StateSnapshot::TRACKING_STATUS_LOST;
+  }
+  if (!inputs.solver_converged ||
+      (inputs.vo_enabled && inputs.vo_health == uw::domain::HealthReport::STATUS_SUSPECT)) {
+    return uw::domain::StateSnapshot::TRACKING_STATUS_DEGRADED;
+  }
+  return uw::domain::StateSnapshot::TRACKING_STATUS_TRACKING;
+}
+
+uw::domain::StateSnapshot uw::application::BuildStateSnapshot(const StateSnapshotInputs& inputs) {
+  uw::domain::StateSnapshot snapshot;
+  snapshot.mutable_state_id()->set_value(inputs.state_id);
+  snapshot.mutable_state_version()->set_value(inputs.state_version);
+  *snapshot.mutable_capture_timestamp() = inputs.capture_timestamp;
+  *snapshot.mutable_pose_wb() = inputs.pose.ToProto();
+  snapshot.set_tracking_status(inputs.tracking_status);
+  snapshot.mutable_calibration_version()->set_value(inputs.calibration_version);
+
+  std::vector<std::string> evidence_values;
+  evidence_values.reserve(inputs.contributing_evidence.size());
+  for (const auto& id : inputs.contributing_evidence) evidence_values.push_back(id.value());
+  std::sort(evidence_values.begin(), evidence_values.end());
+  evidence_values.erase(std::unique(evidence_values.begin(), evidence_values.end()),
+                        evidence_values.end());
+  for (const auto& value : evidence_values) snapshot.add_contributing_measurements()->set_value(value);
+  return snapshot;
+}
+
+uw::application::MapContributionCounts uw::application::CountDepthContributions(
+    const uw::domain::FusedDepthMeasurement& fused) {
+  MapContributionCounts counts;
+  for (unsigned char byte : fused.contribution_mask()) {
+    if (byte == static_cast<unsigned char>(uw::domain::DEPTH_CONTRIBUTION_OPTICAL_ONLY)) {
+      ++counts.optical_only_points;
+    } else if (byte == static_cast<unsigned char>(uw::domain::DEPTH_CONTRIBUTION_ACOUSTIC_OPTIC)) {
+      ++counts.acoustic_optic_points;
+    }
+  }
+  return counts;
+}
+
+std::vector<std::string> uw::application::EvaluateReplayGates(
+    const uw::runtime::PlatformDefaultsConfig& defaults, const uw::estimation::GaussNewtonSummary& solver,
+    const uw::evaluation::AteResult& ate, int num_landmarks, const MapContributionCounts& contributions,
+    int num_acoustic_optic_accepted) {
+  std::vector<std::string> failures;
+  if (defaults.require_converged && !solver.converged) {
+    failures.push_back("solver did not converge (" + std::to_string(solver.iterations) +
+                       " iterations, stalled)");
+  }
+  if (defaults.min_matched_ate_poses > 0 &&
+      static_cast<int>(ate.num_matched_poses) < defaults.min_matched_ate_poses) {
+    failures.push_back("matched ATE poses " + std::to_string(ate.num_matched_poses) + " < required " +
+                       std::to_string(defaults.min_matched_ate_poses));
+  }
+  if (defaults.max_ate_rmse_m >= 0.0 && ate.rmse_m > defaults.max_ate_rmse_m) {
+    failures.push_back("ATE rmse " + std::to_string(ate.rmse_m) + "m > max " +
+                       std::to_string(defaults.max_ate_rmse_m) + "m");
+  }
+  const uint64_t total_map_points = contributions.optical_only_points + contributions.acoustic_optic_points;
+  if (defaults.require_nonempty_map && (static_cast<uint64_t>(num_landmarks) + total_map_points) == 0) {
+    failures.push_back("map is empty (0 landmarks discovered, 0 map evidence points)");
+  }
+  if (defaults.min_acoustic_optic_accepted > 0 &&
+      num_acoustic_optic_accepted < defaults.min_acoustic_optic_accepted) {
+    failures.push_back("acoustic-optic accepted associations " +
+                       std::to_string(num_acoustic_optic_accepted) + " < required " +
+                       std::to_string(defaults.min_acoustic_optic_accepted));
+  }
+  if (defaults.min_acoustic_optic_map_points > 0 &&
+      contributions.acoustic_optic_points < static_cast<uint64_t>(defaults.min_acoustic_optic_map_points)) {
+    failures.push_back("acoustic-optic map points " + std::to_string(contributions.acoustic_optic_points) +
+                       " < required " + std::to_string(defaults.min_acoustic_optic_map_points));
+  }
+  return failures;
+}
+
 int uw::application::RunReplayPipeline(const ReplayOptions& opt,
                                        const std::string& git_commit) {
   if (opt.bag_path.empty()) {
@@ -209,6 +290,32 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
               << config.sonar_frontend << ", estimator_mode=" << config.estimator_mode << ")\n";
   }
   if (opt.max_iterations > 0) defaults.max_iterations = opt.max_iterations;  // CLI wins last
+
+  // Rectify once, up front: everything downstream that consumes camera
+  // frames (stereo_landmark_vo_frontend, stereo_optical_depth_frontend, and
+  // therefore the acoustic-optic fusion/map-bridge chain built on top of it)
+  // now hard-requires is_rectified()==true input (StereoGeometry::Resolve's
+  // rectified-pair contract — see sensor_models/camera_model.hpp). A failed
+  // Create() here means this rig cannot be rectified at all, so every
+  // camera-dependent pass below would silently produce zero evidence;
+  // failing the whole run immediately is more honest than that.
+  std::optional<uw::opencv_adapters::StereoRectificationContext> rectification_context;
+  if (rig.has_value()) {
+    uw::opencv_adapters::StereoRectificationParams rectification_params;
+    rectification_params.alpha = defaults.stereo_rectification.alpha;
+    rectification_params.rectified_frame_suffix = defaults.stereo_rectification.frame_suffix;
+    rectification_params.crop_policy =
+        defaults.stereo_rectification.crop_policy == "common_valid_roi"
+            ? uw::opencv_adapters::RectificationCropPolicy::kCommonValidRoi
+            : uw::opencv_adapters::RectificationCropPolicy::kFullCanvas;
+    std::string rectification_error;
+    rectification_context = uw::opencv_adapters::StereoRectificationContext::Create(
+        *rig, rectification_params, &rectification_error);
+    if (!rectification_context.has_value()) {
+      std::cerr << "stereo rectification failed: " << rectification_error << "\n";
+      return 1;
+    }
+  }
 
   // Warmup window (defaults.warmup_seconds, 0 = disabled): translate to a
   // keyframe-count cutoff using synth_bag_gen's fixed 5 Hz keyframe spacing
@@ -277,11 +384,18 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
   // --experiment (or PlatformDefaultsConfig's built-in fallback values if
   // --experiment wasn't passed). See file header limitation note: these
   // are still fixed constants, not a calibrated reliability scheduler.
-  const double relative_pose_sqrt_info = defaults.default_sqrt_information.relative_pose;
+  const double relative_pose_translation_cap = defaults.default_sqrt_information.relative_pose.translation;
+  const double relative_pose_rotation_cap = defaults.default_sqrt_information.relative_pose.rotation;
+  // FactorCandidate.proposed_noise is a single wire scalar (see
+  // RelativePoseFactorBuilder::Build()'s own comment) -- set it to the max
+  // of the two typed caps so it never tightens either one below what the
+  // builder itself was already constructed with.
+  const double relative_pose_sqrt_info = std::max(relative_pose_translation_cap, relative_pose_rotation_cap);
   const double sonar_range_sqrt_info = defaults.default_sqrt_information.sonar_range;
   const double depth_sqrt_info = defaults.default_sqrt_information.depth;
 
-  uw::factor_builders::RelativePoseFactorBuilder relative_pose_builder;
+  uw::factor_builders::RelativePoseFactorBuilder relative_pose_builder(relative_pose_translation_cap,
+                                                                       relative_pose_rotation_cap);
   uw::factor_builders::SonarRangeFactorBuilder sonar_range_builder;
   uw::factor_builders::DepthFactorBuilder depth_builder;
 
@@ -308,6 +422,112 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
     return "kf" + std::to_string(index);
   };
 
+  // Camera frames, read once and shared by both the relative-pose block
+  // below (estimator_mode == "stereo_landmark_vo") and the acoustic-optic
+  // pass further down — both used to read these topics independently.
+  // Frames stay RAW here: the synchronizer and sonar frontend still consume
+  // raw sonar/raw image headers (capture_time, sensor_frame) per this file's
+  // acoustic-optic pass, only the rectified/MONO8 pixel content is derived
+  // on demand below via get_rectified().
+  std::unordered_map<std::string, uw::domain::ImageFrame> left_by_kf_raw, right_by_kf_raw;
+  int max_kf_index = -1;
+
+  // Real per-keyframe metadata for StateSnapshot/TUM output (P1: no more
+  // `index * kKeyframeIntervalS` timestamp fabrication). Priority for
+  // capture_time_by_keyframe, highest first: raw left camera capture_time
+  // (set here) > /gt/state's own capture_timestamp, matched by state_id
+  // (set below, before the snapshot loop) > the MCAP log_time_ns of
+  // whatever relative-pose/depth evidence first referenced this keyframe
+  // (set in those read passes below) -- each tier only fills a keyframe
+  // that a higher tier left unset.
+  std::unordered_map<std::string, uw::domain::Stamp> capture_time_by_keyframe;
+  std::unordered_map<std::string, std::vector<uw::domain::EvidenceId>> evidence_by_keyframe;
+
+  if (rig.has_value()) {
+    uw::runtime::ReadMcapMessages<uw::domain::ImageFrame>(
+        opt.bag_path, "/raw/camera/left", [&](uint64_t, const uw::domain::ImageFrame& f) {
+          const std::string kf_id = keyframe_id_for_time(f.header().capture_time());
+          left_by_kf_raw[kf_id] = f;
+          max_kf_index = std::max(max_kf_index, std::stoi(kf_id.substr(2)));
+          capture_time_by_keyframe[kf_id] = f.header().capture_time();
+        });
+    uw::runtime::ReadMcapMessages<uw::domain::ImageFrame>(
+        opt.bag_path, "/raw/camera/right", [&](uint64_t, const uw::domain::ImageFrame& f) {
+          right_by_kf_raw[keyframe_id_for_time(f.header().capture_time())] = f;
+        });
+  }
+
+  // Rectifies (ConvertToMono8 + StereoRectificationContext::Process()) a
+  // keyframe's raw stereo pair at most once, caching the result so the VO
+  // pass and the acoustic-optic pass below never remap the same pixels
+  // twice. Returns nullptr if the raw pair is missing or fails
+  // ConvertToMono8/Process() (e.g. wrong encoding, size mismatch) — a
+  // per-keyframe condition, not a fatal error like a failed Create() above.
+  std::unordered_map<std::string, uw::opencv_adapters::RectifiedStereoBundle> rectified_by_kf;
+  auto get_rectified = [&](const std::string& kf_id) -> uw::opencv_adapters::RectifiedStereoBundle* {
+    const auto cached = rectified_by_kf.find(kf_id);
+    if (cached != rectified_by_kf.end()) return &cached->second;
+    const auto left_it = left_by_kf_raw.find(kf_id);
+    const auto right_it = right_by_kf_raw.find(kf_id);
+    if (left_it == left_by_kf_raw.end() || right_it == right_by_kf_raw.end()) return nullptr;
+    const auto left_mono = uw::domain::ConvertToMono8(left_it->second);
+    const auto right_mono = uw::domain::ConvertToMono8(right_it->second);
+    if (!left_mono.has_value() || !right_mono.has_value()) return nullptr;
+    std::string process_error;
+    auto rectified = rectification_context->Process(*left_mono, *right_mono, &process_error);
+    if (!rectified.has_value()) return nullptr;
+    return &rectified_by_kf.emplace(kf_id, std::move(*rectified)).first->second;
+  };
+
+  // Per-keyframe VO health AT THE TIME that keyframe was processed --
+  // black-box mode never populates this (no local VO frontend to ask), so
+  // DecideTrackingStatus's vo_enabled must be false for those snapshots.
+  std::unordered_map<std::string, uw::domain::HealthReport::Status> vo_health_by_keyframe;
+
+  // Fills the remaining capture_time_by_keyframe priority tiers below raw
+  // camera capture_time (already set above, unconditionally, when it
+  // exists): GT's own real capture_timestamp (matched by state_id -- a
+  // genuine timestamp field this platform's synthetic/real bags already
+  // carry, used here for TIMING only, never for pose -- ground truth still
+  // never enters estimated state), then the MCAP log_time_ns of whichever
+  // depth/relative-pose evidence first referenced a keyframe, as a last
+  // resort. .emplace() only inserts when a higher tier hasn't already
+  // claimed that keyframe, so running these three passes in this fixed
+  // order IS the priority order.
+  std::vector<uw::evaluation::TrajectoryPose> ground_truth_trajectory;
+  uw::runtime::ReadMcapMessages<uw::domain::StateSnapshot>(
+      opt.bag_path, "/gt/state", [&](uint64_t, const uw::domain::StateSnapshot& gt) {
+        if (gt.has_state_id() && !gt.state_id().value().empty()) {
+          capture_time_by_keyframe.emplace(gt.state_id().value(), gt.capture_timestamp());
+        }
+        ground_truth_trajectory.push_back({uw::domain::ToSeconds(gt.capture_timestamp()),
+                                           Pose3::FromProto(gt.pose_wb())});
+      });
+  int num_timestamp_fallback_evidence = 0;
+  uw::runtime::ReadMcapMessages<uw::domain::MeasurementEvidence>(
+      opt.bag_path, "/evidence/depth",
+      [&](uint64_t log_time_ns, const uw::domain::MeasurementEvidence& evidence) {
+        if (!uw::domain::HasPayload<uw::domain::PressureDepthMeasurement>(evidence)) return;
+        if (evidence.source_observations_size() == 0) return;
+        const auto [it, inserted] = capture_time_by_keyframe.emplace(
+            evidence.source_observations(0).value(), uw::domain::FromSeconds(static_cast<double>(log_time_ns) * 1e-9));
+        if (inserted) ++num_timestamp_fallback_evidence;
+      });
+  uw::runtime::ReadMcapMessages<uw::domain::MeasurementEvidence>(
+      opt.bag_path, "/evidence/relative_pose",
+      [&](uint64_t log_time_ns, const uw::domain::MeasurementEvidence& evidence) {
+        if (!uw::domain::HasPayload<uw::domain::RelativePoseMeasurement>(evidence)) return;
+        const auto& measurement = uw::domain::GetPayload<uw::domain::RelativePoseMeasurement>(evidence);
+        const auto [it, inserted] = capture_time_by_keyframe.emplace(
+            measurement.to_keyframe().value(),
+            uw::domain::FromSeconds(static_cast<double>(log_time_ns) * 1e-9));
+        if (inserted) ++num_timestamp_fallback_evidence;
+      });
+  if (num_timestamp_fallback_evidence > 0) {
+    std::cout << "warning: " << num_timestamp_fallback_evidence
+              << " keyframe(s) had no camera/GT timestamp; used MCAP log_time_ns as a fallback\n";
+  }
+
   int num_relative_pose_factors = 0;
   if (rig.has_value() && estimator_mode == "stereo_landmark_vo") {
     // Real relative-pose evidence computed from stereo camera frames
@@ -315,45 +535,16 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
     // synth_bag_gen's ground-truth+noise "black-box VIO" stand-in read
     // from /evidence/relative_pose below. Keyframes must be visited in
     // order (the frontend is stateful across calls, comparing this call's
-    // landmarks to the previous one's) — collect frames by id first, then
-    // iterate kf0..kfN in order rather than relying on bag stream order.
-    std::unordered_map<std::string, uw::domain::ImageFrame> left_by_kf, right_by_kf;
-    int max_kf_index = -1;
-    // StereoLandmarkVoFrontend hard-requires MONO8 (repo-wide convention,
-    // see stereo_optical_depth_frontend too); synth_bag_gen already writes
-    // MONO8 so ConvertToMono8 is a no-op there, but a real HoloOcean
-    // recording is RGB8 (camera_conversion.py) and needs converting here,
-    // at the point of consumption, rather than the recorder discarding
-    // color at capture time.
-    //
-    // NOT wired in here yet: include/sensor_models/camera_rectifier.hpp
-    // (P1 rectification work) can undistort these frames against the rig's
-    // calibrated lens distortion, but doing so against the one real bag
-    // available (configs/rig/example_auv_real_camera.yaml's calibration)
-    // dropped stereo_landmark_vo tracking from 50/50 keyframes to 8/50 —
-    // bilinear resampling measurably smooths this bag's fine noise-like
-    // texture (Laplacian variance -43%), which harris_corner's
-    // matcher thresholds just below (empirically tuned against the
-    // DISTORTED input) turn out to depend on. The warp itself is correct
-    // (verified against real frames — no corruption, geometrically as
-    // expected); the real-data VO thresholds need joint retuning before
-    // rectification can be enabled here.
-    uw::runtime::ReadMcapMessages<uw::domain::ImageFrame>(
-        opt.bag_path, "/raw/camera/left", [&](uint64_t, const uw::domain::ImageFrame& f) {
-          const auto mono = uw::domain::ConvertToMono8(f);
-          if (!mono.has_value()) return;
-          const std::string kf_id = keyframe_id_for_time(f.header().capture_time());
-          left_by_kf[kf_id] = *mono;
-          max_kf_index = std::max(max_kf_index, std::stoi(kf_id.substr(2)));
-        });
-    uw::runtime::ReadMcapMessages<uw::domain::ImageFrame>(
-        opt.bag_path, "/raw/camera/right", [&](uint64_t, const uw::domain::ImageFrame& f) {
-          const auto mono = uw::domain::ConvertToMono8(f);
-          if (!mono.has_value()) return;
-          right_by_kf[keyframe_id_for_time(f.header().capture_time())] = *mono;
-        });
-
+    // landmarks to the previous one's) — iterate kf0..kfN in order rather
+    // than relying on bag stream order.
     uw::frontends::StereoLandmarkVoFrontendParams vo_params;
+    vo_params.left_frame = rectification_context->LeftRectifiedFrame();
+    vo_params.right_frame = rectification_context->RightRectifiedFrame();
+    vo_params.max_consecutive_failures = defaults.visual_odometry.max_consecutive_failures;
+    vo_params.covariance_estimation.max_condition_number = defaults.visual_odometry.max_condition_number;
+    vo_params.covariance_estimation.residual_variance_floor_m2 =
+        defaults.visual_odometry.residual_variance_floor_m2;
+    vo_params.covariance_estimation.max_inlier_rmse_m = defaults.visual_odometry.max_inlier_rmse_m;
     vo_params.detector_kind = landmark_detector == "harris_corner"
                                    ? uw::frontends::LandmarkDetectorKind::kHarrisCorner
                                    : uw::frontends::LandmarkDetectorKind::kBrightBlob;
@@ -383,16 +574,19 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
 
     for (int i = 0; i <= max_kf_index; ++i) {
       const std::string kf_id = "kf" + std::to_string(i);
-      auto left_it = left_by_kf.find(kf_id);
-      auto right_it = right_by_kf.find(kf_id);
-      if (left_it == left_by_kf.end() || right_it == right_by_kf.end()) continue;
+      auto* rectified = get_rectified(kf_id);
+      if (rectified == nullptr) continue;
 
-      uw::measurement_api::CameraFrameBundle bundle;
-      bundle.primary = left_it->second;
+      uw::measurement_api::CameraFrameBundle bundle = rectified->images;
       bundle.primary.mutable_header()->mutable_observation_id()->set_value(kf_id);
-      bundle.secondary = right_it->second;
 
-      const auto vo_evidence = vo_frontend.Process(bundle, *rig);
+      const auto vo_evidence = vo_frontend.Process(bundle, rectification_context->DerivedRig());
+      // Recorded for EVERY processed frame, success or failure, keyed by
+      // the frame that was just processed -- this is what makes
+      // DecideTrackingStatus's per-snapshot VO health non-retroactive (a
+      // keyframe processed while VO was still healthy must stay TRACKING
+      // even if VO later degrades).
+      vo_health_by_keyframe[kf_id] = vo_frontend.Health().status();
       if (!vo_evidence.has_value()) continue;  // first frame seen, or couldn't fit this transition
 
       const auto& measurement = uw::domain::GetPayload<uw::domain::RelativePoseMeasurement>(*vo_evidence);
@@ -410,6 +604,7 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
       auto block = relative_pose_builder.Build(candidate, *vo_evidence, {});
       if (block) {
         problem.AddResidualBlock(std::move(block), {from, to});
+        evidence_by_keyframe[to].push_back(vo_evidence->evidence_id());
         ++num_relative_pose_factors;
       }
     }
@@ -418,7 +613,7 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
   } else {
     uw::runtime::ReadMcapMessages<uw::domain::MeasurementEvidence>(
         opt.bag_path, "/evidence/relative_pose",
-        [&](uint64_t, const uw::domain::MeasurementEvidence& evidence) {
+        [&](uint64_t log_time_ns, const uw::domain::MeasurementEvidence& evidence) {
           if (!uw::domain::HasPayload<uw::domain::RelativePoseMeasurement>(evidence)) return;
           const auto& measurement = uw::domain::GetPayload<uw::domain::RelativePoseMeasurement>(evidence);
           const std::string from = measurement.from_keyframe().value();
@@ -435,8 +630,10 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
           auto block = relative_pose_builder.Build(candidate, evidence, {});
           if (block) {
             problem.AddResidualBlock(std::move(block), {from, to});
+            evidence_by_keyframe[to].push_back(evidence.evidence_id());
             ++num_relative_pose_factors;
           }
+          (void)log_time_ns;  // metadata pre-pass above already covers this fallback tier
         });
   }
   std::cout << "added " << num_relative_pose_factors << " relative-pose factors, "
@@ -545,6 +742,7 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
         auto block = sonar_range_builder.Build(candidate, evidence, context);
         if (block) {
           problem.AddResidualBlock(std::move(block), {keyframe_id});
+          evidence_by_keyframe[keyframe_id].push_back(evidence.evidence_id());
           ++num_sonar_factors;
         }
       });
@@ -576,6 +774,7 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
         auto block = depth_builder.Build(candidate, evidence, {});
         if (block) {
           problem.AddResidualBlock(std::move(block), {keyframe_id});
+          evidence_by_keyframe[keyframe_id].push_back(evidence.evidence_id());
           ++num_depth_factors;
         }
       });
@@ -615,20 +814,47 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
   uw::estimation::StateStore state_store;
   std::vector<uw::evaluation::TrajectoryPose> estimated_trajectory;
 
+  const std::string calibration_version_for_snapshot =
+      rectification_context.has_value() ? rectification_context->DerivedRig().calibration_version().value()
+                                        : "";
+  const bool vo_enabled_for_tracking = rig.has_value() && estimator_mode == "stereo_landmark_vo";
+
+  int num_snapshot_timestamp_missing = 0;
   for (int i = 0; i < static_cast<int>(problem.KeyframeOrder().size()); ++i) {
     const std::string& kf_id = problem.KeyframeOrder()[i];
     const auto pose = problem.GetKeyframePose(kf_id);
 
-    uw::domain::StateSnapshot snapshot;
-    snapshot.mutable_state_id()->set_value(kf_id);
-    *snapshot.mutable_pose_wb() = pose.ToProto();
-    snapshot.set_tracking_status(uw::domain::StateSnapshot::TRACKING_STATUS_TRACKING);
+    uw::application::ReplayTrackingInputs tracking_inputs;
+    tracking_inputs.solver_converged = summary.converged;
+    tracking_inputs.vo_enabled = vo_enabled_for_tracking;
+    const auto vo_health_it = vo_health_by_keyframe.find(kf_id);
+    if (vo_health_it != vo_health_by_keyframe.end()) tracking_inputs.vo_health = vo_health_it->second;
+
+    uw::application::StateSnapshotInputs snapshot_inputs;
+    snapshot_inputs.state_id = kf_id;
+    snapshot_inputs.state_version = static_cast<uint64_t>(i) + 1;
+    snapshot_inputs.pose = pose;
+    const auto capture_time_it = capture_time_by_keyframe.find(kf_id);
+    if (capture_time_it != capture_time_by_keyframe.end()) {
+      snapshot_inputs.capture_timestamp = capture_time_it->second;
+    } else {
+      ++num_snapshot_timestamp_missing;  // no camera/GT/evidence time at all: Stamp{} default (epoch)
+    }
+    snapshot_inputs.calibration_version = calibration_version_for_snapshot;
+    const auto evidence_it = evidence_by_keyframe.find(kf_id);
+    if (evidence_it != evidence_by_keyframe.end()) snapshot_inputs.contributing_evidence = evidence_it->second;
+    snapshot_inputs.tracking_status = uw::application::DecideTrackingStatus(tracking_inputs);
+
+    const auto snapshot = uw::application::BuildStateSnapshot(snapshot_inputs);
     state_store.Commit(snapshot);
 
     submap_manager.UpdateKeyframePose(kf_id, pose);
-
-    const double timestamp_s = static_cast<double>(i) * kKeyframeIntervalS;
-    estimated_trajectory.push_back({timestamp_s, pose});
+    estimated_trajectory.push_back({uw::domain::ToSeconds(snapshot.capture_timestamp()), pose});
+  }
+  if (num_snapshot_timestamp_missing > 0) {
+    std::cout << "warning: " << num_snapshot_timestamp_missing
+              << " keyframe(s) had no camera/GT/evidence timestamp at all; capture_timestamp defaults to "
+                 "epoch\n";
   }
 
   // Acoustic-optic pass (only when --experiment loaded a rig with cameras):
@@ -644,20 +870,14 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
   int num_acoustic_optic_ambiguous = 0;
   int num_acoustic_optic_conflict = 0;
   int num_acoustic_optic_rejected = 0;
+  int num_sync_invalid_timestamp = 0;
   int num_map_evidence_points = 0;
+  MapContributionCounts total_contributions;
   if (rig.has_value()) {
-    // keyframe_id_for_time is defined above, shared with the relative-pose
-    // block's stereo_landmark_vo_frontend path.
-    std::unordered_map<std::string, uw::domain::ImageFrame> left_by_kf, right_by_kf;
+    // keyframe_id_for_time / left_by_kf_raw / right_by_kf_raw / get_rectified
+    // are defined above, shared with the relative-pose block's
+    // stereo_landmark_vo_frontend path.
     std::unordered_map<std::string, uw::domain::SonarFrame> sonar_by_kf;
-    uw::runtime::ReadMcapMessages<uw::domain::ImageFrame>(
-        opt.bag_path, "/raw/camera/left", [&](uint64_t, const uw::domain::ImageFrame& f) {
-          left_by_kf[keyframe_id_for_time(f.header().capture_time())] = f;
-        });
-    uw::runtime::ReadMcapMessages<uw::domain::ImageFrame>(
-        opt.bag_path, "/raw/camera/right", [&](uint64_t, const uw::domain::ImageFrame& f) {
-          right_by_kf[keyframe_id_for_time(f.header().capture_time())] = f;
-        });
     uw::runtime::ReadMcapMessages<uw::domain::SonarFrame>(
         opt.bag_path, "/raw/sonar_frame", [&](uint64_t, const uw::domain::SonarFrame& f) {
           // v1 top-1 rule (see file header): keep the first sonar frame seen
@@ -667,6 +887,11 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
         });
 
     uw::frontends::StereoOpticalDepthFrontendParams stereo_params;
+    stereo_params.left_frame = rectification_context->LeftRectifiedFrame();
+    stereo_params.right_frame = rectification_context->RightRectifiedFrame();
+    stereo_params.matcher.min_texture_variance = defaults.stereo_matching.min_texture_variance;
+    stereo_params.matcher.min_uniqueness_margin = defaults.stereo_matching.min_uniqueness_margin;
+    stereo_params.matcher.left_right_max_diff_px = defaults.stereo_matching.left_right_max_diff_px;
     uw::frontends::StereoOpticalDepthFrontend stereo_frontend(stereo_params);
     uw::frontends::AcousticOpticDepthFusionParams fusion_params;
     uw::frontends::AcousticOpticDepthFusionFrontend fusion_frontend(fusion_params);
@@ -674,34 +899,60 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
 
     for (std::size_t kf_index = 0; kf_index < problem.KeyframeOrder().size(); ++kf_index) {
       const std::string& kf_id = problem.KeyframeOrder()[kf_index];
-      auto left_it = left_by_kf.find(kf_id);
-      auto right_it = right_by_kf.find(kf_id);
-      if (left_it == left_by_kf.end() || right_it == right_by_kf.end()) continue;
+      auto left_raw_it = left_by_kf_raw.find(kf_id);
+      auto right_raw_it = right_by_kf_raw.find(kf_id);
+      if (left_raw_it == left_by_kf_raw.end() || right_raw_it == right_by_kf_raw.end()) continue;
       ++num_keyframes_with_camera;
 
       const auto sonar_it = sonar_by_kf.find(kf_id);
-      const uw::domain::SonarFrame empty_sonar;
       uw::runtime::SynchronizerParams sync_params;
-      const auto sync_bundle = uw::runtime::SynchronizeAcousticOptic(
-          left_it->second, std::optional<uw::domain::ImageFrame>(right_it->second),
-          sonar_it != sonar_by_kf.end() ? sonar_it->second : empty_sonar, *rig, sync_params);
+      // The synchronizer and its downstream time_delta below still consume
+      // RAW image headers (capture_time, sensor_frame) -- rectification
+      // only changes pixel content/frame naming, not capture timing.
+      const auto sync_decision = uw::runtime::SynchronizeAcousticOptic(
+          left_raw_it->second, std::optional<uw::domain::ImageFrame>(right_raw_it->second),
+          sonar_it != sonar_by_kf.end() ? std::optional<uw::domain::SonarFrame>(sonar_it->second)
+                                        : std::nullopt,
+          *rig, sync_params);
 
-      uw::measurement_api::CameraFrameBundle bundle;
-      bundle.primary = left_it->second;
-      bundle.secondary = right_it->second;
-      const auto optical_evidence = stereo_frontend.Process(bundle, *rig);
+      auto* rectified = get_rectified(kf_id);
+      if (rectified == nullptr) continue;
+      const auto optical_evidence =
+          stereo_frontend.Process(rectified->images, rectification_context->DerivedRig());
       if (!optical_evidence.has_value()) continue;
 
+      // kSynchronized/kTimeDeltaExceeded both hand the REAL sonar hypothesis
+      // and REAL delta to Fuse() -- the associator's own first-checked time
+      // gate (frontends/acoustic_optic_associator.cpp) is what turns an
+      // excessive delta into a REJECTED/TIME_DELTA record before any
+      // geometric projection, so this file no longer needs to (and must
+      // not) fake a zero delta to route around that decision. kNoSonar and
+      // kInvalidTimestamp both fall through with an empty hypothesis set,
+      // which makes Fuse() return a purely optical-only result with no
+      // association record at all -- the optical chain never stops running
+      // just because the cross-modal pairing did.
       uw::domain::HypothesisSet sonar_hypotheses;
-      if (sonar_it != sonar_by_kf.end()) {
-        sonar_hypotheses = sonar_frontend.ProcessSonarFrame(sonar_it->second);
+      switch (sync_decision.status) {
+        case uw::runtime::SynchronizationStatus::kSynchronized:
+        case uw::runtime::SynchronizationStatus::kTimeDeltaExceeded:
+          sonar_hypotheses = sonar_frontend.ProcessSonarFrame(sonar_it->second);
+          break;
+        case uw::runtime::SynchronizationStatus::kNoSonar:
+          break;
+        case uw::runtime::SynchronizationStatus::kInvalidTimestamp:
+          ++num_sync_invalid_timestamp;
+          break;
       }
 
-      const double time_delta = sync_bundle.has_value() ? sync_bundle->max_pairwise_time_delta_s : 0.0;
-      const auto fused_result = fusion_frontend.Fuse(sonar_hypotheses, *optical_evidence, *rig, time_delta);
+      const auto fused_result =
+          fusion_frontend.Fuse(sonar_hypotheses, *optical_evidence, rectification_context->DerivedRig(),
+                                sync_decision.max_pairwise_time_delta_s);
       if (!fused_result.has_value()) continue;
 
       const auto& fused = uw::domain::GetPayload<uw::domain::FusedDepthMeasurement>(fused_result->fused_evidence);
+      const auto contribution_counts = CountDepthContributions(fused);
+      total_contributions.optical_only_points += contribution_counts.optical_only_points;
+      total_contributions.acoustic_optic_points += contribution_counts.acoustic_optic_points;
       if (fused.associations_size() > 0) {
         switch (fused.associations(0).status()) {
           case uw::domain::ACOUSTIC_OPTIC_ASSOCIATION_STATUS_ACCEPTED:
@@ -723,7 +974,8 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
 
       const uint64_t state_version = kf_index + 1;
       const auto map_evidence = uw::mapping::BuildMapEvidenceFromFusedDepth(
-          fused_result->fused_evidence, *rig, bridge_params, kf_id, state_version);
+          fused_result->fused_evidence, rectification_context->DerivedRig(), bridge_params, kf_id,
+          state_version);
       if (map_evidence.has_value()) {
         num_map_evidence_points +=
             static_cast<int>(map_evidence->geometry_or_occupancy().size() / (3 * sizeof(float)));
@@ -733,17 +985,11 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
     std::cout << "acoustic-optic: " << num_keyframes_with_camera << " keyframes with camera data, "
               << num_acoustic_optic_accepted << " accepted, " << num_acoustic_optic_ambiguous
               << " ambiguous, " << num_acoustic_optic_conflict << " conflict, " << num_acoustic_optic_rejected
-              << " rejected, " << num_map_evidence_points << " map evidence points added\n";
+              << " rejected, " << num_sync_invalid_timestamp
+              << " sync invalid-timestamp (optical-only), " << num_map_evidence_points
+              << " map evidence points added (" << total_contributions.optical_only_points
+              << " optical-only, " << total_contributions.acoustic_optic_points << " acoustic-optic)\n";
   }
-
-  std::vector<uw::evaluation::TrajectoryPose> ground_truth_trajectory;
-  uw::runtime::ReadMcapMessages<uw::domain::StateSnapshot>(
-      opt.bag_path, "/gt/state", [&](uint64_t, const uw::domain::StateSnapshot& snapshot) {
-        const auto pose = Pose3::FromProto(snapshot.pose_wb());
-        const double timestamp_s = static_cast<double>(snapshot.capture_timestamp().seconds()) +
-                                    static_cast<double>(snapshot.capture_timestamp().nanos()) * 1e-9;
-        ground_truth_trajectory.push_back({timestamp_s, pose});
-      });
 
   const auto ate =
       uw::evaluation::ComputeAte(estimated_trajectory, ground_truth_trajectory, 0.05, opt.align_ate);
@@ -766,6 +1012,10 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
     manifest.git_commit = git_commit;
     manifest.config_hash = config_hash;
     manifest.calibration_hash = calibration_hash;
+    manifest.derived_calibration_hash =
+        rectification_context.has_value()
+            ? Fnv1aHex(rectification_context->DerivedRig().SerializeAsString())
+            : "";
     manifest.dataset_or_scenario = opt.bag_path;
     manifest.simulator = "synthetic (apps/synth_bag_gen.cpp)";
     manifest.os_info = DetectOsInfo();
@@ -789,23 +1039,9 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
   // is individually opt-in via defaults.*/experiment `gates:` (see
   // include/runtime/config.hpp) except require_converged, which defaults on
   // because a stalled solver is never an acceptable output.
-  std::vector<std::string> gate_failures;
-  if (defaults.require_converged && !summary.converged) {
-    gate_failures.push_back("solver did not converge (" + std::to_string(summary.iterations) +
-                             " iterations, stalled)");
-  }
-  if (defaults.min_matched_ate_poses > 0 &&
-      static_cast<int>(ate.num_matched_poses) < defaults.min_matched_ate_poses) {
-    gate_failures.push_back("matched ATE poses " + std::to_string(ate.num_matched_poses) +
-                             " < required " + std::to_string(defaults.min_matched_ate_poses));
-  }
-  if (defaults.max_ate_rmse_m >= 0.0 && ate.rmse_m > defaults.max_ate_rmse_m) {
-    gate_failures.push_back("ATE rmse " + std::to_string(ate.rmse_m) + "m > max " +
-                             std::to_string(defaults.max_ate_rmse_m) + "m");
-  }
-  if (defaults.require_nonempty_map && (num_landmarks_discovered + num_map_evidence_points) == 0) {
-    gate_failures.push_back("map is empty (0 landmarks discovered, 0 map evidence points)");
-  }
+  const std::vector<std::string> gate_failures =
+      EvaluateReplayGates(defaults, summary, ate, num_landmarks_discovered, total_contributions,
+                          num_acoustic_optic_accepted);
   if (!gate_failures.empty()) {
     std::cerr << "GATE FAILURE:\n";
     for (const auto& failure : gate_failures) std::cerr << "  - " << failure << "\n";

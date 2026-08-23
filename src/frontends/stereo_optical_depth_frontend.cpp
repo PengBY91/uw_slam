@@ -31,6 +31,18 @@ std::optional<uw::domain::MeasurementEvidence> StereoOpticalDepthFrontend::Proce
     ++frames_rejected_;
     return std::nullopt;
   }
+  // Raw/rectified images must never be mixed into disparity-based depth: an
+  // unrectified pair does not satisfy the row-epipolar assumption
+  // BlockMatcher relies on, and StereoGeometry::Resolve() above only
+  // describes a RECTIFIED pair's geometry (platform architecture P1: raw
+  // vs rectified image contract).
+  if (!left_image.is_rectified() || !right_image.is_rectified() ||
+      left_image.header().sensor_frame().value() != params_.left_frame ||
+      right_image.header().sensor_frame().value() != params_.right_frame ||
+      left_image.width() != geometry.left.width || left_image.height() != geometry.left.height) {
+    ++frames_rejected_;
+    return std::nullopt;
+  }
 
   const auto disparity = matcher_.Compute(
       reinterpret_cast<const uint8_t*>(left_image.pixel_data().data()),

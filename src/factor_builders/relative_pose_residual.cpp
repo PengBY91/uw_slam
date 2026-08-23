@@ -7,11 +7,9 @@ namespace uw::factor_builders {
 using uw::sensor_models::Pose3;
 
 RelativePoseResidual::RelativePoseResidual(Pose3 measured_relative_pose,
-                                            double sqrt_information_translation,
-                                            double sqrt_information_rotation)
+                                            Eigen::Matrix<double, 6, 6> sqrt_information)
     : measured_relative_pose_(std::move(measured_relative_pose)),
-      sqrt_information_translation_(sqrt_information_translation),
-      sqrt_information_rotation_(sqrt_information_rotation) {}
+      sqrt_information_(std::move(sqrt_information)) {}
 
 Eigen::Matrix<double, 6, 1> RelativePoseResidual::ResidualOnly(const Pose3& pose_i,
                                                                 const Pose3& pose_j) const {
@@ -26,10 +24,10 @@ Eigen::Matrix<double, 6, 1> RelativePoseResidual::ResidualOnly(const Pose3& pose
   Eigen::Vector3d rotation_residual = 2.0 * rotation_error.vec();
   if (rotation_error.w() < 0.0) rotation_residual = -rotation_residual;
 
-  Eigen::Matrix<double, 6, 1> residual;
-  residual.head<3>() = sqrt_information_translation_ * translation_error;
-  residual.tail<3>() = sqrt_information_rotation_ * rotation_residual;
-  return residual;
+  Eigen::Matrix<double, 6, 1> raw_residual;
+  raw_residual.head<3>() = translation_error;
+  raw_residual.tail<3>() = rotation_residual;
+  return sqrt_information_ * raw_residual;
 }
 
 bool RelativePoseResidual::Evaluate(const std::vector<const double*>& parameters,

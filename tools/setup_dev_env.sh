@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Installs the C++ toolchain dependencies (Eigen3, Protobuf+protoc, GTest,
-# CMake) needed to build this repo. Tries apt first (works on a normal
+# OpenCV, CMake) needed to build this repo. Tries apt first (works on a normal
 # Ubuntu machine with unrestricted network); falls back to a dedicated
 # conda-forge environment if apt's package mirrors are unreachable/throttled
 # — that fallback is what this repo was actually built and tested with, in
@@ -12,9 +12,9 @@
 # environment you activate before building (see README.md).
 set -euo pipefail
 
-APT_PACKAGES=(protobuf-compiler libprotobuf-dev libeigen3-dev libgtest-dev cmake build-essential)
+APT_PACKAGES=(protobuf-compiler libprotobuf-dev libeigen3-dev libgtest-dev libopencv-dev cmake build-essential)
 CONDA_ENV_NAME="uw_slam_build"
-CONDA_PACKAGES=(eigen libprotobuf protobuf gtest cmake)
+CONDA_PACKAGES=(eigen libprotobuf protobuf gtest "opencv=4.*" cmake)
 
 try_apt() {
   command -v apt-get >/dev/null 2>&1 || return 1

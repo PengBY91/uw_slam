@@ -59,6 +59,18 @@ AssociationAuditResult AcousticOpticAssociator::Associate(
   *record.mutable_sonar_evidence_id() = top_evidence.evidence_id();
   record.set_time_delta_seconds(time_delta_seconds);
 
+  // First-checked, audit-first gate (see AcousticOpticAssociatorParams'
+  // doc comment): reject on a bad time delta before any geometric
+  // projection, not after -- a stale sonar/camera pairing has no business
+  // being scored as if it were spatially consistent, regardless of how
+  // well the numbers happen to line up.
+  if (time_delta_seconds > params_.max_time_delta_s) {
+    record.set_status(uw::domain::ACOUSTIC_OPTIC_ASSOCIATION_STATUS_REJECTED);
+    record.set_reason(uw::domain::ACOUSTIC_OPTIC_ASSOCIATION_REASON_TIME_DELTA);
+    result.records.push_back(record);
+    return result;
+  }
+
   if (!uw::domain::HasPayload<uw::domain::OpticalDepthPriorMeasurement>(optical_evidence)) {
     record.set_status(uw::domain::ACOUSTIC_OPTIC_ASSOCIATION_STATUS_REJECTED);
     record.set_reason(uw::domain::ACOUSTIC_OPTIC_ASSOCIATION_REASON_NO_CANDIDATE);

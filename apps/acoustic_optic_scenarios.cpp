@@ -60,7 +60,9 @@ uint8_t BaseTexture(int u, int v, int block_size, int repeated_period) {
 std::pair<uw::domain::ImageFrame, uw::domain::ImageFrame> MakeStereoPair(
     int block_size, double noise_std, int repeated_period, int patch_center_u, int patch_center_v,
     int patch_half_size, int target_disparity_px, int background_disparity_px, std::mt19937_64& rng) {
-  auto init_header = [](uw::domain::ImageFrame& image, const std::string& frame) {
+  auto init_header = [](uw::domain::ImageFrame& image, const std::string& sensor_id,
+                        const std::string& frame) {
+    image.mutable_header()->mutable_sensor_id()->set_value(sensor_id);
     image.mutable_header()->mutable_sensor_frame()->set_value(frame);
     image.mutable_header()->set_clock_domain(uw::domain::CLOCK_DOMAIN_SIMULATION);
     image.mutable_header()->set_validity(uw::domain::ObservationHeader::VALIDITY_OK);
@@ -73,8 +75,8 @@ std::pair<uw::domain::ImageFrame, uw::domain::ImageFrame> MakeStereoPair(
   };
 
   uw::domain::ImageFrame left, right;
-  init_header(left, "camera_left_link");
-  init_header(right, "camera_right_link");
+  init_header(left, "camera_left", "camera_left_link");
+  init_header(right, "camera_right", "camera_right_link");
 
   std::string left_pixels(static_cast<std::size_t>(kWidth) * kHeight, '\0');
   std::string right_pixels(static_cast<std::size_t>(kWidth) * kHeight, '\0');

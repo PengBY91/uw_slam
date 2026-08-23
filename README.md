@@ -37,8 +37,8 @@
 | 核心消息与接口 | Protobuf 提供跨语言规范化消息模型，定义观测、量测证据、因子、状态、地图、健康状态和标定；`measurement_api` 提供算法接口 | 已实现并有跨模块 round-trip 测试 |
 | 声呐前端 | CFAR 检测、极坐标转换、DBSCAN 聚类 | 已实现并有固定 fixture 回归测试 |
 | 因子构建 | 相对位姿、深度、声呐距离因子，声呐残差含解析雅可比 | 已实现并有数值验证 |
-| 光学相对位姿 | 立体特征点 VO：blob/Harris 检测 + NCC 匹配 + RANSAC 刚体拟合，从左右相机帧实时算相对位姿 | 已实现并接入 Demo（`estimator_mode: stereo_landmark_vo`），可替代默认的 ground-truth+noise 桩 `black_box_vio` |
-| 声光深度融合 | 声呐弧投影、跨模态关联、后验深度优化、局部点云数据交接 | 已实现九场景矩阵；CTest 强制执行最低有效覆盖 gate，质量收益与延迟 gate 仍为 opt-in |
+| 光学相对位姿 | 立体特征点 VO：blob/Harris 检测 + NCC 匹配 + RANSAC 刚体拟合，从左右相机帧实时算相对位姿；RANSAC 拟合附带数值 SE(3) 协方差，白化进 relative-pose 因子 | 已实现并接入 Demo（`estimator_mode: stereo_landmark_vo`），可替代默认的 ground-truth+noise 桩 `black_box_vio`；跟踪失败按 `max_consecutive_failures` 计入健康状态（HEALTHY/SUSPECT/UNAVAILABLE），单帧失败不丢失参考 keyframe |
+| 声光深度融合 | 声呐弧投影、跨模态关联、后验深度优化、局部点云数据交接 | 已实现九场景矩阵；CTest 强制执行最低有效覆盖 gate，质量收益与延迟 gate 仍为 opt-in；地图证据按 `contribution_mask` 区分 optical-only / acoustic-optic 两类点数，`acoustic_optic_demo.yaml` 对后者设了非零 gate |
 | 状态估计 | Eigen 实现的 Gauss-Newton/LM 位姿图求解器 | 已实现；后端接口可替换 |
 | 地图与评测 | `SubmapManager`；ATE、深度/融合和点云 Chamfer/completeness/outlier/F-score 指标 | ATE/深度/融合已用于现有验证；点云指标已有 API/单测但尚未接 Demo 或门禁；尚无 RPE |
 | 可复现实验 | 四层 YAML 配置、不可变 `RunManifest`、确定性 MCAP 回放 | Manifest 已写 git/config/标定 hash、平台、seed 和起止时间；完整数据/依赖 provenance 仍待补齐 |
@@ -49,7 +49,7 @@
 
 | 范围 | 技术 |
 |---|---|
-| 算法与运行时 | C++17、Eigen、yaml-cpp |
+| 算法与运行时 | C++17、Eigen、yaml-cpp、OpenCV 4（硬依赖，经 `opencv_adapters` 边界接入 stereo rectification） |
 | 核心消息与接口 | Protobuf、`measurement_api` |
 | 录制与回放 | MCAP |
 | 仿真适配 | Python 3.10+、HoloOcean |
@@ -66,7 +66,7 @@
 推荐 Linux 开发环境。基础依赖包括：
 
 - CMake 3.22+、支持 C++17 的 GCC；
-- Eigen3、Protobuf/`protoc`、GoogleTest、yaml-cpp；
+- Eigen3、Protobuf/`protoc`、GoogleTest、yaml-cpp、OpenCV 4（`core`、`calib3d`、`imgproc`）；
 - Python 3.10+、`venv` 和 `pip`；
 - 首次配置时可访问网络，以获取 MCAP C++ SDK。
 
@@ -78,7 +78,14 @@
 
 如果脚本使用 conda 回退路径，请按其输出把 `uw_slam_build` 环境的 `bin` 目录
 加入 `PATH`。yaml-cpp 不在该脚本当前的自动安装列表中，系统缺少它时需通过 apt
-安装 `libyaml-cpp-dev`，或在构建环境中安装 `yaml-cpp`。
+安装 `libyaml-cpp-dev`，或用下面的命令补全 conda 构建环境；该示例保留现有依赖并
+显式安装新的 OpenCV 硬依赖。conda-forge 上不加版本号的 `opencv` 已解析到 5.x，
+与 `find_package(OpenCV 4 REQUIRED ...)` 不兼容，必须显式钉住 `opencv=4.*`：
+
+```bash
+conda install -n uw_slam_build -c conda-forge \
+  eigen libprotobuf protobuf gtest yaml-cpp "opencv=4.*" cmake
+```
 
 ### 2. 一键验证
 
@@ -96,7 +103,7 @@ cat /tmp/uw_slam_verify/readme_smoke/summary.txt
 | `demo_trajectory.tum` | TUM 格式估计轨迹 |
 | `demo_run_manifest.json` | 本次运行实际使用的配置与版本信息 |
 
-2026-08-22 对当前工作树的实跑包含 136 个 CTest 测试（按用例展开）和 35 个 Python
+2026-08-23 对当前工作树的实跑包含 275 个 CTest 测试（按用例展开）和 50 个 Python
 测试，全部通过；默认合成回放 ATE RMSE 为 `0.0665821 m`（12 个匹配位姿）。数字会随
 模块增加而变化，`summary.txt` 和实际测试命令才是最终依据。
 
@@ -149,11 +156,33 @@ cat /tmp/demo_trajectory.tum
 `synth_bag_gen` 写入的 ground-truth+noise 证据；ATE 量级与默认桩相当（约
 0.06 m）。
 
+仓库还提供 `configs/experiment/acoustic_optic_demo.yaml`，用同一条 `synth_bag_gen`/
+`replay_demo` 管线跑一个声光目标真正落在相机窄视场内的场景
+（`configs/scenario/acoustic_optic_demo.yaml`），产出真实的 `ACCEPTED` 声光关联，
+并开启 `min_acoustic_optic_accepted`/`min_acoustic_optic_map_points` 两个非零 gate
+（seed 42 实测 12 个 keyframe 中 3 个 accepted / 3 个 acoustic-optic map point）；默认
+`synthetic_smoke.yaml` 的三个目标不在相机视场内，这两个 gate 保持关闭，见
+[配置说明](./configs/README.md) 的「P0 非放空 gate」一节。
+
 仓库还提供 `configs/experiment/real_holoocean_vo.yaml`，用于回放已有的真实 HoloOcean
-双目录制。当前审计样本约 76 MB、50 个 keyframe，不含声呐/IMU/DVL；它产出 49 条 VO
-相对位姿和 50 条深度因子，对齐后 ATE RMSE 为 `0.5596 m`，但求解器 30 次迭代后仍
-`stalled`。这证明录制数据能进入离线 VO 管线，不代表真实重建或实时闭环已经跑通；
-完整证据见[生产就绪度路线图 2.4 节](./docs/uw-slam-production-readiness-and-roadmap-2026-08-21.md#24-真实-holoocean-录制回放)。
+双目录制。当前审计样本约 76 MB、50 个 keyframe，不含声呐/IMU/DVL；2026-08-23 复核实测
+产出 46 条 VO 相对位姿、47 个 keyframe，对齐后 ATE RMSE 为 `4.32138 m`，求解器 30 次
+迭代后仍 `stalled`——一般 stereo rectification 接入 `replay_demo` 后这条真实数据路径
+的数字明显变差（此前是 49 条/50 个 keyframe、ATE `0.5596 m`）。根因已定位到具体机制但
+未修复：这台真实机体左右相机的标定基线不是纯 y 轴平移（见
+`configs/rig/example_auv_real_camera.yaml` 头部注释，x/z 分量占基线量级的 15-17%），
+`cv::stereoRectify` 为了让两个虚拟相机满足行对齐（row-epipolar）约束，必须对两个相机
+施加一个不小的旋转，这个旋转把 left 相机的主点从标定值 `cx≈256`（图像中心）搬到了
+`cx≈170`——用 `alpha=-1`（更保守的缩放/裁切）复核过，`cx` 分毫不差还是 170.043，
+证明这个偏移完全来自旋转本身，跟 `alpha`/裁切策略无关，也不是实现 bug。
+`stereo_landmark_vo_frontend` 的 Harris 角点检测/时序匹配/RANSAC 只在近乎平行基线的
+合成数据上验证过，在这组主点大幅偏移、需要真实旋转对齐的真实标定上表现变差——跟
+`camera_rectifier`（`include/sensor_models/camera_rectifier.hpp`）此前因双线性重采样
+削弱纹理、被搁置不接入 `replay_demo` 的已知风险是同一类问题，需要后续联合调参才能
+恢复，不在这次改动范围内，详见
+[生产就绪度路线图 2.4 节](./docs/uw-slam-production-readiness-and-roadmap-2026-08-21.md#24-真实-holoocean-录制回放)
+的复核记录。这证明录制数据能进入离线 VO 管线，不代表真实重建或实时闭环已经跑通，
+当前数字也不应被当作"变好了"。
 
 ## 架构
 
@@ -186,17 +215,26 @@ flowchart LR
     CORE --> RUNTIME[runtime<br/>配置、队列、MCAP、Manifest]
     CORE --> EVAL[evaluation<br/>ATE + 深度/融合指标]
     CORE --> ADAPTERS[adapters<br/>HoloOcean、ROS2、第三方]
+    CORE --> OPENCV_ADAPTERS[opencv_adapters<br/>stereo rectification]
+    OPENCV[OpenCV 4<br/>硬依赖] --> OPENCV_ADAPTERS
     ALGO --> APPLICATION[application<br/>用例编排]
     RUNTIME --> APPLICATION
     EVAL --> APPLICATION
     ADAPTERS --> APPLICATION
+    OPENCV_ADAPTERS --> APPLICATION
     APPLICATION --> APPS[apps<br/>参数解析与可执行入口]
 ```
 
 依赖只允许从左向右（`domain → core → {frontends, factor_builders, estimation,
-mapping, runtime, evaluation, adapters} → application → apps`）。`include/`、`src/` 下的生产
+mapping, runtime, evaluation, adapters, opencv_adapters} → application → apps`）。`include/`、`src/` 下的生产
 代码不能包含 ROS2、HoloOcean 或第三方 vendor 头文件，也不能使用旧的手写 `uw/...`
-include 路径；`tools/lint/check_no_ros_in_core.sh`（实际实现在
+include 路径。OpenCV 4 现在是构建硬依赖，`opencv2/...` 头与 OpenCV 类型只允许出现在
+`adapters/opencv/`（lint 角色名 `opencv_adapters`）边界内——`opencv_adapters::
+StereoRectificationContext`（`include/opencv_adapters/stereo_rectifier.hpp` +
+`src/opencv_adapters/stereo_rectifier.cpp`）已实现并接入 `apps/replay_demo`，支持
+任意 plumb-bob 畸变、不同内参、非平行/非水平的一般离轴 stereo rig，产出 rectified
+images 和带新 `calibration_version` 的 derived `RigCalibrationSnapshot`——不止是
+平行双目假设下的恒等快速路径。`tools/lint/check_no_ros_in_core.sh`（实际实现在
 `tools/lint/check_layer_dependencies.py`）会强制检查这一点。Protobuf schema 是
 C++ 与 Python 跨语言规范化消息模型的唯一来源。
 
@@ -325,7 +363,7 @@ ROS2 默认不参与构建。启用 `-DUW_BUILD_ROS2=ON` 前，需要：
 
 1. **不要修改 `external_repos/` 的子仓库。** 它们是只读参考和移植来源。
 2. **保持单向依赖。** `domain → core → {frontends, factor_builders, estimation,
-   mapping, runtime, evaluation, adapters} → application → apps`。
+   mapping, runtime, evaluation, adapters, opencv_adapters} → application → apps`。
 3. **先改 schema。** 新增跨语言规范化消息字段时修改 `schemas/proto/`，不要在 C++ 与
    Python 中维护两套平行结构。
 4. **保留代码出处。** 移植第三方实现前先阅读 [`NOTICE`](./NOTICE)，保留版权头并
@@ -359,9 +397,15 @@ ROS2 默认不参与构建。启用 `-DUW_BUILD_ROS2=ON` 前，需要：
 - SVIn 的非 ROS2 provider 具有注入点单元测试；ROS2 wrapper 仍是文档骨架，未编译。
 - `estimator_mode` 与 `landmark_detector` 已驱动真实分支；sonar/optical frontend 和 map
   backend 目前仍各只有一个受支持标识符，配置校验只能 fail-fast，尚无第二实现可切换。
-- `camera_rectifier` 已实现并通过 plumb-bob 去畸变单元测试，但只支持当前平行双目
-  几何假设，不是通用离轴极线校正器，也尚未接入 `replay_demo`。在现有真实 bag 上直接
-  启用会因重采样削弱纹理而降低 VO 跟踪率，仍需联合调参和数据回归。
+- `opencv_adapters::StereoRectificationContext` 已实现并接入 `replay_demo`：一般离轴
+  stereo rig（不同内参、任意 plumb-bob 畸变、非平行/非水平外参）在进入
+  `StereoOpticalDepthFrontend`/`StereoLandmarkVoFrontend` 前会被 rectify，frontend 只
+  消费 rectified images + derived rig，不再自己假设平行双目几何。
+- `include/sensor_models/camera_rectifier.hpp` 的 `CameraRectifier` 是另一个更早、更
+  局限的原语（只做平行双目假设下同一相机的逐目 plumb-bob 去畸变，不做双目对齐），
+  仍未接入 `replay_demo`。在现有真实 bag 上直接启用它会因重采样削弱纹理而降低 VO
+  跟踪率（50/50 降到 8/50），仍需联合调参和数据回归——`replay_demo` 现在用的一般
+  rectification 走的是上面 `opencv_adapters` 的独立实现，不依赖这个原语。
 - 当前求解器只提供 Eigen Gauss-Newton/LM，Ceres/GTSAM 后端属于延后决策。
 - 位姿图只优化 keyframe，不联合优化路标；声呐 elevation 初值不会被后续因子精化。
 - reliability 多路信息上限目前只实现固定常数，尚未实现完整的自适应策略。

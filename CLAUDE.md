@@ -59,9 +59,9 @@
 export PATH="$HOME/miniconda3/envs/uw_slam_build/bin:$PATH"
 cmake -S . -B build -DCMAKE_PREFIX_PATH="$HOME/miniconda3/envs/uw_slam_build"
 cmake --build build -j"$(nproc)"
-ctest --test-dir build --output-on-failure   # 当前工作树 136 个 case；会变化，以实跑为准
+ctest --test-dir build --output-on-failure   # 当前工作树 275 个 case；会变化，以实跑为准
 
-(cd adapters/holoocean && .venv/bin/pytest -q)  # 当前 35 个 case；先按 README 安装 dev extra
+(cd adapters/holoocean && .venv/bin/pytest -q)  # 当前 50 个 case；先按 README 安装 dev extra
 
 tools/lint/check_no_ros_in_core.sh           # 依赖不变量检查（兼容入口，实际跑 tools/lint/check_layer_dependencies.py）
 ```

@@ -11,6 +11,7 @@ std::string RunManifest::ToJson() const {
       << "  \"git_commit\": \"" << git_commit << "\",\n"
       << "  \"config_hash\": \"" << config_hash << "\",\n"
       << "  \"calibration_hash\": \"" << calibration_hash << "\",\n"
+      << "  \"derived_calibration_hash\": \"" << derived_calibration_hash << "\",\n"
       << "  \"model_hash\": \"" << model_hash << "\",\n"
       << "  \"dataset_or_scenario\": \"" << dataset_or_scenario << "\",\n"
       << "  \"simulator\": \"" << simulator << "\",\n"

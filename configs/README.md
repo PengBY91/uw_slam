@@ -75,3 +75,28 @@ plan 的一次集成，见代码库参考文档 6.12 节和对应 plan 文档）
 `MapEvidence` bucket；没有相机（或没传 `--experiment`）时两个 app 行为逐字节不变
 （`integration.replay_determinism` 把关）。**明确没做的事**：稠密深度没有变成位姿图的新
 factor 类型——`PoseGraphProblem`/求解器/轨迹 ATE 完全不受这次集成影响。
+
+## P0 非放空 gate（`gates:`）
+
+`experiment/*.yaml` 根层的 `gates:` 覆盖 `defaults/*.yaml` 的同名字段（`include/runtime/
+config.hpp` 的 `PlatformDefaultsConfig`），`apps/replay_demo` 求解完之后逐条检查
+（`application::EvaluateReplayGates`），任何一条不满足就非零退出（exit 2）——outputs（轨迹/
+manifest）仍然照常写出，只影响退出码，方便失败时仍能排查。除 `require_converged`（默认开，
+求解器不收敛任何时候都不可接受）外全部默认关闭（阈值 `<=0`/`false`），需要每个 experiment
+自己按实测结果决定开不开、开多严：
+
+- `require_converged` / `max_ate_rmse_m` / `min_matched_ate_poses` / `require_nonempty_map`：
+  求解器收敛性、ATE、地图非空——`require_nonempty_map` 只要求"有地图内容"，optical-only 深度
+  点就能满足它，不要求声光关联本身成功。
+- `min_acoustic_optic_accepted` / `min_acoustic_optic_map_points`：专门针对声光关联本身
+  （`contribution_mask == DEPTH_CONTRIBUTION_ACOUSTIC_OPTIC`，在
+  `mapping::BuildMapEvidenceFromFusedDepth` 抹掉逐点来源信息**之前**由
+  `application::CountDepthContributions` 计数，见该函数注释）——**只在
+  `configs/experiment/acoustic_optic_demo.yaml` 开启**，因为只有它的 scenario
+  （`scenario/acoustic_optic_demo.yaml`）把声呐目标特意放在相机窄视场内，`apps/synth_bag_gen.cpp`
+  会把该目标同时画进双目图像（不止画普通 VO landmark），使真实 ACCEPTED 关联可达（seed 42
+  实测 12 个 keyframe 中 3 个 accepted / 3 个 acoustic-optic map point）。`synthetic_smoke.yaml`
+  的默认三个目标经真实几何计算不在相机视场内（见该文件注释），这两个 gate 必须保持关闭——不能
+  为了让实验"变绿"而放宽关联判定或伪造 acceptance。控制台汇总（`acoustic-optic: ... accepted,
+  ... map evidence points added (N optical-only, M acoustic-optic)`）和 gate 失败信息都会打印
+  这两类点数，方便区分"完全没有地图内容"和"有地图内容但没有真正的声光融合"。

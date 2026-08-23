@@ -17,6 +17,11 @@
 namespace uw::frontends {
 
 struct AcousticOpticAssociatorParams {
+  // First-checked, audit-first gate (before any geometric projection):
+  // a bundle whose sonar/camera capture times disagree by more than this
+  // is rejected outright, with the REAL delta still recorded, rather than
+  // ever being scored geometrically.
+  double max_time_delta_s = 0.05;
   std::string camera_sensor_id = "camera_left";
   std::string camera_frame = "camera_left_link";
   std::string sonar_sensor_id = "sonar0";

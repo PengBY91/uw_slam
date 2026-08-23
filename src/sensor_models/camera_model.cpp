@@ -1,6 +1,11 @@
 #include "sensor_models/camera_model.hpp"
 
+#include <cmath>
 #include <optional>
+
+#include <Eigen/Geometry>
+
+#include "sensor_models/geometry.hpp"
 
 namespace uw::sensor_models {
 
@@ -22,12 +27,38 @@ std::optional<Eigen::Matrix4d> FindEdgeTransform(const uw::domain::RigCalibratio
     Eigen::Matrix4d m;
     for (int row = 0; row < 4; ++row) {
       for (int col = 0; col < 4; ++col) {
-        m(row, col) = edge.transform().matrix_row_major(row * 4 + col);
+        const double v = edge.transform().matrix_row_major(row * 4 + col);
+        if (!std::isfinite(v)) return std::nullopt;
+        m(row, col) = v;
       }
     }
     return m;
   }
   return std::nullopt;
+}
+
+bool ValidK(const uw::domain::CameraIntrinsics& intrinsics) {
+  if (intrinsics.k_matrix_row_major_size() != 9) return false;
+  for (double v : intrinsics.k_matrix_row_major()) {
+    if (!std::isfinite(v)) return false;
+  }
+  return intrinsics.k_matrix_row_major(0) > 0.0 && intrinsics.k_matrix_row_major(4) > 0.0;
+}
+
+Pose3 PoseFromMatrix(const Eigen::Matrix4d& m) {
+  Pose3 pose;
+  pose.translation = m.topRightCorner<3, 1>();
+  pose.rotation = Eigen::Quaterniond(m.topLeftCorner<3, 3>()).normalized();
+  return pose;
+}
+
+// The zero-translation Pose3 that converts a point already expressed in a
+// camera's BODY-convention link frame into that same camera's OPTICAL frame
+// -- see OpticalFromBodyRotation()'s own doc comment for the axis mapping.
+Pose3 LinkToOptical() {
+  Pose3 pose;
+  pose.rotation = Eigen::Quaterniond(OpticalFromBodyRotation()).conjugate();
+  return pose;
 }
 
 }  // namespace
@@ -63,20 +94,39 @@ StereoGeometry StereoGeometry::Resolve(const uw::domain::RigCalibrationSnapshot&
   const auto* left_intrinsics = FindCamera(rig, left_sensor_id);
   const auto* right_intrinsics = FindCamera(rig, right_sensor_id);
   if (left_intrinsics == nullptr || right_intrinsics == nullptr) return geometry;
+  if (!ValidK(*left_intrinsics) || !ValidK(*right_intrinsics)) return geometry;
+  if (left_intrinsics->width() == 0 || left_intrinsics->height() == 0) return geometry;
+  if (left_intrinsics->width() != right_intrinsics->width() ||
+      left_intrinsics->height() != right_intrinsics->height()) {
+    return geometry;
+  }
 
   const auto left_transform = FindEdgeTransform(rig, left_frame);
   const auto right_transform = FindEdgeTransform(rig, right_frame);
   if (!left_transform.has_value() || !right_transform.has_value()) return geometry;
 
-  const Eigen::Matrix3d left_rotation = left_transform->topLeftCorner<3, 3>();
-  const Eigen::Matrix3d right_rotation = right_transform->topLeftCorner<3, 3>();
-  if (!left_rotation.isApprox(right_rotation, 1e-9)) return geometry;
+  const Pose3 link_to_optical = LinkToOptical();
+  const Pose3 b_T_left_optical = PoseFromMatrix(*left_transform) * link_to_optical;
+  const Pose3 b_T_right_optical = PoseFromMatrix(*right_transform) * link_to_optical;
+  const Pose3 left_T_right = b_T_left_optical.Inverse() * b_T_right_optical;
+
+  if (!left_T_right.rotation.toRotationMatrix().isApprox(Eigen::Matrix3d::Identity(), 1e-8)) {
+    return geometry;
+  }
+  if (std::abs(left_T_right.translation.y()) > 1e-8 ||
+      std::abs(left_T_right.translation.z()) > 1e-8) {
+    return geometry;
+  }
+  // Disparity sign convention (BlockMatcher, StereoLandmarkVoFrontend): a
+  // point in view produces disparity_px = left_u - right_u > 0, which only
+  // holds when the right camera's optical origin sits at a POSITIVE x
+  // offset from the left camera's -- not merely a nonzero one.
+  if (left_T_right.translation.x() <= 0.0) return geometry;
 
   geometry.left = PinholeCamera::FromIntrinsics(*left_intrinsics);
   geometry.right = PinholeCamera::FromIntrinsics(*right_intrinsics);
-  geometry.baseline_m =
-      (left_transform->topRightCorner<3, 1>() - right_transform->topRightCorner<3, 1>()).norm();
-  geometry.valid = geometry.baseline_m > 1e-9;
+  geometry.baseline_m = left_T_right.translation.x();
+  geometry.valid = true;
   return geometry;
 }
 

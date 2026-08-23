@@ -15,9 +15,14 @@ estimation:
 
 reliability:
   # 架构文档第 8.4 节：final_information = min(learned, physical, calibration, cross_modal)
-  # v1 只实现了固定常数上限，真正的多路 cap 是后续工作。
+  # v1 只实现了固定常数上限，真正的多路 cap 是后续工作。relative_pose 拆成
+  # translation/rotation 两个独立上限（不再是单一 scalar）：
+  # RelativePoseFactorBuilder 现在从 VO 前端的真实 6x6 covariance 白化残差，
+  # 一个共用上限会让平移/旋转互相拖累对方的量级。
   default_sqrt_information:
-    relative_pose: 20.0
+    relative_pose:
+      translation: 20.0
+      rotation: 20.0
     sonar_range: 15.0
     depth: 20.0
 

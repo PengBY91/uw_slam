@@ -21,6 +21,24 @@ target_include_directories(core PUBLIC "${PROJECT_SOURCE_DIR}/include")
 target_link_libraries(core PUBLIC uw::domain Eigen3::Eigen)
 uw_apply_library_defaults(core)
 
+add_library(measurement_api INTERFACE)
+add_library(uw::measurement_api ALIAS measurement_api)
+target_include_directories(measurement_api INTERFACE "${PROJECT_SOURCE_DIR}/include")
+target_link_libraries(measurement_api INTERFACE uw::core)
+
+add_library(opencv_adapters STATIC
+  adapters/opencv/src/stereo_rectifier.cpp
+)
+add_library(uw::opencv_adapters ALIAS opencv_adapters)
+target_include_directories(opencv_adapters PUBLIC
+  "${PROJECT_SOURCE_DIR}/adapters/opencv/include"
+)
+target_link_libraries(opencv_adapters
+  PUBLIC uw::measurement_api
+  PRIVATE ${OpenCV_LIBS}
+)
+uw_apply_library_defaults(opencv_adapters)
+
 add_library(frontends STATIC
   src/frontends/cfar_detector.cpp
   src/frontends/dbscan.cpp
@@ -38,7 +56,7 @@ add_library(frontends STATIC
 )
 add_library(uw::frontends ALIAS frontends)
 target_include_directories(frontends PUBLIC "${PROJECT_SOURCE_DIR}/include")
-target_link_libraries(frontends PUBLIC uw::core)
+target_link_libraries(frontends PUBLIC uw::core uw::measurement_api)
 uw_apply_library_defaults(frontends)
 
 add_library(factor_builders STATIC
@@ -51,7 +69,7 @@ add_library(factor_builders STATIC
 )
 add_library(uw::factor_builders ALIAS factor_builders)
 target_include_directories(factor_builders PUBLIC "${PROJECT_SOURCE_DIR}/include")
-target_link_libraries(factor_builders PUBLIC uw::core)
+target_link_libraries(factor_builders PUBLIC uw::core uw::measurement_api)
 uw_apply_library_defaults(factor_builders)
 
 add_library(estimation STATIC
@@ -61,7 +79,7 @@ add_library(estimation STATIC
 )
 add_library(uw::estimation ALIAS estimation)
 target_include_directories(estimation PUBLIC "${PROJECT_SOURCE_DIR}/include")
-target_link_libraries(estimation PUBLIC uw::core Eigen3::Eigen)
+target_link_libraries(estimation PUBLIC uw::core uw::measurement_api Eigen3::Eigen)
 uw_apply_library_defaults(estimation)
 
 add_library(mapping STATIC
@@ -71,7 +89,7 @@ add_library(mapping STATIC
 )
 add_library(uw::mapping ALIAS mapping)
 target_include_directories(mapping PUBLIC "${PROJECT_SOURCE_DIR}/include")
-target_link_libraries(mapping PUBLIC uw::core)
+target_link_libraries(mapping PUBLIC uw::core uw::measurement_api)
 uw_apply_library_defaults(mapping)
 
 add_library(runtime STATIC
@@ -85,7 +103,7 @@ add_library(runtime STATIC
 add_library(uw::runtime ALIAS runtime)
 target_include_directories(runtime PUBLIC "${PROJECT_SOURCE_DIR}/include")
 target_link_libraries(runtime PUBLIC
-  uw::core mcap_impl protobuf::libprotobuf yaml-cpp::yaml-cpp Eigen3::Eigen
+  uw::core uw::measurement_api mcap_impl protobuf::libprotobuf yaml-cpp::yaml-cpp Eigen3::Eigen
 )
 uw_apply_library_defaults(runtime)
 
@@ -136,9 +154,11 @@ add_library(application STATIC
 )
 add_library(uw::application ALIAS application)
 target_include_directories(application PUBLIC "${PROJECT_SOURCE_DIR}/include")
-target_link_libraries(application PRIVATE
-  uw::domain uw::core uw::runtime uw::estimation uw::evaluation
-  uw::factor_builders uw::mapping uw::frontends uw::spatial_index_adapters
+target_link_libraries(application
+  PUBLIC uw::domain uw::core
+  PRIVATE uw::runtime uw::estimation uw::evaluation
+          uw::factor_builders uw::mapping uw::frontends uw::opencv_adapters
+          uw::spatial_index_adapters
 )
 uw_apply_library_defaults(application)
 if(UW_BUILD_CERES_SOLVER)
