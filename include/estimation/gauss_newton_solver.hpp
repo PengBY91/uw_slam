@@ -58,10 +58,13 @@ class GaussNewtonSolver {
   // Evaluates every residual block once. If `jtj`/`jtr` are non-null,
   // accumulates the normal equations restricted to the free (non-fixed)
   // keyframes indexed by `free_index`. Always returns the total cost
-  // (0.5 * sum ||r||^2). Requires friend access to PoseGraphProblem's
-  // private keyframe/residual-block storage (see the friend declaration
-  // there), hence this lives as a method rather than a free function.
+  // (0.5 * sum ||r||^2). `param_ptrs` maps keyframe id to its raw 7-double
+  // parameter block, obtained once per Solve() call via PoseGraphProblem's
+  // public MutableParameterBlocks() (see pose_graph_problem.hpp) — this
+  // solver has no special/friend access to PoseGraphProblem, so a second
+  // solver can be added the same way.
   static double EvaluateAll(PoseGraphProblem& problem,
+                            const std::unordered_map<std::string, double*>& param_ptrs,
                             const std::unordered_map<std::string, int>& free_index,
                             Eigen::MatrixXd* jtj, Eigen::VectorXd* jtr);
 };

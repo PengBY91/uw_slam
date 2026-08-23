@@ -25,6 +25,11 @@ struct SqrtInformationDefaults {
 };
 
 struct PlatformDefaultsConfig {
+  // "gauss_newton_v1" (default, uw::estimation::GaussNewtonSolver) or
+  // "ceres_v1" (uw::adapters::ceres_solver::CeresPoseGraphSolver — only
+  // usable if this binary was built with UW_BUILD_CERES_SOLVER=ON; selected
+  // but not compiled in is a fatal startup error, not a silent fallback).
+  // See docs/superpowers/specs/2026-08-23-solver-and-mapping-oss-adoption.md.
   std::string solver = "gauss_newton_v1";
   int max_iterations = 30;
   double initial_lambda = 1e-3;
@@ -114,7 +119,8 @@ ExperimentConfig LoadExperimentConfig(const std::string& path);
 
 // Checks that every algorithm-selection field in `config`
 // (sonar_frontend/optical_frontend/map_backend/estimator_mode/
-// landmark_detector) names an implementation this binary actually has,
+// landmark_detector/defaults.solver) names an implementation this binary
+// actually has,
 // instead of being silently ignored — see docs/uw-slam-production-
 // readiness-and-roadmap-2026-08-21.md section 10's "配置存在但不驱动实现"
 // risk. Returns the reason the first unrecognized field is invalid, or

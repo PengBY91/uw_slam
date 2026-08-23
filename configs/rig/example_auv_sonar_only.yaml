@@ -1,0 +1,52 @@
+# 求解器规模基准专用（docs/superpowers/specs/2026-08-23-solver-and-mapping-oss-
+# adoption.md §9/§11.2）：rig/example_auv.yaml 去掉 cameras 块和两个相机的
+# frame_tree 条目，只保留 IMU/声呐/深度。
+#
+# 为什么需要单独一份、不能直接复用 example_auv.yaml：`apps/replay_demo` 和
+# `apps/synth_bag_gen` 都用 `config.rig.cameras_size() > 0` 判断要不要跑双目立体
+# 稠密深度 + acoustic-optic 融合那条路径（每个 keyframe 都是逐像素处理，12 帧的
+# synthetic_smoke 场景就已经产出 340 万 map evidence points）——这条路径和"求解器
+# 求解位姿图快不快"完全是两回事，但 1000 个 keyframe 时会成为压倒性的墙钟瓶颈，
+# 把求解器本身的耗时对比完全淹没掉（实测：gauss_newton_v1 在 1000 keyframe 上第
+# 一次 LM 迭代很快完成，但接下来的 acoustic-optic 逐像素融合跑了 100 秒以上还没
+# 结束）。用一份没有相机的 rig，让 synth_bag_gen 不写相机话题、replay_demo 不跑
+# 这条稠密路径，压力场景才能干净地只测求解器在大图上的表现，不是被无关的稠密
+# 视觉处理主导。
+
+calibration_version: "example_auv_sonar_only_v1"
+
+frame_tree:
+  - parent_frame: base_link
+    child_frame: imu_link
+    transform_row_major:
+      [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]
+  - parent_frame: base_link
+    child_frame: sonar_link
+    transform_row_major:
+      [1,0,0,0.1, 0,1,0,0, 0,0,1,-0.05, 0,0,0,1]
+
+time_offset_seconds:
+  sonar0: 0.0
+  imu0: 0.0
+  depth0: 0.0
+
+imu_noise:
+  sigma_gyro_c: 1.6968e-4
+  sigma_accel_c: 2.0e-3
+  sigma_gyro_bias: 1.9393e-5
+  sigma_accel_bias: 3.0e-3
+  rate_hz: 200
+  gravity_mps2: 9.80665
+
+sonar_beam_models:
+  - sensor_id: sonar0
+    horizontal_fov_rad: 2.09
+    elevation_aperture_rad: 0.19
+    range_resolution_m: 0.02
+    nominal_speed_of_sound_mps: 1500.0
+    sonar_enabled: true
+
+depth_models:
+  - sensor_id: depth0
+    noise_sigma_m: 0.05
+    depth_enabled: true

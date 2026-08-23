@@ -63,3 +63,52 @@ TEST(PoseGraphSolver, ThreeKeyframeChainConvergesToTruth) {
   EXPECT_NEAR((solved_kf1.translation - true_kf1.translation).norm(), 0.0, 1e-3);
   EXPECT_NEAR((solved_kf2.translation - true_kf2.translation).norm(), 0.0, 1e-3);
 }
+
+// Covers the backend-agnostic accessors that replaced the earlier
+// `friend class GaussNewtonSolver` — any future solver adapter (e.g. Ceres)
+// relies on these having exactly this shape.
+TEST(PoseGraphProblem, MutableParameterBlocksMatchKeyframeOrderAndAreWritable) {
+  PoseGraphProblem problem;
+  Pose3 pose0;
+  pose0.translation = Eigen::Vector3d(1.0, 2.0, 3.0);
+  Pose3 pose1;
+  pose1.translation = Eigen::Vector3d(4.0, 5.0, 6.0);
+  problem.AddKeyframe("kf0", pose0, /*fixed=*/true);
+  problem.AddKeyframe("kf1", pose1, /*fixed=*/false);
+
+  const auto blocks = problem.MutableParameterBlocks();
+  ASSERT_EQ(blocks.size(), problem.KeyframeOrder().size());
+  for (std::size_t i = 0; i < blocks.size(); ++i) {
+    EXPECT_EQ(blocks[i].keyframe_id, problem.KeyframeOrder()[i]);
+    EXPECT_EQ(blocks[i].fixed, problem.IsFixed(blocks[i].keyframe_id));
+    ASSERT_NE(blocks[i].params, nullptr);
+  }
+
+  // Mutating through the returned pointer is visible via GetKeyframePose —
+  // this is exactly what a solver's optimization step relies on.
+  auto* kf1_params = blocks[1].params;
+  kf1_params[0] = 42.0;
+  EXPECT_DOUBLE_EQ(problem.GetKeyframePose("kf1").translation.x(), 42.0);
+}
+
+TEST(PoseGraphProblem, ResidualBindingsMatchAddOrderAndInvolvedKeyframes) {
+  PoseGraphProblem problem;
+  problem.AddKeyframe("kf0", Pose3{}, /*fixed=*/true);
+  problem.AddKeyframe("kf1", Pose3{});
+  problem.AddKeyframe("kf2", Pose3{});
+
+  auto* relative_block =
+      new RelativePoseResidual(Pose3{}, /*sqrt_info_t=*/1.0, /*sqrt_info_r=*/1.0);
+  auto* depth_block = new DepthResidual(/*measured_depth_m=*/1.0, /*sqrt_information=*/1.0);
+  problem.AddResidualBlock(std::unique_ptr<RelativePoseResidual>(relative_block), {"kf0", "kf1"});
+  problem.AddResidualBlock(std::unique_ptr<DepthResidual>(depth_block), {"kf2"});
+
+  const auto bindings = problem.ResidualBindings();
+  ASSERT_EQ(bindings.size(), 2u);
+  EXPECT_EQ(bindings[0].block, relative_block);
+  ASSERT_NE(bindings[0].involved_keyframes, nullptr);
+  EXPECT_EQ(*bindings[0].involved_keyframes, (std::vector<std::string>{"kf0", "kf1"}));
+  EXPECT_EQ(bindings[1].block, depth_block);
+  ASSERT_NE(bindings[1].involved_keyframes, nullptr);
+  EXPECT_EQ(*bindings[1].involved_keyframes, (std::vector<std::string>{"kf2"}));
+}

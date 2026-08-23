@@ -1,0 +1,30 @@
+# 求解器规模基准场景（ceres_v1）：跟 synthetic_stress.yaml 完全一样（含不带相机的
+# rig，见该文件注释），只是 estimation.solver 换成 ceres_v1（需要
+# UW_BUILD_CERES_SOLVER=ON 编译）。见 docs/superpowers/specs/2026-08-23-solver-and-
+# mapping-oss-adoption.md §6.1.1/§9、tools/bench/solver_benchmark.sh。
+
+rig: rig/example_auv_sonar_only.yaml
+scenario: scenario/synthetic_stress.yaml
+defaults: defaults/platform.yaml
+
+frontends:
+  optical: stereo_depth_frontend_v1
+  sonar: sonar_cfar_frontend_v1
+
+factor_builders:
+  - relative_pose_v1
+  - sonar_range_v1
+  - depth_v1
+
+estimator_mode: black_box_vio
+map_backend: submap_point_cloud_v1
+
+estimation:
+  solver: ceres_v1
+
+output:
+  trajectory_format: tum
+  write_run_manifest: true
+
+gates:
+  require_converged: false

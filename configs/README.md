@@ -16,8 +16,9 @@
 条实现可切换。`map_backend` 是预留的地图实现选择字段，目前只支持
 `submap_point_cloud_v1`。**第一个例外**：`estimator_mode` 是保留兼容性的历史字段名。当前它只选择
 相对位姿输入来源：`black_box_vio` 读取 bag 中外部或预生成的相对位姿量测，
-`stereo_landmark_vo` 从双目图像在线计算相对位姿；两条路径最终使用同一个
-`GaussNewtonSolver`，并不切换估计求解器。`stereo_landmark_vo` 需要 rig 带相机，并使用
+`stereo_landmark_vo` 从双目图像在线计算相对位姿；这条字段本身不切换估计求解器，两条路径
+产出的相对位姿量测最终喂给同一个求解器实例——但求解器本身现在是独立可切换的，见下面
+第三个例外。`stereo_landmark_vo` 需要 rig 带相机，并使用
 `include/frontends/stereo_landmark_vo_frontend.hpp` 从 `/raw/camera/left,right` 实时计算量测，
 替代默认 `black_box_vio` 从 `/evidence/relative_pose` 读取的量测；见
 `configs/experiment/synthetic_smoke_vo.yaml`。**同一分支下的第二个例
@@ -25,7 +26,18 @@
 `stereo_landmark_vo_frontend` 内部用哪个 landmark 检测器——`bright_blob`
 （`LandmarkBlobDetector`）是给 `synth_bag_gen` 的合成高亮方块场景调的，`harris_corner`
 （`HarrisCornerDetector`）是给真实相机画面（没有理由出现孤立高亮色块）用的，见两者各自的头文件
-注释。
+注释。**第三个例外**：`estimation.solver`（`gauss_newton_v1` 默认值 / `ceres_v1`）真的会被
+消费，选择 `PoseGraphProblem` 实际用哪个求解器求解——这是
+`docs/superpowers/specs/2026-08-23-solver-and-mapping-oss-adoption.md` 描述的基准决策门
+工作单元：`ceres_v1` 需要编译时打开 `UW_BUILD_CERES_SOLVER`（默认关闭，因为 Ceres 依赖较重
+——SuiteSparse/glog/gflags），选了 `ceres_v1` 但没编译进 Ceres 支持会在启动时直接报错退出，
+不会静默回退到 `gauss_newton_v1`。默认值目前仍是 `gauss_newton_v1`，切换默认值本身是一个
+需要实测基准数据支撑的决策，还没有做。
+
+*注：`configs/defaults/platform.yaml` 里 `estimation.solver` 旁边的注释仍写着"第一版图优化
+库未定，见架构文档第 20 节延后决策"——这不是过时未更新，是刻意保留：`ceres_v1` 只是让这条
+延后决策第一次有了可以实测比较的第二个选项,决策本身（默认值该不该换）仍然延后，等基准工具
+产出数据后再关闭。*
 
 - `defaults/`：平台级默认值，不含任何具体机体/场景信息。`estimation.warmup_seconds`
   （默认 0，即不启用）用于让开局前 N 秒的 keyframe 只做 dead reckoning（继续吃

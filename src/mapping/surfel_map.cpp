@@ -1,5 +1,6 @@
 #include "mapping/surfel_map.hpp"
 
+#include <algorithm>
 #include <limits>
 
 namespace uw::mapping {
@@ -20,9 +21,14 @@ constexpr const char* kUnattributedKeyframeId = "";
 
 }  // namespace
 
-SurfelMap::SurfelMap(SurfelMapParams params) : params_(params) {}
+SurfelMap::SurfelMap(SurfelMapParams params, std::unique_ptr<SurfelSpatialIndex> index)
+    : params_(params), index_(std::move(index)) {}
 
 Surfel* SurfelMap::FindNearest(const Eigen::Vector3d& point_W) {
+  if (index_) {
+    const auto nearest = index_->FindNearestWithinRadius(point_W, params_.merge_distance_m);
+    return nearest.has_value() ? &surfels_.at(*nearest) : nullptr;
+  }
   Surfel* best = nullptr;
   double best_distance = params_.merge_distance_m;
   for (auto& surfel : surfels_) {
@@ -68,6 +74,7 @@ void SurfelMap::FuseWorldPoint(const Eigen::Vector3d& point_W, const Eigen::Vect
     const bool agrees = combined_variance > 0.0 ? distance_sq <= gate_sq : distance_sq == 0.0;
     if (agrees) {
       MergeInto(*existing, point_W, normal_W, confidence);
+      if (index_) index_->NotifyMoved(static_cast<std::size_t>(existing - surfels_.data()), existing->position_W);
       return;
     }
     ++outliers_rejected_;
@@ -80,6 +87,7 @@ void SurfelMap::FuseWorldPoint(const Eigen::Vector3d& point_W, const Eigen::Vect
   if (normal_W != nullptr) surfel.normal_W = *normal_W;
   surfel.confidence = confidence;
   surfels_.push_back(surfel);
+  if (index_) index_->NotifyInserted(surfels_.size() - 1, surfels_.back().position_W);
 }
 
 int SurfelMap::CarveFreeSpace(const Eigen::Vector3d& ray_origin_W, const Eigen::Vector3d& ray_end_W) {
@@ -88,8 +96,14 @@ int SurfelMap::CarveFreeSpace(const Eigen::Vector3d& ray_origin_W, const Eigen::
   if (ray_length_sq <= std::numeric_limits<double>::epsilon()) return 0;  // degenerate (coincident) ray
 
   const double corridor_radius_sq = params_.free_space_corridor_radius_m * params_.free_space_corridor_radius_m;
-  int removed = 0;
-  for (std::size_t i = 0; i < surfels_.size();) {
+
+  // Exact per-surfel carve test, shared by the brute-force and
+  // index-assisted paths below (exactly one copy of this math). Returns
+  // true iff surfels_[i] was removed via swap-and-pop; when true, whatever
+  // now occupies index i (the former surfels_.back()) still needs its own
+  // check by the brute-force caller (it does not by the index-assisted
+  // caller — see the comment there for why).
+  auto try_carve = [&](std::size_t i) -> bool {
     // Guard against carving the very observation this ray just delivered:
     // a surfel within corridor radius of the ray's OWN endpoint is "the
     // same point being observed," never "something the ray passed
@@ -100,30 +114,55 @@ int SurfelMap::CarveFreeSpace(const Eigen::Vector3d& ray_origin_W, const Eigen::
     // unprojected point (see this method's header doc comment for why this
     // matters: FuseDepthIntoSurfels calls Add*/AddKeyframeObservation* for
     // this same pixel immediately before calling CarveFreeSpace).
-    if ((surfels_[i].position_W - ray_end_W).squaredNorm() <= corridor_radius_sq) {
-      ++i;
-      continue;
-    }
+    if ((surfels_[i].position_W - ray_end_W).squaredNorm() <= corridor_radius_sq) return false;
+
     const Eigen::Vector3d to_surfel = surfels_[i].position_W - ray_origin_W;
     // Project onto the ray, parameterized t in [0,1] from origin to end.
     // t < 0 (behind the sensor) or t > 1 (at/beyond the observed point
     // itself) is not "confirmed free space" — only the segment strictly
     // between the sensor and the new observation is.
     const double t = to_surfel.dot(ray) / ray_length_sq;
-    if (t <= 0.0 || t >= 1.0) {
-      ++i;
-      continue;
-    }
+    if (t <= 0.0 || t >= 1.0) return false;
+
     const Eigen::Vector3d closest_point_on_ray = ray_origin_W + t * ray;
     const double perpendicular_distance_sq = (surfels_[i].position_W - closest_point_on_ray).squaredNorm();
-    if (perpendicular_distance_sq > corridor_radius_sq) {
-      ++i;
-      continue;
-    }
+    if (perpendicular_distance_sq > corridor_radius_sq) return false;
+
     surfels_[i].confidence *= params_.free_space_confidence_decay;
-    if (surfels_[i].confidence <= params_.free_space_removal_confidence_threshold) {
-      surfels_[i] = surfels_.back();
-      surfels_.pop_back();
+    if (surfels_[i].confidence > params_.free_space_removal_confidence_threshold) return false;
+
+    const std::size_t previous_back_index = surfels_.size() - 1;
+    surfels_[i] = surfels_.back();
+    surfels_.pop_back();
+    if (index_) index_->NotifyRemovedBySwapPop(i, previous_back_index);
+    return true;
+  };
+
+  int removed = 0;
+  if (index_) {
+    // Broad-phase candidates from the index, narrowed by try_carve's exact
+    // math above. Sorted descending and de-duplicated, then processed in
+    // that fixed order: swap-and-pop only ever touches the removed slot
+    // and the CURRENT back, and the back's index only shrinks — so at the
+    // moment any not-yet-processed (smaller) candidate is reached, its own
+    // slot is provably untouched by every earlier (larger) removal. See
+    // SurfelSpatialIndex's header doc comment: candidates may
+    // over-approximate (extra indices are fine, try_carve just returns
+    // false for them) but must never omit a true positive.
+    auto candidates = index_->FindCandidatesNearSegment(ray_origin_W, ray_end_W,
+                                                          params_.free_space_corridor_radius_m);
+    std::sort(candidates.begin(), candidates.end());
+    candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
+    for (auto it = candidates.rbegin(); it != candidates.rend(); ++it) {
+      const std::size_t i = *it;
+      if (i >= surfels_.size()) continue;  // defensive: stale index, ignore
+      if (try_carve(i)) ++removed;
+    }
+    return removed;
+  }
+
+  for (std::size_t i = 0; i < surfels_.size();) {
+    if (try_carve(i)) {
       ++removed;
       // Do not advance i: the swapped-in element at this index needs its
       // own check.
@@ -186,6 +225,7 @@ std::size_t SurfelMap::NumTrackedKeyframes() const {
 
 void SurfelMap::RebuildFromKeyframeRecords() {
   surfels_.clear();
+  if (index_) index_->Clear();
   for (const auto& entry : keyframe_records_) {
     const KeyframeRecord& record = entry.second;
     for (const auto& observation : record.observations) {

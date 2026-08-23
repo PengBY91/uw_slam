@@ -1,0 +1,40 @@
+# 跟 synthetic_smoke.yaml 完全一样，只是求解器换成 ceres_v1（需要这个二进制编译时
+# 打开 UW_BUILD_CERES_SOLVER；没打开会在启动时直接报错退出，不会静默回退到
+# gauss_newton_v1）——用于对拍两个后端在同一合成场景下是否收敛到一致的解，见
+# docs/superpowers/specs/2026-08-23-solver-and-mapping-oss-adoption.md §6.1.1
+# 和 configs/README.md 的"第三个例外"。
+
+rig: rig/example_auv.yaml
+scenario: scenario/synthetic_smoke.yaml
+defaults: defaults/platform.yaml
+
+frontends:
+  optical: stereo_depth_frontend_v1
+  sonar: sonar_cfar_frontend_v1
+
+factor_builders:
+  - relative_pose_v1
+  - sonar_range_v1
+  - depth_v1
+
+estimator_mode: black_box_vio
+map_backend: submap_point_cloud_v1
+
+# The one difference from synthetic_smoke.yaml: overrides defaults/platform.yaml's
+# estimation.solver (gauss_newton_v1) at the experiment level.
+estimation:
+  solver: ceres_v1
+
+output:
+  trajectory_format: tum
+  write_run_manifest: true
+
+# Same gate thresholds as synthetic_smoke.yaml — both solvers should
+# converge to comparable accuracy on this scenario; a real regression on
+# this specific backend should still fail the gate, not just print a
+# number nobody checks.
+gates:
+  require_converged: true
+  max_ate_rmse_m: 0.15
+  min_matched_ate_poses: 10
+  require_nonempty_map: true

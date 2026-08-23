@@ -58,6 +58,9 @@
 
 #include <sys/utsname.h>
 
+#ifdef UW_HAVE_CERES_SOLVER
+#include "adapters/ceres/ceres_pose_graph_solver.hpp"
+#endif
 #include "application/replay_pipeline.hpp"
 #include "domain/domain.hpp"
 #include "estimation/gauss_newton_solver.hpp"
@@ -578,14 +581,34 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
       });
   std::cout << "added " << num_depth_factors << " depth factors\n";
 
-  uw::estimation::GaussNewtonSolver solver;
-  uw::estimation::GaussNewtonSolver::Options solver_options;
-  solver_options.max_iterations = defaults.max_iterations;
-  solver_options.initial_lambda = defaults.initial_lambda;
-  const auto summary = solver.Solve(problem, solver_options);
-  std::cout << "solver: " << summary.iterations << " iterations, cost " << summary.initial_cost
-            << " -> " << summary.final_cost << (summary.converged ? " (converged)" : " (stalled)")
-            << "\n";
+  // defaults.solver: "gauss_newton_v1" (default) or "ceres_v1" — see
+  // docs/superpowers/specs/2026-08-23-solver-and-mapping-oss-adoption.md §7.
+  // Already validated as one of these two by ValidateExperimentConfigSelections
+  // above; a "ceres_v1" selection in a binary that wasn't built with
+  // UW_BUILD_CERES_SOLVER is a fatal startup error here, not a silent
+  // fallback to gauss_newton_v1 (see that doc's §8 error table).
+  uw::estimation::GaussNewtonSummary summary;
+  if (defaults.solver == "ceres_v1") {
+#ifdef UW_HAVE_CERES_SOLVER
+    uw::adapters::ceres_solver::CeresPoseGraphSolver ceres_solver;
+    uw::adapters::ceres_solver::CeresSolverOptions ceres_options;
+    ceres_options.max_iterations = defaults.max_iterations;
+    summary = ceres_solver.Solve(problem, ceres_options);
+#else
+    std::cerr << "solver: ceres_v1 requested but this binary was not built with "
+                 "UW_BUILD_CERES_SOLVER=ON\n";
+    return 1;
+#endif
+  } else {
+    uw::estimation::GaussNewtonSolver solver;
+    uw::estimation::GaussNewtonSolver::Options solver_options;
+    solver_options.max_iterations = defaults.max_iterations;
+    solver_options.initial_lambda = defaults.initial_lambda;
+    summary = solver.Solve(problem, solver_options);
+  }
+  std::cout << "solver(" << defaults.solver << "): " << summary.iterations << " iterations, cost "
+            << summary.initial_cost << " -> " << summary.final_cost
+            << (summary.converged ? " (converged)" : " (stalled)") << "\n";
 
   // StateStore wiring (submap_manager was declared earlier — it's already
   // been accumulating landmark evidence since the sonar pass above).

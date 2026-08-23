@@ -199,6 +199,13 @@ ExperimentConfig LoadExperimentConfig(const std::string& path) {
   if (root["defaults"]) {
     config.defaults = LoadPlatformDefaultsConfig(ResolveRelative(base_dir, root["defaults"].as<std::string>()));
   }
+  // Experiment-level override for the solver backend, same pattern as
+  // frontends.landmark_detector below — lets a benchmark compare backends
+  // via one small experiment file instead of forking a whole separate
+  // defaults/*.yaml just to flip this one field.
+  if (root["estimation"] && root["estimation"]["solver"]) {
+    config.defaults.solver = root["estimation"]["solver"].as<std::string>();
+  }
   if (root["rig"]) {
     config.rig = LoadRigConfig(ResolveRelative(base_dir, root["rig"].as<std::string>()));
   }
@@ -271,6 +278,16 @@ std::optional<std::string> ValidateExperimentConfigSelections(const ExperimentCo
   if (config.landmark_detector != "bright_blob" && config.landmark_detector != "harris_corner") {
     return "unrecognized landmark_detector '" + config.landmark_detector +
            "' (must be bright_blob or harris_corner)";
+  }
+  // defaults.solver: genuinely dispatched in apps/replay_demo.cpp
+  // (docs/superpowers/specs/2026-08-23-solver-and-mapping-oss-adoption.md
+  // §7) — "ceres_v1" is a recognized value regardless of whether this
+  // binary was built with UW_BUILD_CERES_SOLVER; that build-time capability
+  // check happens separately, at the point of actually constructing the
+  // solver, so the error message can say "not compiled in" rather than
+  // "unrecognized" for a name that IS a real, just-not-linked backend.
+  if (config.defaults.solver != "gauss_newton_v1" && config.defaults.solver != "ceres_v1") {
+    return "unrecognized solver '" + config.defaults.solver + "' (must be gauss_newton_v1 or ceres_v1)";
   }
   return std::nullopt;
 }

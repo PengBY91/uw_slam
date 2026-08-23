@@ -1,0 +1,28 @@
+# 跟 real_holoocean_vo.yaml 完全一样，只是求解器换成 ceres_v1——真实数据求解器
+# 交叉验证用，见 docs/superpowers/specs/2026-08-23-solver-and-mapping-oss-
+# adoption.md §6.1.1、tools/bench/solver_benchmark.sh。需要
+# UW_BUILD_CERES_SOLVER=ON 编译。
+
+rig: rig/example_auv_real_camera.yaml
+scenario: scenario/synthetic_smoke.yaml
+defaults: defaults/platform.yaml
+
+frontends:
+  optical: stereo_depth_frontend_v1
+  sonar: sonar_cfar_frontend_v1
+  landmark_detector: harris_corner
+
+factor_builders:
+  - relative_pose_v1
+  - sonar_range_v1
+  - depth_v1
+
+estimator_mode: stereo_landmark_vo
+map_backend: submap_point_cloud_v1
+
+estimation:
+  solver: ceres_v1
+
+output:
+  trajectory_format: tum
+  write_run_manifest: true

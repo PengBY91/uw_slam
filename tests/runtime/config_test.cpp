@@ -161,3 +161,32 @@ TEST(Config, ValidateExperimentConfigSelectionsRejectsUnknownLandmarkDetector) {
   ASSERT_NE(error, std::nullopt);
   EXPECT_NE(error->find("landmark_detector"), std::string::npos);
 }
+
+TEST(Config, ValidateExperimentConfigSelectionsRejectsUnknownSolver) {
+  uw::runtime::ExperimentConfig config;
+  config.defaults.solver = "does_not_exist";
+  const auto error = uw::runtime::ValidateExperimentConfigSelections(config);
+  ASSERT_NE(error, std::nullopt);
+  EXPECT_NE(error->find("solver"), std::string::npos);
+}
+
+TEST(Config, ValidateExperimentConfigSelectionsAcceptsCeresV1Solver) {
+  uw::runtime::ExperimentConfig config;
+  config.defaults.solver = "ceres_v1";
+  EXPECT_EQ(uw::runtime::ValidateExperimentConfigSelections(config), std::nullopt);
+}
+
+// estimation.solver at the experiment-file level (not nested under a
+// separate defaults/*.yaml) — see docs/superpowers/specs/2026-08-23-solver-
+// and-mapping-oss-adoption.md §7 and configs/README.md's "第三个例外".
+TEST(Config, ExperimentLevelEstimationSolverOverridesTheDefault) {
+  const auto path = std::filesystem::temp_directory_path() / "uw_solver_override_experiment.yaml";
+  {
+    std::ofstream out(path);
+    out << "estimation:\n"
+           "  solver: ceres_v1\n";
+  }
+  const auto config = uw::runtime::LoadExperimentConfig(path.string());
+  EXPECT_EQ(config.defaults.solver, "ceres_v1");
+  std::remove(path.string().c_str());
+}

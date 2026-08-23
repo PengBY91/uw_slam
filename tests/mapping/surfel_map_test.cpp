@@ -1,6 +1,9 @@
 #include "mapping/surfel_map.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <memory>
+#include <random>
 
 #include <gtest/gtest.h>
 
@@ -10,6 +13,7 @@ using uw::mapping::SubmapManager;
 using uw::mapping::Surfel;
 using uw::mapping::SurfelMap;
 using uw::mapping::SurfelMapParams;
+using uw::mapping::SurfelSpatialIndex;
 using uw::sensor_models::Pose3;
 
 TEST(SurfelMap, MergesNearbyPointsIntoOneConfidenceWeightedSurfel) {
@@ -369,4 +373,212 @@ TEST(SurfelMap, CarveFreeSpaceEffectDoesNotSurviveReintegrationOfTheContributing
 
   ASSERT_EQ(map.NumSurfels(), 1u);
   EXPECT_NEAR(map.Surfels()[0].confidence, 1.0, 1e-9) << "carve effect did not survive reintegration";
+}
+
+// --- SurfelSpatialIndex wiring: index-assisted path must match brute force
+// exactly (2026-08-23 solver-and-mapping-oss-adoption design, workstream B)
+// --------------------------------------------------------------------------
+
+namespace {
+
+// Test-only reference SurfelSpatialIndex: mirrors surfels_'s positions via
+// the Notify* contract and answers queries by the SAME linear-scan
+// algorithm SurfelMap's own brute-force path uses (see FindNearest in
+// surfel_map.cpp) — including its exact "<=" last-candidate-wins tie
+// break. This exists to prove SurfelMap's Notify*/query call sites
+// themselves are correct, independently of whatever real spatial data
+// structure (e.g. nanoflann, a later workstream) implements this interface
+// for real — a bug here would be a bug in SurfelMap's wiring, not in a
+// third-party library.
+class BruteForceReferenceIndex : public SurfelSpatialIndex {
+ public:
+  void Clear() override { points_.clear(); }
+
+  void NotifyInserted(std::size_t index, const Eigen::Vector3d& position_W) override {
+    ASSERT_EQ(index, points_.size()) << "NotifyInserted must always append at the current end";
+    points_.push_back(position_W);
+  }
+
+  void NotifyMoved(std::size_t index, const Eigen::Vector3d& new_position_W) override {
+    points_.at(index) = new_position_W;
+  }
+
+  void NotifyRemovedBySwapPop(std::size_t index, std::size_t previous_back_index) override {
+    ASSERT_EQ(previous_back_index + 1, points_.size())
+        << "previous_back_index must be the index's size() - 1 at call time";
+    if (index != previous_back_index) points_.at(index) = points_.at(previous_back_index);
+    points_.pop_back();
+  }
+
+  std::optional<std::size_t> FindNearestWithinRadius(const Eigen::Vector3d& query,
+                                                       double radius_m) const override {
+    std::optional<std::size_t> best;
+    double best_distance = radius_m;
+    for (std::size_t i = 0; i < points_.size(); ++i) {
+      const double distance = (points_[i] - query).norm();
+      if (distance <= best_distance) {
+        best_distance = distance;
+        best = i;
+      }
+    }
+    return best;
+  }
+
+  // Deliberately the maximal (always-safe) over-approximation: every
+  // currently-indexed index, unfiltered. Proves CarveFreeSpace's own exact
+  // narrow-phase math is sufficient for correctness even when the broad
+  // phase narrows nothing — see SurfelSpatialIndex's header doc comment.
+  std::vector<std::size_t> FindCandidatesNearSegment(const Eigen::Vector3d&, const Eigen::Vector3d&,
+                                                       double) const override {
+    std::vector<std::size_t> all(points_.size());
+    for (std::size_t i = 0; i < all.size(); ++i) all[i] = i;
+    return all;
+  }
+
+ private:
+  std::vector<Eigen::Vector3d> points_;
+};
+
+// Order-independent comparison: existing tests already identify surfels by
+// content, not vector index (swap-and-pop never promised index stability),
+// and the index-assisted CarveFreeSpace path processes candidates in a
+// different order than brute force by design (see surfel_map.cpp) — so
+// exact index-for-index vector equality is the wrong thing to assert here.
+void ExpectSameSurfelSet(const std::vector<Surfel>& a, const std::vector<Surfel>& b) {
+  ASSERT_EQ(a.size(), b.size());
+  auto by_position = [](const Surfel& x, const Surfel& y) {
+    if (x.position_W.x() != y.position_W.x()) return x.position_W.x() < y.position_W.x();
+    if (x.position_W.y() != y.position_W.y()) return x.position_W.y() < y.position_W.y();
+    return x.position_W.z() < y.position_W.z();
+  };
+  std::vector<Surfel> sorted_a = a, sorted_b = b;
+  std::sort(sorted_a.begin(), sorted_a.end(), by_position);
+  std::sort(sorted_b.begin(), sorted_b.end(), by_position);
+  for (std::size_t i = 0; i < sorted_a.size(); ++i) {
+    EXPECT_NEAR((sorted_a[i].position_W - sorted_b[i].position_W).norm(), 0.0, 1e-9) << "at i=" << i;
+    EXPECT_NEAR((sorted_a[i].normal_W - sorted_b[i].normal_W).norm(), 0.0, 1e-9) << "at i=" << i;
+    EXPECT_NEAR(sorted_a[i].confidence, sorted_b[i].confidence, 1e-9) << "at i=" << i;
+  }
+}
+
+}  // namespace
+
+TEST(SurfelSpatialIndex, MergeCreateAndCarveMatchBruteForceExactly) {
+  SurfelMapParams params;
+  params.merge_distance_m = 0.3;
+  params.free_space_confidence_decay = 0.5;
+  params.free_space_removal_confidence_threshold = 0.4;
+
+  SurfelMap brute(params);
+  SurfelMap indexed(params, std::make_unique<BruteForceReferenceIndex>());
+
+  const std::vector<Eigen::Vector3d> points = {
+      {0.0, 0.0, 0.0}, {0.1, 0.0, 0.0},  // merges with the first (0.1 < 0.3)
+      {5.0, 0.0, 0.0},                    // far: separate surfel
+      {5.05, 0.0, 0.0},                   // merges with the previous one
+  };
+  for (const auto& p : points) {
+    brute.AddPoint(p, /*confidence=*/1.0);
+    indexed.AddPoint(p, /*confidence=*/1.0);
+  }
+  ASSERT_EQ(brute.NumSurfels(), indexed.NumSurfels());
+  EXPECT_EQ(brute.NumOutliersRejected(), indexed.NumOutliersRejected());
+  ExpectSameSurfelSet(brute.Surfels(), indexed.Surfels());
+
+  // A ray through the origin-adjacent surfel: one carve downweights (not
+  // removed yet at these params), matching on both paths.
+  const int removed_brute = brute.CarveFreeSpace({-1.0, 0.0, 0.0}, {1.0, 0.0, 0.0});
+  const int removed_indexed = indexed.CarveFreeSpace({-1.0, 0.0, 0.0}, {1.0, 0.0, 0.0});
+  EXPECT_EQ(removed_brute, removed_indexed);
+  ExpectSameSurfelSet(brute.Surfels(), indexed.Surfels());
+}
+
+TEST(SurfelSpatialIndex, CarveFreeSpaceRemovingMultipleSurfelsInOneCallMatchesBruteForce) {
+  // Exercises the index path's descending-order swap-and-pop handling with
+  // more than one removal in a single CarveFreeSpace call — the scenario
+  // most likely to expose an off-by-one in candidate index bookkeeping.
+  SurfelMapParams params;
+  params.free_space_confidence_decay = 0.1;  // one carve drops well below any reasonable threshold
+  params.free_space_removal_confidence_threshold = 0.5;
+
+  SurfelMap brute(params);
+  SurfelMap indexed(params, std::make_unique<BruteForceReferenceIndex>());
+
+  // Five points sitting on the ray corridor between (0,0,0) and (10,0,0),
+  // interleaved with two points far off the ray that must survive
+  // untouched — proves candidates outside the corridor are correctly
+  // skipped by the narrow-phase math regardless of index order.
+  const std::vector<Eigen::Vector3d> points = {
+      {1.0, 0.0, 0.0}, {9.0, 9.0, 0.0}, {3.0, 0.0, 0.0}, {5.0, 0.0, 0.0},
+      {7.0, 0.0, 0.0}, {2.0, 2.0, 0.0}, {9.0, 0.0, 0.0},
+  };
+  for (const auto& p : points) {
+    brute.AddPoint(p, /*confidence=*/1.0);
+    indexed.AddPoint(p, /*confidence=*/1.0);
+  }
+  ASSERT_EQ(brute.NumSurfels(), points.size());
+
+  const int removed_brute = brute.CarveFreeSpace({0.0, 0.0, 0.0}, {10.0, 0.0, 0.0});
+  const int removed_indexed = indexed.CarveFreeSpace({0.0, 0.0, 0.0}, {10.0, 0.0, 0.0});
+  EXPECT_EQ(removed_brute, removed_indexed);
+  EXPECT_EQ(removed_brute, 5) << "all 5 on-ray points (strictly between origin and the endpoint) removed";
+  ExpectSameSurfelSet(brute.Surfels(), indexed.Surfels());
+}
+
+TEST(SurfelSpatialIndex, ReintegrateKeyframeRebuildMatchesBruteForce) {
+  SurfelMapParams params;  // default merge_distance_m = 0.05
+  SurfelMap brute(params);
+  SurfelMap indexed(params, std::make_unique<BruteForceReferenceIndex>());
+
+  Pose3 kf0_pose;
+  Pose3 kf1_pose_initial;
+  kf1_pose_initial.translation = Eigen::Vector3d(1.0, 0.0, 0.0);
+  for (SurfelMap* map : {&brute, &indexed}) {
+    map->AddKeyframeObservation("kf0", Eigen::Vector3d(1.0, 0.0, 0.0), 1.0, kf0_pose);
+    map->AddKeyframeObservation("kf1", Eigen::Vector3d(0.0, 0.0, 0.0), 1.0, kf1_pose_initial);
+  }
+  ExpectSameSurfelSet(brute.Surfels(), indexed.Surfels());
+
+  Pose3 kf1_pose_corrected;
+  kf1_pose_corrected.translation = Eigen::Vector3d(2.0, 0.0, 0.0);
+  brute.ReintegrateKeyframe("kf1", kf1_pose_corrected);
+  indexed.ReintegrateKeyframe("kf1", kf1_pose_corrected);
+
+  ASSERT_EQ(brute.NumSurfels(), 2u);
+  ASSERT_EQ(indexed.NumSurfels(), 2u);
+  ExpectSameSurfelSet(brute.Surfels(), indexed.Surfels());
+}
+
+TEST(SurfelSpatialIndex, RandomizedOperationSequenceMatchesBruteForce) {
+  // Seeded, never-reseeded RNG per this repo's determinism convention
+  // (CLAUDE.md) — not for reproducing a physical scenario, just to avoid
+  // hand-picking coordinates that might accidentally hide an indexing bug.
+  std::mt19937_64 rng(20260823);
+  std::uniform_real_distribution<double> coord(-2.0, 2.0);
+  std::uniform_real_distribution<double> confidence_dist(0.5, 5.0);
+
+  SurfelMapParams params;
+  params.merge_distance_m = 0.2;
+  SurfelMap brute(params);
+  SurfelMap indexed(params, std::make_unique<BruteForceReferenceIndex>());
+
+  for (int i = 0; i < 200; ++i) {
+    const Eigen::Vector3d point(coord(rng), coord(rng), coord(rng));
+    const double confidence = confidence_dist(rng);
+    brute.AddPoint(point, confidence);
+    indexed.AddPoint(point, confidence);
+  }
+  ASSERT_EQ(brute.NumSurfels(), indexed.NumSurfels());
+  EXPECT_EQ(brute.NumOutliersRejected(), indexed.NumOutliersRejected());
+  ExpectSameSurfelSet(brute.Surfels(), indexed.Surfels());
+
+  // A handful of carve rays through the same random volume.
+  for (int i = 0; i < 20; ++i) {
+    const Eigen::Vector3d origin(coord(rng), coord(rng), coord(rng));
+    const Eigen::Vector3d end(coord(rng), coord(rng), coord(rng));
+    const int removed_brute = brute.CarveFreeSpace(origin, end);
+    const int removed_indexed = indexed.CarveFreeSpace(origin, end);
+    ASSERT_EQ(removed_brute, removed_indexed) << "carve ray " << i;
+    ExpectSameSurfelSet(brute.Surfels(), indexed.Surfels());
+  }
 }

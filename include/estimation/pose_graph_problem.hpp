@@ -39,9 +39,34 @@ class PoseGraphProblem {
   std::size_t NumKeyframes() const { return order_.size(); }
   std::size_t NumResidualBlocks() const { return residual_blocks_.size(); }
 
- private:
-  friend class GaussNewtonSolver;
+  // Backend-agnostic solver accessors, replacing the earlier single
+  // `friend class GaussNewtonSolver` — any solver (GaussNewtonSolver, a
+  // future Ceres/GTSAM adapter) reads/mutates the graph through these two
+  // methods instead of being individually friended. `params` points at the
+  // same 7 contiguous doubles Pose3::ToParameterBlock()/FromParameterBlock()
+  // use (tx,ty,tz,qx,qy,qz,qw); the pointer stays valid until the next call
+  // that adds a keyframe (AddKeyframe may rehash keyframes_) or destroys the
+  // problem, matching the lifetime a solver already needs it for (one
+  // Solve() call).
+  struct KeyframeParameterBlock {
+    std::string keyframe_id;
+    double* params;
+    bool fixed;
+  };
+  // Order matches KeyframeOrder().
+  std::vector<KeyframeParameterBlock> MutableParameterBlocks();
 
+  // One residual block's binding to its involved keyframe ids, in the same
+  // order as ResidualBlock::ParameterBlockSizes(). `involved_keyframes`
+  // points at AddResidualBlock's stored vector, valid for the same lifetime
+  // as `block`.
+  struct ResidualBinding {
+    uw::measurement_api::ResidualBlock* block;
+    const std::vector<std::string>* involved_keyframes;
+  };
+  std::vector<ResidualBinding> ResidualBindings() const;
+
+ private:
   struct Keyframe {
     std::array<double, 7> params{0, 0, 0, 0, 0, 0, 1};
     bool fixed = false;

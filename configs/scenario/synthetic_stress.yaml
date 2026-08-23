@@ -1,0 +1,25 @@
+# 求解器基准专用的规模压力场景（docs/superpowers/specs/2026-08-23-solver-and-
+# mapping-oss-adoption.md §11.2）：跟 scenario/synthetic_smoke.yaml 逐字段相同，
+# 只放大 num_keyframes——synth_bag_gen.cpp 里 theta = (i/(num_keyframes-1)) *
+# arc_radians，轨迹参数化本来就是按 [0,1] 归一化再乘 arc_radians，不随
+# num_keyframes 变化总弧长，所以放大关键帧数只会让同一段弧上的关键帧更密，不改变
+# 轨迹形状/图连接稀疏度（相邻关键帧相对位姿因子 + 周期性声呐/深度证据），干净地把
+# 对比数据归因到"规模变化"本身。1000 个关键帧大致对应一次十几到二十分钟量级的典型
+# 作业时长（见规格文档 §11.2 的具体推算），是比 synthetic_smoke 的演示规模（12 帧）
+# 更贴近真实任务的台阶。
+
+seed: 42
+num_keyframes: 1000
+radius_m: 8.0
+arc_radians: 1.4
+depth_m: 12.0
+
+noise:
+  relative_pose_noise_m: 0.02
+  sonar_range_noise_m: 0.03
+  sonar_bearing_noise_rad: 0.01
+
+sonar_targets_world:
+  - [2.0, 3.0, -13.0]
+  - [6.0, 6.0, -11.5]
+  - [-1.0, 8.0, -12.5]

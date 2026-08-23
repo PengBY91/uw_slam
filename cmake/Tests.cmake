@@ -53,6 +53,14 @@ target_link_libraries(estimation_tests PRIVATE
 )
 uw_register_gtest(estimation_tests "unit.estimation" "unit;estimation")
 
+if(UW_BUILD_CERES_SOLVER)
+  add_executable(adapters_ceres_tests tests/adapters/ceres/ceres_pose_graph_solver_test.cpp)
+  target_link_libraries(adapters_ceres_tests PRIVATE
+    uw::adapters_ceres uw::estimation uw::factor_builders GTest::gtest GTest::gtest_main
+  )
+  uw_register_gtest(adapters_ceres_tests "unit.adapters_ceres" "unit;estimation")
+endif()
+
 add_executable(mapping_tests
   tests/mapping/submap_manager_test.cpp
   tests/mapping/acoustic_optic_map_bridge_test.cpp
@@ -92,6 +100,14 @@ target_link_libraries(adapters_tests PRIVATE
   uw::adapters GTest::gtest GTest::gtest_main Threads::Threads
 )
 uw_register_gtest(adapters_tests "unit.adapters" "unit;adapters")
+
+add_executable(spatial_index_adapters_tests
+  tests/adapters/spatial_index/nanoflann_surfel_index_test.cpp
+)
+target_link_libraries(spatial_index_adapters_tests PRIVATE
+  uw::spatial_index_adapters GTest::gtest GTest::gtest_main
+)
+uw_register_gtest(spatial_index_adapters_tests "unit.spatial_index_adapters" "unit;mapping")
 
 add_executable(application_tests
   tests/application/replay_pipeline_test.cpp

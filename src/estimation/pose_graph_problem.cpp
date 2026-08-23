@@ -44,4 +44,23 @@ void PoseGraphProblem::AddResidualBlock(std::unique_ptr<uw::measurement_api::Res
   residual_blocks_.push_back(Binding{std::move(block), std::move(involved_keyframes)});
 }
 
+std::vector<PoseGraphProblem::KeyframeParameterBlock> PoseGraphProblem::MutableParameterBlocks() {
+  std::vector<KeyframeParameterBlock> blocks;
+  blocks.reserve(order_.size());
+  for (const auto& id : order_) {
+    auto& kf = keyframes_.at(id);
+    blocks.push_back(KeyframeParameterBlock{id, kf.params.data(), kf.fixed});
+  }
+  return blocks;
+}
+
+std::vector<PoseGraphProblem::ResidualBinding> PoseGraphProblem::ResidualBindings() const {
+  std::vector<ResidualBinding> bindings;
+  bindings.reserve(residual_blocks_.size());
+  for (const auto& binding : residual_blocks_) {
+    bindings.push_back(ResidualBinding{binding.block.get(), &binding.involved_keyframes});
+  }
+  return bindings;
+}
+
 }  // namespace uw::estimation

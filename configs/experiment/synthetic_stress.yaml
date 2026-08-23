@@ -1,0 +1,33 @@
+# 求解器规模基准场景（gauss_newton_v1，默认后端）：与 synthetic_smoke.yaml 相比
+# scenario 换成 synthetic_stress.yaml（1000 关键帧），rig 换成
+# example_auv_sonar_only.yaml（不含相机——见该文件注释：稠密双目/acoustic-optic
+# 融合是逐像素处理，会在这个关键帧数量级下压过求解器本身耗时，把对比数据完全
+# 淹没）。见 docs/superpowers/specs/2026-08-23-solver-and-mapping-oss-adoption.md
+# §6.1.1/§9、tools/bench/solver_benchmark.sh。
+#
+# gates.require_converged 显式关闭：这是一个基准/诊断场景，不是质量门禁——是否收敛
+# 本身就是要对比的数据点之一，不应该让 replay_demo 因为在这个人为放大的规模下没收敛
+# 就报非零退出码，掩盖掉本该被基准工具打印出来的信息。
+
+rig: rig/example_auv_sonar_only.yaml
+scenario: scenario/synthetic_stress.yaml
+defaults: defaults/platform.yaml
+
+frontends:
+  optical: stereo_depth_frontend_v1
+  sonar: sonar_cfar_frontend_v1
+
+factor_builders:
+  - relative_pose_v1
+  - sonar_range_v1
+  - depth_v1
+
+estimator_mode: black_box_vio
+map_backend: submap_point_cloud_v1
+
+output:
+  trajectory_format: tum
+  write_run_manifest: true
+
+gates:
+  require_converged: false

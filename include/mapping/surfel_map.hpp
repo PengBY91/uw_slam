@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -13,6 +14,68 @@
 #include "sensor_models/geometry.hpp"
 
 namespace uw::mapping {
+
+// Backend-agnostic accelerator for SurfelMap's two O(existing surfels)
+// brute-force scans (FindNearest, CarveFreeSpace's corridor query) — see
+// SurfelMap's own "v1 scale limitation" doc comment below. No third-party
+// spatial-index type (e.g. a KD-tree) is named here; a concrete
+// implementation (e.g. adapters/spatial_index's nanoflann-backed one) lives
+// outside `mapping`, which this repo's layer-dependency rule
+// (tools/lint/check_layer_dependencies.py) does not allow to depend on
+// `adapters` — SurfelMap only ever sees this pure interface, injected by
+// whichever layer (application) is allowed to depend on both.
+//
+// SurfelMap keeps this index in exact lockstep with `surfels_` by calling
+// the Notify* methods at every point it mutates that vector — an
+// implementation must apply each notification immediately and exactly, not
+// batch or defer, since FindNearestWithinRadius/FindCandidatesNearSegment
+// can be called between any two mutations.
+class SurfelSpatialIndex {
+ public:
+  virtual ~SurfelSpatialIndex() = default;
+
+  // Drops all indexed points. Called once before SurfelMap replays a
+  // keyframe ledger from scratch into a freshly-cleared surfels_ vector
+  // (RebuildFromKeyframeRecords, triggered by ReintegrateKeyframe) — the
+  // Notify* calls that follow during replay repopulate the index
+  // incrementally, so this is the only "bulk reset" operation needed.
+  virtual void Clear() = 0;
+
+  // A new surfel was just appended at surfels_[index] (index ==
+  // surfels_.size() - 1 at the time of the call).
+  virtual void NotifyInserted(std::size_t index, const Eigen::Vector3d& position_W) = 0;
+
+  // An existing surfel's position changed in place (a confidence-weighted
+  // merge moved it) — surfels_[index] still refers to the same logical
+  // surfel, just at a new position.
+  virtual void NotifyMoved(std::size_t index, const Eigen::Vector3d& new_position_W) = 0;
+
+  // surfels_[index] was erased via swap-and-pop from a vector whose last
+  // valid index was `previous_back_index` (i.e. size() - 1 before the pop).
+  // If index == previous_back_index, the last element itself was erased (no
+  // swap happened). Otherwise, the surfel that used to live at
+  // previous_back_index now lives at `index`, and previous_back_index no
+  // longer exists.
+  virtual void NotifyRemovedBySwapPop(std::size_t index, std::size_t previous_back_index) = 0;
+
+  // Exact nearest indexed point to `query` within `radius_m`, or nullopt if
+  // none — must reproduce brute-force linear search exactly (no
+  // approximation), per SurfelMap's outlier-gate/merge semantics depending
+  // on getting the true nearest candidate, not merely a nearby one.
+  virtual std::optional<std::size_t> FindNearestWithinRadius(const Eigen::Vector3d& query,
+                                                              double radius_m) const = 0;
+
+  // Broad-phase candidate set for CarveFreeSpace's ray-corridor query:
+  // every currently-indexed point within `radius_m` of the segment
+  // [segment_start, segment_end] MUST be included (false negatives are a
+  // correctness bug — the caller applies CarveFreeSpace's own exact
+  // perpendicular-distance/t-range math afterward as the narrow-phase
+  // filter, so returning extra candidates — even the full index — is
+  // always safe, just less of a speedup).
+  virtual std::vector<std::size_t> FindCandidatesNearSegment(const Eigen::Vector3d& segment_start,
+                                                              const Eigen::Vector3d& segment_end,
+                                                              double radius_m) const = 0;
+};
 
 // A single surfel: an oriented disk approximating a small patch of surface.
 // v1 fields only: no radius growth, confidence decay/cap, or pruning.
@@ -80,10 +143,14 @@ struct SurfelMapParams {
 // for the point counts this is tested against; NOT fine for
 // apps/replay_demo's real map evidence volume (millions of points per
 // run) — a spatial index (voxel hash, KD-tree) is required before this
-// scales.
+// scales. `index` (see SurfelSpatialIndex above) is the escape hatch: when
+// non-null, FindNearest and CarveFreeSpace's corridor query consult it
+// instead of scanning `surfels_` directly. Left null (the default), nothing
+// about this class's behavior or performance characteristics changes from
+// before this parameter existed.
 class SurfelMap {
  public:
-  explicit SurfelMap(SurfelMapParams params = {});
+  explicit SurfelMap(SurfelMapParams params = {}, std::unique_ptr<SurfelSpatialIndex> index = nullptr);
 
   // Inserts one observed world-frame point with a confidence weight
   // (higher = more trusted; see Surfel::confidence's doc comment for the
@@ -269,6 +336,7 @@ class SurfelMap {
   std::vector<Surfel> surfels_;
   std::unordered_map<std::string, KeyframeRecord> keyframe_records_;
   uint64_t outliers_rejected_ = 0;
+  std::unique_ptr<SurfelSpatialIndex> index_;  // null -> brute-force paths, unchanged from before
 };
 
 }  // namespace uw::mapping

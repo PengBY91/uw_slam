@@ -109,6 +109,28 @@ target_include_directories(adapters PUBLIC "${PROJECT_SOURCE_DIR}/include")
 target_link_libraries(adapters PUBLIC uw::core)
 uw_apply_library_defaults(adapters)
 
+add_library(spatial_index_adapters STATIC
+  adapters/spatial_index/src/nanoflann_surfel_index.cpp
+)
+add_library(uw::spatial_index_adapters ALIAS spatial_index_adapters)
+target_include_directories(spatial_index_adapters PUBLIC
+  "${PROJECT_SOURCE_DIR}/include" "${PROJECT_SOURCE_DIR}/adapters/spatial_index/include"
+)
+target_link_libraries(spatial_index_adapters PUBLIC uw::mapping nanoflann)
+uw_apply_library_defaults(spatial_index_adapters)
+
+if(UW_BUILD_CERES_SOLVER)
+  add_library(adapters_ceres STATIC
+    adapters/ceres/src/ceres_pose_graph_solver.cpp
+  )
+  add_library(uw::adapters_ceres ALIAS adapters_ceres)
+  target_include_directories(adapters_ceres PUBLIC
+    "${PROJECT_SOURCE_DIR}/include" "${PROJECT_SOURCE_DIR}/adapters/ceres/include"
+  )
+  target_link_libraries(adapters_ceres PUBLIC uw::estimation Ceres::ceres)
+  uw_apply_library_defaults(adapters_ceres)
+endif()
+
 add_library(application STATIC
   src/application/replay_pipeline.cpp
 )
@@ -116,9 +138,18 @@ add_library(uw::application ALIAS application)
 target_include_directories(application PUBLIC "${PROJECT_SOURCE_DIR}/include")
 target_link_libraries(application PRIVATE
   uw::domain uw::core uw::runtime uw::estimation uw::evaluation
-  uw::factor_builders uw::mapping uw::frontends
+  uw::factor_builders uw::mapping uw::frontends uw::spatial_index_adapters
 )
 uw_apply_library_defaults(application)
+if(UW_BUILD_CERES_SOLVER)
+  # replay_pipeline.cpp #ifdef-guards its Ceres call site on this macro so
+  # the same source file builds correctly whether or not Ceres is present
+  # (see docs/superpowers/specs/2026-08-23-solver-and-mapping-oss-adoption.md
+  # §8: selecting solver_backend: ceres_v1 in a binary built without this
+  # must fail loudly at startup, not silently fall back).
+  target_compile_definitions(application PRIVATE UW_HAVE_CERES_SOLVER)
+  target_link_libraries(application PRIVATE uw::adapters_ceres)
+endif()
 
 if(UW_BUILD_ROS2)
   add_library(ros2_adapters INTERFACE)
