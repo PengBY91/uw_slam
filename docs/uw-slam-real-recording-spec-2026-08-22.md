@@ -1,7 +1,9 @@
 # 真实 HoloOcean 录制规格：三条固定轨迹
 
-> 状态：规格文档。实际在 Windows 机器上执行录制仍是用户动作，不是这份文档
-> 或 `record_session.py` 能替代的。
+> 状态：历史规格，已被
+> [HoloOcean 实时闭环仿真规格](./specifications/holoocean-realtime-closed-loop-simulation-spec.md)
+> 取代，不再作为 ROV 在线系统的验收依据。本文仅保留早期三条离线轨迹方案和演进背景；
+> 其中关于非相机传感器只在 camera tick 录制的说明已经不符合当前实现。
 
 ## 目标
 
