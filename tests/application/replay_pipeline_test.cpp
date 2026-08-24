@@ -1,8 +1,10 @@
 #include "application/replay_pipeline.hpp"
 
+#include <cctype>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <sstream>
 #include <string>
 
@@ -22,10 +24,42 @@ void WriteFile(const std::filesystem::path& path, const std::string& content) {
   out << content;
 }
 
-uw::domain::ImageFrame MakeCameraImage(const std::string& frame, double capture_time_s) {
+// Redirects std::cout for its lifetime so a test can assert on
+// RunReplayPipeline's own diagnostic prints (e.g. "added N depth factors")
+// -- these are the only external signal for which evidence-consumption path
+// actually fired, short of threading extra counters back out of the
+// function purely for testing.
+class CoutCapture {
+ public:
+  CoutCapture() : old_buf_(std::cout.rdbuf(captured_.rdbuf())) {}
+  ~CoutCapture() { std::cout.rdbuf(old_buf_); }
+  std::string str() const { return captured_.str(); }
+
+ private:
+  std::ostringstream captured_;
+  std::streambuf* old_buf_;
+};
+
+// Finds `marker` in `text` and returns the integer immediately preceding
+// it (e.g. ExtractIntBefore("added 3 depth factors", " depth factors") ==
+// 3), or -1 if `marker` is absent or not preceded by digits.
+int ExtractIntBefore(const std::string& text, const std::string& marker) {
+  const auto marker_pos = text.find(marker);
+  if (marker_pos == std::string::npos) return -1;
+  std::size_t start = marker_pos;
+  while (start > 0 && std::isdigit(static_cast<unsigned char>(text[start - 1]))) --start;
+  if (start == marker_pos) return -1;
+  return std::stoi(text.substr(start, marker_pos - start));
+}
+
+uw::domain::ImageFrame MakeCameraImage(const std::string& frame, double capture_time_s,
+                                       const std::string& observation_id) {
   uw::domain::ImageFrame image;
+  image.mutable_header()->mutable_observation_id()->set_value(observation_id);
   *image.mutable_header()->mutable_capture_time() = uw::domain::FromSeconds(capture_time_s);
   image.mutable_header()->mutable_sensor_frame()->set_value(frame);
+  image.mutable_header()->mutable_sensor_id()->set_value(
+      frame == "camera_left_link" ? "camera_left" : "camera_right");
   image.set_width(32);
   image.set_height(32);
   image.set_row_stride_bytes(32);
@@ -257,12 +291,14 @@ TEST(ReplayPipeline, RectifiesNonParallelRigBeforeStereoFrontendsAndPopulatesBot
   {
     McapProtobufWriter writer;
     ASSERT_TRUE(writer.Open(bag_path.string()));
-    ASSERT_TRUE(writer.WriteMessage("/raw/camera/left", 0, MakeCameraImage("camera_left_link", 0.0)));
-    ASSERT_TRUE(writer.WriteMessage("/raw/camera/right", 0, MakeCameraImage("camera_right_link", 0.0)));
-    ASSERT_TRUE(
-        writer.WriteMessage("/raw/camera/left", 200000000, MakeCameraImage("camera_left_link", 0.2)));
-    ASSERT_TRUE(
-        writer.WriteMessage("/raw/camera/right", 200000000, MakeCameraImage("camera_right_link", 0.2)));
+    ASSERT_TRUE(writer.WriteMessage("/raw/camera/left", 0,
+                                    MakeCameraImage("camera_left_link", 0.0, "kf0")));
+    ASSERT_TRUE(writer.WriteMessage("/raw/camera/right", 0,
+                                    MakeCameraImage("camera_right_link", 0.0, "kf0")));
+    ASSERT_TRUE(writer.WriteMessage("/raw/camera/left", 200000000,
+                                    MakeCameraImage("camera_left_link", 0.2, "kf1")));
+    ASSERT_TRUE(writer.WriteMessage("/raw/camera/right", 200000000,
+                                    MakeCameraImage("camera_right_link", 0.2, "kf1")));
 
     uw::domain::PressureDepthMeasurement kf0_depth;
     kf0_depth.set_depth_m(2.0);
@@ -295,18 +331,52 @@ TEST(ReplayPipeline, RectifiesNonParallelRigBeforeStereoFrontendsAndPopulatesBot
   options.experiment_path = (root / "experiment" / "test_experiment.yaml").string();
   options.out_prefix = (root / "out").string();
 
-  const int result = uw::application::RunReplayPipeline(options, "test-commit");
+  int result = 0;
+  std::string captured_stdout;
+  {
+    CoutCapture capture;
+    result = uw::application::RunReplayPipeline(options, "test-commit");
+    captured_stdout = capture.str();
+  }
   // Not 1: a stereo-rectification Create() failure returns 1 before any
   // work happens. A non-converged-solver gate failure would return 2, but
   // require_converged is disabled above specifically so that can't mask a
   // rectification failure as a "gate" failure instead.
-  EXPECT_NE(result, 1) << "replay pipeline failed before/during stereo rectification setup";
+  EXPECT_NE(result, 1) << "replay pipeline failed before/during stereo rectification setup\n"
+                       << captured_stdout;
 
+  // Targeted assertions per evidence-consumption path (Task 4 Step 4):
+  // the aggregate determinism gate alone doesn't prove each of these
+  // per-topic filters survived the ReadMcapMessages<T> -> ReplayInputData
+  // migration correctly.
   ASSERT_TRUE(std::filesystem::exists(root / "out_trajectory.tum"));
   std::ifstream trajectory(root / "out_trajectory.tum");
   std::string first_line;
   std::getline(trajectory, first_line);
-  EXPECT_FALSE(first_line.empty());
+  ASSERT_FALSE(first_line.empty());
+
+  // kf0 anchor z: fixed directly from its own PressureDepthMeasurement
+  // (depth_m=2.0 above) rather than the solver, so this must be exact, not
+  // just converged-close. TUM line order is
+  // "timestamp x y z qx qy qz qw".
+  {
+    std::istringstream first_line_stream(first_line);
+    double timestamp = 0.0, x = 0.0, y = 0.0, z = 0.0;
+    first_line_stream >> timestamp >> x >> y >> z;
+    EXPECT_NEAR(z, -2.0, 1e-9) << "kf0 anchor z should come from its own depth evidence, not the solver";
+  }
+
+  // Regular depth factor count: exactly one PressureDepthMeasurement
+  // evidence was written above (for kf0).
+  EXPECT_EQ(ExtractIntBefore(captured_stdout, " depth factors"), 1) << captured_stdout;
+
+  // Acoustic-optic fusion trigger: both keyframes carry a rectifiable
+  // stereo pair, so the acoustic-optic pass must run over both -- this
+  // fixture's flat, textureless synthetic pixels (MakeCameraImage) never
+  // pass the stereo matcher's texture gate, so 0 map evidence points is the
+  // correct outcome here, not evidence the pass didn't run.
+  EXPECT_EQ(ExtractIntBefore(captured_stdout, " keyframes with camera data"), 2) << captured_stdout;
+  EXPECT_EQ(ExtractIntBefore(captured_stdout, " map evidence points added"), 0) << captured_stdout;
 
   ASSERT_TRUE(std::filesystem::exists(root / "out_run_manifest.json"));
   std::ifstream manifest_file(root / "out_run_manifest.json");

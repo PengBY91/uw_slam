@@ -61,6 +61,8 @@
 #ifdef UW_HAVE_CERES_SOLVER
 #include "adapters/ceres/ceres_pose_graph_solver.hpp"
 #endif
+#include "application/event_pump.hpp"
+#include "application/replay_input_accumulator.hpp"
 #include "application/replay_pipeline.hpp"
 #include "domain/domain.hpp"
 #include "estimation/gauss_newton_solver.hpp"
@@ -79,7 +81,7 @@
 #include "opencv_adapters/stereo_rectifier.hpp"
 #include "runtime/acoustic_optic_synchronizer.hpp"
 #include "runtime/config.hpp"
-#include "runtime/mcap_io.hpp"
+#include "runtime/mcap_event_source.hpp"
 #include "runtime/run_manifest.hpp"
 #include "sensor_models/geometry.hpp"
 #include "sensor_models/sonar_beam_model.hpp"
@@ -291,6 +293,30 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
   }
   if (opt.max_iterations > 0) defaults.max_iterations = opt.max_iterations;  // CLI wins last
 
+  // Single ordered pass over the bag (docs/superpowers/plans/2026-08-24-
+  // live-replay-unified-ingress.md Task 4): every ReadMcapMessages<T> call
+  // this function used to make per-topic, per-payload-type is now a filter
+  // over this one ReplayInputData -- see each consumption point below for
+  // how its original filter is reproduced on the flattened vectors.
+  uw::runtime::McapEventSource event_source(opt.bag_path);
+  uw::application::ReplayInputAccumulator accumulator;
+  const auto pump_report = uw::application::PumpEvents(event_source, accumulator);
+  if (pump_report.status == uw::runtime::EventSourceStatus::kOpenFailed) {
+    std::cerr << "failed to open bag: " << opt.bag_path << "\n";
+    return 1;
+  }
+  if (pump_report.unknown_topic_count > 0 || pump_report.parse_failure_count > 0) {
+    std::cout << "warning: bag scan saw " << pump_report.unknown_topic_count
+              << " unknown-topic message(s) and " << pump_report.parse_failure_count
+              << " topic/schema-mismatched message(s) (see EventSourceReport)\n";
+  }
+  if (accumulator.Diagnostics().HasErrors()) {
+    std::cerr << "replay input identity error(s):\n";
+    for (const auto& message : accumulator.Diagnostics().messages) std::cerr << "  - " << message << "\n";
+    return 1;
+  }
+  const uw::application::ReplayInputData& input = accumulator.Data();
+
   // Rectify once, up front: everything downstream that consumes camera
   // frames (stereo_landmark_vo_frontend, stereo_optical_depth_frontend, and
   // therefore the acoustic-optic fusion/map-bridge chain built on top of it)
@@ -319,8 +345,11 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
 
   // Warmup window (defaults.warmup_seconds, 0 = disabled): translate to a
   // keyframe-count cutoff using synth_bag_gen's fixed 5 Hz keyframe spacing
-  // ("kf0", "kf1", ... one every kKeyframeIntervalS — same coupling the TUM
-  // timestamp below already relies on). Keyframes inside the window still
+  // ("kf0", "kf1", ... one every kKeyframeIntervalS). This is the one place
+  // left in this file that still assumes that naming/spacing convention —
+  // every other keyframe identity below comes straight from
+  // ReplayInputData (wire observation ids), never from time. Keyframes
+  // inside the window still
   // enter the graph and still get relative-pose (dead-reckoning) factors —
   // dead reckoning through the warmup period is exactly what a real
   // estimator keeps doing while it isn't yet trusting absolute corrections
@@ -362,18 +391,16 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
   // warmup_seconds: it directly seeds the fixed vertex rather than adding a
   // depth factor, so it's not one of the "fusions" warmup gates.
   double kf0_z = 0.0;
-  uw::runtime::ReadMcapMessages<uw::domain::MeasurementEvidence>(
-      opt.bag_path, "/evidence/depth",
-      [&](uint64_t, const uw::domain::MeasurementEvidence& evidence) {
-        if (kf0_z != 0.0) return;  // already found
-        if (!uw::domain::HasPayload<uw::domain::PressureDepthMeasurement>(evidence)) return;
-        if (evidence.source_observations_size() == 0) return;
-        if (evidence.source_observations(0).value() != "kf0") return;
-        // depth_m is positive-down (world Z-up); negate to get pose z — see
-        // PressureDepthMeasurement's field comment in
-        // schemas/proto/uw/domain/measurement.proto.
-        kf0_z = -uw::domain::GetPayload<uw::domain::PressureDepthMeasurement>(evidence).depth_m();
-      });
+  for (const auto& evidence : input.evidence) {
+    if (kf0_z != 0.0) break;  // already found
+    if (!uw::domain::HasPayload<uw::domain::PressureDepthMeasurement>(evidence)) continue;
+    if (evidence.source_observations_size() == 0) continue;
+    if (evidence.source_observations(0).value() != "kf0") continue;
+    // depth_m is positive-down (world Z-up); negate to get pose z — see
+    // PressureDepthMeasurement's field comment in
+    // schemas/proto/uw/domain/measurement.proto.
+    kf0_z = -uw::domain::GetPayload<uw::domain::PressureDepthMeasurement>(evidence).depth_m();
+  }
 
   uw::estimation::PoseGraphProblem problem;
   Pose3 kf0_pose = Pose3::Identity();
@@ -411,26 +438,25 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
   int next_landmark_id = 0;
   int num_landmarks_discovered = 0;
 
-  // Shared by both the relative-pose block below and the acoustic-optic
-  // pass further down: synth_bag_gen's camera ImageFrames don't carry a
-  // keyframe id via header.observation_id (unlike sonar/depth evidence),
-  // only a capture_time — this reconstructs "kfN" from that, relying on
-  // synth_bag_gen's fixed 5 Hz keyframe spacing (kKeyframeIntervalS).
-  auto keyframe_id_for_time = [&](const uw::domain::Stamp& capture_time) -> std::string {
-    const double t_s = uw::domain::ToSeconds(capture_time);
-    const int index = static_cast<int>(std::lround(t_s / kKeyframeIntervalS));
-    return "kf" + std::to_string(index);
-  };
-
-  // Camera frames, read once and shared by both the relative-pose block
-  // below (estimator_mode == "stereo_landmark_vo") and the acoustic-optic
-  // pass further down — both used to read these topics independently.
-  // Frames stay RAW here: the synchronizer and sonar frontend still consume
-  // raw sonar/raw image headers (capture_time, sensor_frame) per this file's
-  // acoustic-optic pass, only the rectified/MONO8 pixel content is derived
-  // on demand below via get_rectified().
+  // Camera frames, partitioned once and shared by both the relative-pose
+  // block below (estimator_mode == "stereo_landmark_vo") and the acoustic-
+  // optic pass further down — both used to read these topics independently
+  // before this migration. Frames stay RAW here: the synchronizer and sonar
+  // frontend still consume raw sonar/raw image headers (capture_time,
+  // sensor_frame) per this file's acoustic-optic pass, only the rectified/
+  // MONO8 pixel content is derived on demand below via get_rectified().
+  //
+  // Identity comes straight from header.observation_id (ImageFrame.header,
+  // set by synth_bag_gen's BuildStereoPair / record_session.py's
+  // _write_keyframe) — no capture_time-based reconstruction. left/right are
+  // told apart by header.sensor_id ("camera_left"/"camera_right"), the same
+  // convention both producers already use.
   std::unordered_map<std::string, uw::domain::ImageFrame> left_by_kf_raw, right_by_kf_raw;
-  int max_kf_index = -1;
+  // First-appearance order of camera keyframe ids, in the bag's log_time_ns
+  // order (McapEventSource) — replaces the old "kf" + std::to_string(i) for
+  // i in [0, max_kf_index] loop, which assumed contiguous numeric ids.
+  std::vector<std::string> ordered_camera_keyframe_ids;
+  std::unordered_set<std::string> seen_camera_keyframe_ids;
 
   // Real per-keyframe metadata for StateSnapshot/TUM output (P1: no more
   // `index * kKeyframeIntervalS` timestamp fabrication). Priority for
@@ -444,17 +470,19 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
   std::unordered_map<std::string, std::vector<uw::domain::EvidenceId>> evidence_by_keyframe;
 
   if (rig.has_value()) {
-    uw::runtime::ReadMcapMessages<uw::domain::ImageFrame>(
-        opt.bag_path, "/raw/camera/left", [&](uint64_t, const uw::domain::ImageFrame& f) {
-          const std::string kf_id = keyframe_id_for_time(f.header().capture_time());
-          left_by_kf_raw[kf_id] = f;
-          max_kf_index = std::max(max_kf_index, std::stoi(kf_id.substr(2)));
-          capture_time_by_keyframe[kf_id] = f.header().capture_time();
-        });
-    uw::runtime::ReadMcapMessages<uw::domain::ImageFrame>(
-        opt.bag_path, "/raw/camera/right", [&](uint64_t, const uw::domain::ImageFrame& f) {
-          right_by_kf_raw[keyframe_id_for_time(f.header().capture_time())] = f;
-        });
+    for (const auto& frame : input.images) {
+      const std::string& kf_id = frame.header().observation_id().value();
+      const std::string& sensor_id = frame.header().sensor_id().value();
+      if (sensor_id == "camera_left") {
+        left_by_kf_raw[kf_id] = frame;
+        capture_time_by_keyframe[kf_id] = frame.header().capture_time();
+      } else if (sensor_id == "camera_right") {
+        right_by_kf_raw[kf_id] = frame;
+      } else {
+        continue;
+      }
+      if (seen_camera_keyframe_ids.insert(kf_id).second) ordered_camera_keyframe_ids.push_back(kf_id);
+    }
   }
 
   // Rectifies (ConvertToMono8 + StereoRectificationContext::Process()) a
@@ -495,34 +523,33 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
   // claimed that keyframe, so running these three passes in this fixed
   // order IS the priority order.
   std::vector<uw::evaluation::TrajectoryPose> ground_truth_trajectory;
-  uw::runtime::ReadMcapMessages<uw::domain::StateSnapshot>(
-      opt.bag_path, "/gt/state", [&](uint64_t, const uw::domain::StateSnapshot& gt) {
-        if (gt.has_state_id() && !gt.state_id().value().empty()) {
-          capture_time_by_keyframe.emplace(gt.state_id().value(), gt.capture_timestamp());
-        }
-        ground_truth_trajectory.push_back({uw::domain::ToSeconds(gt.capture_timestamp()),
-                                           Pose3::FromProto(gt.pose_wb())});
-      });
+  for (const auto& gt : input.reference_states) {
+    if (gt.has_state_id() && !gt.state_id().value().empty()) {
+      capture_time_by_keyframe.emplace(gt.state_id().value(), gt.capture_timestamp());
+    }
+    ground_truth_trajectory.push_back(
+        {uw::domain::ToSeconds(gt.capture_timestamp()), Pose3::FromProto(gt.pose_wb())});
+  }
   int num_timestamp_fallback_evidence = 0;
-  uw::runtime::ReadMcapMessages<uw::domain::MeasurementEvidence>(
-      opt.bag_path, "/evidence/depth",
-      [&](uint64_t log_time_ns, const uw::domain::MeasurementEvidence& evidence) {
-        if (!uw::domain::HasPayload<uw::domain::PressureDepthMeasurement>(evidence)) return;
-        if (evidence.source_observations_size() == 0) return;
-        const auto [it, inserted] = capture_time_by_keyframe.emplace(
-            evidence.source_observations(0).value(), uw::domain::FromSeconds(static_cast<double>(log_time_ns) * 1e-9));
-        if (inserted) ++num_timestamp_fallback_evidence;
-      });
-  uw::runtime::ReadMcapMessages<uw::domain::MeasurementEvidence>(
-      opt.bag_path, "/evidence/relative_pose",
-      [&](uint64_t log_time_ns, const uw::domain::MeasurementEvidence& evidence) {
-        if (!uw::domain::HasPayload<uw::domain::RelativePoseMeasurement>(evidence)) return;
-        const auto& measurement = uw::domain::GetPayload<uw::domain::RelativePoseMeasurement>(evidence);
-        const auto [it, inserted] = capture_time_by_keyframe.emplace(
-            measurement.to_keyframe().value(),
-            uw::domain::FromSeconds(static_cast<double>(log_time_ns) * 1e-9));
-        if (inserted) ++num_timestamp_fallback_evidence;
-      });
+  for (std::size_t i = 0; i < input.evidence.size(); ++i) {
+    const auto& evidence = input.evidence[i];
+    if (!uw::domain::HasPayload<uw::domain::PressureDepthMeasurement>(evidence)) continue;
+    if (evidence.source_observations_size() == 0) continue;
+    const auto log_time_ns = accumulator.EvidenceLogTimeNs()[i];
+    const auto [it, inserted] = capture_time_by_keyframe.emplace(
+        evidence.source_observations(0).value(),
+        uw::domain::FromSeconds(static_cast<double>(log_time_ns) * 1e-9));
+    if (inserted) ++num_timestamp_fallback_evidence;
+  }
+  for (std::size_t i = 0; i < input.evidence.size(); ++i) {
+    const auto& evidence = input.evidence[i];
+    if (!uw::domain::HasPayload<uw::domain::RelativePoseMeasurement>(evidence)) continue;
+    const auto& measurement = uw::domain::GetPayload<uw::domain::RelativePoseMeasurement>(evidence);
+    const auto log_time_ns = accumulator.EvidenceLogTimeNs()[i];
+    const auto [it, inserted] = capture_time_by_keyframe.emplace(
+        measurement.to_keyframe().value(), uw::domain::FromSeconds(static_cast<double>(log_time_ns) * 1e-9));
+    if (inserted) ++num_timestamp_fallback_evidence;
+  }
   if (num_timestamp_fallback_evidence > 0) {
     std::cout << "warning: " << num_timestamp_fallback_evidence
               << " keyframe(s) had no camera/GT timestamp; used MCAP log_time_ns as a fallback\n";
@@ -572,8 +599,7 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
     }
     uw::frontends::StereoLandmarkVoFrontend vo_frontend(vo_params);
 
-    for (int i = 0; i <= max_kf_index; ++i) {
-      const std::string kf_id = "kf" + std::to_string(i);
+    for (const auto& kf_id : ordered_camera_keyframe_ids) {
       auto* rectified = get_rectified(kf_id);
       if (rectified == nullptr) continue;
 
@@ -611,30 +637,27 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
     std::cout << "stereo_landmark_vo_frontend: computed relative-pose evidence from camera frames "
                  "(estimator_mode=stereo_landmark_vo)\n";
   } else {
-    uw::runtime::ReadMcapMessages<uw::domain::MeasurementEvidence>(
-        opt.bag_path, "/evidence/relative_pose",
-        [&](uint64_t log_time_ns, const uw::domain::MeasurementEvidence& evidence) {
-          if (!uw::domain::HasPayload<uw::domain::RelativePoseMeasurement>(evidence)) return;
-          const auto& measurement = uw::domain::GetPayload<uw::domain::RelativePoseMeasurement>(evidence);
-          const std::string from = measurement.from_keyframe().value();
-          const std::string to = measurement.to_keyframe().value();
-          if (!problem.HasKeyframe(from)) return;  // out-of-order/unexpected input: skip, don't guess
+    for (const auto& evidence : input.evidence) {
+      if (!uw::domain::HasPayload<uw::domain::RelativePoseMeasurement>(evidence)) continue;
+      const auto& measurement = uw::domain::GetPayload<uw::domain::RelativePoseMeasurement>(evidence);
+      const std::string from = measurement.from_keyframe().value();
+      const std::string to = measurement.to_keyframe().value();
+      if (!problem.HasKeyframe(from)) continue;  // out-of-order/unexpected input: skip, don't guess
 
-          const auto measured_relative = Pose3::FromProto(measurement.relative_pose());
-          const auto dead_reckoned_initial_guess = problem.GetKeyframePose(from) * measured_relative;
-          problem.AddKeyframe(to, dead_reckoned_initial_guess);
+      const auto measured_relative = Pose3::FromProto(measurement.relative_pose());
+      const auto dead_reckoned_initial_guess = problem.GetKeyframePose(from) * measured_relative;
+      problem.AddKeyframe(to, dead_reckoned_initial_guess);
 
-          uw::domain::FactorCandidate candidate;
-          candidate.set_residual_model(uw::factor_builders::RelativePoseFactorBuilder::kResidualModel);
-          candidate.set_proposed_noise(relative_pose_sqrt_info);
-          auto block = relative_pose_builder.Build(candidate, evidence, {});
-          if (block) {
-            problem.AddResidualBlock(std::move(block), {from, to});
-            evidence_by_keyframe[to].push_back(evidence.evidence_id());
-            ++num_relative_pose_factors;
-          }
-          (void)log_time_ns;  // metadata pre-pass above already covers this fallback tier
-        });
+      uw::domain::FactorCandidate candidate;
+      candidate.set_residual_model(uw::factor_builders::RelativePoseFactorBuilder::kResidualModel);
+      candidate.set_proposed_noise(relative_pose_sqrt_info);
+      auto block = relative_pose_builder.Build(candidate, evidence, {});
+      if (block) {
+        problem.AddResidualBlock(std::move(block), {from, to});
+        evidence_by_keyframe[to].push_back(evidence.evidence_id());
+        ++num_relative_pose_factors;
+      }
+    }
   }
   std::cout << "added " << num_relative_pose_factors << " relative-pose factors, "
             << problem.NumKeyframes() << " keyframes\n";
@@ -664,88 +687,87 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
   // measures per-frame CPU cost within that batch, not capture-to-pose
   // latency in a live system, which requires an online scheduler.
   std::vector<double> sonar_frame_latencies_ms;
-  uw::runtime::ReadMcapMessages<uw::domain::SonarFrame>(
-      opt.bag_path, "/raw/sonar_frame", [&](uint64_t, const uw::domain::SonarFrame& frame) {
-        // RAII so every exit path below (the early `return`s for warmup/
-        // unknown-keyframe/no-detection included) gets timed, not just the
-        // full-processing path — a reject decision still costs real time
-        // in an online system.
-        struct LatencyRecorder {
-          std::vector<double>& out;
-          std::chrono::steady_clock::time_point start;
-          ~LatencyRecorder() {
-            out.push_back(
-                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
-          }
-        } latency_recorder{sonar_frame_latencies_ms, std::chrono::steady_clock::now()};
+  for (const auto& frame : input.sonar_frames) {
+    // RAII so every exit path below (the early `continue`s for warmup/
+    // unknown-keyframe/no-detection included) gets timed, not just the
+    // full-processing path — a reject decision still costs real time
+    // in an online system.
+    struct LatencyRecorder {
+      std::vector<double>& out;
+      std::chrono::steady_clock::time_point start;
+      ~LatencyRecorder() {
+        out.push_back(
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+      }
+    } latency_recorder{sonar_frame_latencies_ms, std::chrono::steady_clock::now()};
 
-        ++num_sonar_frames;
-        const std::string keyframe_id = frame.header().observation_id().value();
-        if (!problem.HasKeyframe(keyframe_id)) return;
-        if (warmup_keyframe_ids.count(keyframe_id)) return;  // dead-reckoning only during warmup
+    ++num_sonar_frames;
+    const std::string keyframe_id = frame.header().observation_id().value();
+    if (!problem.HasKeyframe(keyframe_id)) continue;
+    if (warmup_keyframe_ids.count(keyframe_id)) continue;  // dead-reckoning only during warmup
 
-        // v1 rule (schemas/proto/uw/domain/hypothesis.proto, see file
-        // header): only the top-ranked (largest-cluster) candidate is
-        // consumed. candidates(0) is a full MeasurementEvidence, not just
-        // the payload — reuse it as-is rather than re-wrapping via
-        // domain::TopCandidate<T>(), which would discard evidence_id/
-        // algorithm_version for no benefit here.
-        const auto hypothesis_set = sonar_frontend.ProcessSonarFrame(frame);
-        if (hypothesis_set.candidates_size() == 0) return;  // no detection above threshold
-        const auto& evidence = hypothesis_set.candidates(0);
-        if (!uw::domain::HasPayload<uw::domain::SonarRangeBearing>(evidence)) return;
-        const auto& measurement = uw::domain::GetPayload<uw::domain::SonarRangeBearing>(evidence);
+    // v1 rule (schemas/proto/uw/domain/hypothesis.proto, see file
+    // header): only the top-ranked (largest-cluster) candidate is
+    // consumed. candidates(0) is a full MeasurementEvidence, not just
+    // the payload — reuse it as-is rather than re-wrapping via
+    // domain::TopCandidate<T>(), which would discard evidence_id/
+    // algorithm_version for no benefit here.
+    const auto hypothesis_set = sonar_frontend.ProcessSonarFrame(frame);
+    if (hypothesis_set.candidates_size() == 0) continue;  // no detection above threshold
+    const auto& evidence = hypothesis_set.candidates(0);
+    if (!uw::domain::HasPayload<uw::domain::SonarRangeBearing>(evidence)) continue;
+    const auto& measurement = uw::domain::GetPayload<uw::domain::SonarRangeBearing>(evidence);
 
-        // Real submap_manager query (see file header): project the
-        // detection into world frame using the keyframe's CURRENT
-        // (dead-reckoned, not yet optimized) pose estimate, then ask the
-        // submap for an already-known landmark within kLandmarkGateM. A
-        // hit reuses that landmark's stored position (stable across
-        // repeated sightings, not re-derived from this noisier single
-        // detection); a miss means this is a never-before-seen landmark,
-        // which gets inserted so later sightings can match it.
-        const auto current_pose = problem.GetKeyframePose(keyframe_id);
-        const Eigen::Vector3d local_detection(measurement.range_m() * std::cos(measurement.bearing_rad()),
-                                               measurement.range_m() * std::sin(measurement.bearing_rad()),
-                                               0.0);  // sonar has no elevation — see file header
-        const Eigen::Vector3d predicted_point_W = current_pose.Apply(local_detection);
+    // Real submap_manager query (see file header): project the
+    // detection into world frame using the keyframe's CURRENT
+    // (dead-reckoned, not yet optimized) pose estimate, then ask the
+    // submap for an already-known landmark within kLandmarkGateM. A
+    // hit reuses that landmark's stored position (stable across
+    // repeated sightings, not re-derived from this noisier single
+    // detection); a miss means this is a never-before-seen landmark,
+    // which gets inserted so later sightings can match it.
+    const auto current_pose = problem.GetKeyframePose(keyframe_id);
+    const Eigen::Vector3d local_detection(measurement.range_m() * std::cos(measurement.bearing_rad()),
+                                           measurement.range_m() * std::sin(measurement.bearing_rad()),
+                                           0.0);  // sonar has no elevation — see file header
+    const Eigen::Vector3d predicted_point_W = current_pose.Apply(local_detection);
 
-        constexpr double kLandmarkGateM = 1.5;  // margin over expected dead-reckoning drift at these ranges
-        const auto existing = submap_manager.QueryNearestPoint(predicted_point_W, kLandmarkGateM);
-        Eigen::Vector3d landmark_W;
-        if (existing.has_value()) {
-          landmark_W = *existing;
-        } else {
-          landmark_W = predicted_point_W;
-          uw::domain::MapEvidence landmark_evidence;
-          landmark_evidence.mutable_evidence_id()->set_value("landmark_" + std::to_string(next_landmark_id++));
-          landmark_evidence.mutable_keyframe_id()->set_value("landmarks");
-          landmark_evidence.mutable_local_frame()->set_value("world");
-          landmark_evidence.set_representation_type(uw::domain::MAP_REPRESENTATION_POINT_CLOUD);
-          landmark_evidence.set_reintegration_policy(
-              uw::domain::MapEvidence::REINTEGRATION_POLICY_TRANSFORM_ONLY);
-          std::string bytes(3 * sizeof(float), '\0');
-          auto* raw = reinterpret_cast<float*>(bytes.data());
-          raw[0] = static_cast<float>(landmark_W.x());
-          raw[1] = static_cast<float>(landmark_W.y());
-          raw[2] = static_cast<float>(landmark_W.z());
-          landmark_evidence.set_geometry_or_occupancy(bytes);
-          submap_manager.AddMapEvidence(landmark_evidence);
-          ++num_landmarks_discovered;
-        }
+    constexpr double kLandmarkGateM = 1.5;  // margin over expected dead-reckoning drift at these ranges
+    const auto existing = submap_manager.QueryNearestPoint(predicted_point_W, kLandmarkGateM);
+    Eigen::Vector3d landmark_W;
+    if (existing.has_value()) {
+      landmark_W = *existing;
+    } else {
+      landmark_W = predicted_point_W;
+      uw::domain::MapEvidence landmark_evidence;
+      landmark_evidence.mutable_evidence_id()->set_value("landmark_" + std::to_string(next_landmark_id++));
+      landmark_evidence.mutable_keyframe_id()->set_value("landmarks");
+      landmark_evidence.mutable_local_frame()->set_value("world");
+      landmark_evidence.set_representation_type(uw::domain::MAP_REPRESENTATION_POINT_CLOUD);
+      landmark_evidence.set_reintegration_policy(
+          uw::domain::MapEvidence::REINTEGRATION_POLICY_TRANSFORM_ONLY);
+      std::string bytes(3 * sizeof(float), '\0');
+      auto* raw = reinterpret_cast<float*>(bytes.data());
+      raw[0] = static_cast<float>(landmark_W.x());
+      raw[1] = static_cast<float>(landmark_W.y());
+      raw[2] = static_cast<float>(landmark_W.z());
+      landmark_evidence.set_geometry_or_occupancy(bytes);
+      submap_manager.AddMapEvidence(landmark_evidence);
+      ++num_landmarks_discovered;
+    }
 
-        uw::domain::FactorCandidate candidate;
-        candidate.set_residual_model(uw::factor_builders::SonarRangeFactorBuilder::kResidualModel);
-        candidate.set_proposed_noise(sonar_range_sqrt_info);
-        uw::measurement_api::FactorBuildContext context;
-        context.nearby_points_W = {landmark_W};
-        auto block = sonar_range_builder.Build(candidate, evidence, context);
-        if (block) {
-          problem.AddResidualBlock(std::move(block), {keyframe_id});
-          evidence_by_keyframe[keyframe_id].push_back(evidence.evidence_id());
-          ++num_sonar_factors;
-        }
-      });
+    uw::domain::FactorCandidate candidate;
+    candidate.set_residual_model(uw::factor_builders::SonarRangeFactorBuilder::kResidualModel);
+    candidate.set_proposed_noise(sonar_range_sqrt_info);
+    uw::measurement_api::FactorBuildContext context;
+    context.nearby_points_W = {landmark_W};
+    auto block = sonar_range_builder.Build(candidate, evidence, context);
+    if (block) {
+      problem.AddResidualBlock(std::move(block), {keyframe_id});
+      evidence_by_keyframe[keyframe_id].push_back(evidence.evidence_id());
+      ++num_sonar_factors;
+    }
+  }
   std::cout << "discovered " << num_landmarks_discovered << " landmarks via submap query\n";
   std::cout << "processed " << num_sonar_frames << " sonar frames (sonar_cfar_frontend) -> "
             << num_sonar_factors << " sonar range factors\n";
@@ -759,25 +781,23 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
   std::cout << "sonar frame processing latency: p95_ms=" << p95_sonar_frame_latency_ms << "\n";
 
   int num_depth_factors = 0;
-  uw::runtime::ReadMcapMessages<uw::domain::MeasurementEvidence>(
-      opt.bag_path, "/evidence/depth",
-      [&](uint64_t, const uw::domain::MeasurementEvidence& evidence) {
-        if (!uw::domain::HasPayload<uw::domain::PressureDepthMeasurement>(evidence)) return;
-        if (evidence.source_observations_size() == 0) return;
-        const std::string keyframe_id = evidence.source_observations(0).value();
-        if (!problem.HasKeyframe(keyframe_id)) return;
-        if (warmup_keyframe_ids.count(keyframe_id)) return;  // dead-reckoning only during warmup
+  for (const auto& evidence : input.evidence) {
+    if (!uw::domain::HasPayload<uw::domain::PressureDepthMeasurement>(evidence)) continue;
+    if (evidence.source_observations_size() == 0) continue;
+    const std::string keyframe_id = evidence.source_observations(0).value();
+    if (!problem.HasKeyframe(keyframe_id)) continue;
+    if (warmup_keyframe_ids.count(keyframe_id)) continue;  // dead-reckoning only during warmup
 
-        uw::domain::FactorCandidate candidate;
-        candidate.set_residual_model(uw::factor_builders::DepthFactorBuilder::kResidualModel);
-        candidate.set_proposed_noise(depth_sqrt_info);
-        auto block = depth_builder.Build(candidate, evidence, {});
-        if (block) {
-          problem.AddResidualBlock(std::move(block), {keyframe_id});
-          evidence_by_keyframe[keyframe_id].push_back(evidence.evidence_id());
-          ++num_depth_factors;
-        }
-      });
+    uw::domain::FactorCandidate candidate;
+    candidate.set_residual_model(uw::factor_builders::DepthFactorBuilder::kResidualModel);
+    candidate.set_proposed_noise(depth_sqrt_info);
+    auto block = depth_builder.Build(candidate, evidence, {});
+    if (block) {
+      problem.AddResidualBlock(std::move(block), {keyframe_id});
+      evidence_by_keyframe[keyframe_id].push_back(evidence.evidence_id());
+      ++num_depth_factors;
+    }
+  }
   std::cout << "added " << num_depth_factors << " depth factors\n";
 
   // defaults.solver: "gauss_newton_v1" (default) or "ceres_v1" — see
@@ -874,17 +894,16 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
   int num_map_evidence_points = 0;
   MapContributionCounts total_contributions;
   if (rig.has_value()) {
-    // keyframe_id_for_time / left_by_kf_raw / right_by_kf_raw / get_rectified
-    // are defined above, shared with the relative-pose block's
-    // stereo_landmark_vo_frontend path.
+    // left_by_kf_raw / right_by_kf_raw / get_rectified are defined above,
+    // shared with the relative-pose block's stereo_landmark_vo_frontend
+    // path.
     std::unordered_map<std::string, uw::domain::SonarFrame> sonar_by_kf;
-    uw::runtime::ReadMcapMessages<uw::domain::SonarFrame>(
-        opt.bag_path, "/raw/sonar_frame", [&](uint64_t, const uw::domain::SonarFrame& f) {
-          // v1 top-1 rule (see file header): keep the first sonar frame seen
-          // per keyframe if more than one target was in range.
-          const std::string kf_id = f.header().observation_id().value();
-          if (sonar_by_kf.find(kf_id) == sonar_by_kf.end()) sonar_by_kf[kf_id] = f;
-        });
+    for (const auto& f : input.sonar_frames) {
+      // v1 top-1 rule (see file header): keep the first sonar frame seen
+      // per keyframe if more than one target was in range.
+      const std::string kf_id = f.header().observation_id().value();
+      if (sonar_by_kf.find(kf_id) == sonar_by_kf.end()) sonar_by_kf[kf_id] = f;
+    }
 
     uw::frontends::StereoOpticalDepthFrontendParams stereo_params;
     stereo_params.left_frame = rectification_context->LeftRectifiedFrame();

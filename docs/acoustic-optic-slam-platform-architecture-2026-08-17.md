@@ -33,9 +33,9 @@ implementation_reference: ./uw-slam-codebase-reference-2026-08-18.md
 
 | 状态 | 架构内容 |
 |---|---|
-| 已落地端到端链路 | Protobuf 规范化消息模型、ROS 无关 core、声呐 CFAR、双目 VO/稠密深度、声光关联与后验融合、三类位姿图因子、SubmapManager、MCAP、分层配置校验、基础 RunManifest、确定性回放与 ATE；合成闭环 136 项 CTest/35 项 Python 测试全绿 |
+| 已落地端到端链路 | Protobuf 规范化消息模型、ROS 无关 core、声呐 CFAR、双目 VO/稠密深度、声光关联与后验融合、三类位姿图因子、SubmapManager、MCAP、分层配置校验、基础 RunManifest、确定性回放与 ATE；规范事件契约与单次有序 MCAP `EventSource`（`CanonicalEvent`/`PipelineInputPort`/`PumpEvents`，见 docs/superpowers/plans/2026-08-24-live-replay-unified-ingress.md）统一了 replay 的输入读取路径，`ReadMcapMessages<T>` 不再是 replay 主链入口；合成闭环 136 项 CTest/35 项 Python 测试全绿（测试数量随后续改动增长，以实跑为准） |
 | 部分落地 | HoloOcean Python 录制网关和真实双目+深度+GT 离线 VO 回放（50 keyframe、对齐 ATE RMSE 0.5596 m，但 solver stalled、无 sonar/IMU/DVL）；ROS2 ImagingSonar 纯传输桥；plumb-bob same-K 去畸变原语尚未接入 replay；声光稠密局部地图数据进入 submap 但不参与位姿图；点云地图指标已有小点集 API/单测；ASan+UBSan、gcov/cppcheck 已有 CI/脚本但后两者仅报告 |
-| 仍是目标设计 | 全传感器真实数据闭环、实时 VIO/SLAM 与在线调度、原生紧耦合、多路自适应 reliability cap、正式 TSDF/surfel/occupancy 地图、RPE/地图 reference 与质量门禁、学习模型生命周期与神经地图 |
+| 仍是目标设计 | 全传感器真实数据闭环、实时 VIO/SLAM 与在线调度（供应商 SDK 的 live `EventSource` 实现、有界队列/背压调度、Start/Stop/Drain 生命周期、异步 recorder tap、HMI presentation adapter 均未实现——`EventSource`/`PipelineInputPort` 接口已经与来源无关，但目前只有 MCAP 一种实现）、原生紧耦合、多路自适应 reliability cap、正式 TSDF/surfel/occupancy 地图、RPE/地图 reference 与质量门禁、学习模型生命周期与神经地图 |
 
 ## 阅读导航
 

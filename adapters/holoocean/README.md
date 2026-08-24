@@ -10,7 +10,7 @@ readable by `replay_demo` without translation.
 
 This machine has no HoloOcean/Unreal install, so `holoocean_driver.py`'s `HoloOceanSession` (the part
 that actually calls into HoloOcean) is written but not exercised. Everything else IS tested (`pytest`,
-9/9 passing as of this writing):
+54/54 passing as of this writing):
 
 - `coordinates.py` — UE↔body coordinate transforms, quaternion-based (fixes the Euler gimbal-lock
   branch found in `ocean_t`'s `CoordTransformer._SE3_to_pose`).
@@ -20,6 +20,12 @@ that actually calls into HoloOcean) is written but not exercised. Everything els
 - `scenario_randomization.py` — the programmable multi-axis randomization API that replaces
   `water_control_panel.py`'s two-slider GUI panel.
 - `time_utils.py` — capture/receive time separation.
+- `record_session.py` — a "keyframe" (stereo pair + the GT/depth evidence keyed off it) forms only on
+  ticks where both cameras publish, but sonar/IMU/DVL (and even a lone/monocular camera) are written on
+  ANY tick where HoloOcean published them, independent of the camera pair or of each other — matching
+  real hardware running each sensor at its own rate. Each of those independently-written sensors'
+  `observation_id` is keyed on its own raw simulation-tick index, never on the (much lower-rate) camera
+  keyframe counter — see `tests/test_record_session.py`.
 
 ## Setup
 

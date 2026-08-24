@@ -238,6 +238,31 @@ images 和带新 `calibration_version` 的 derived `RigCalibrationSnapshot`—�
 `tools/lint/check_layer_dependencies.py`）会强制检查这一点。Protobuf schema 是
 C++ 与 Python 跨语言规范化消息模型的唯一来源。
 
+### Live/Replay 统一输入主链
+
+`RunReplayPipeline`（`apps/replay_demo`）不再对同一个 MCAP 文件按 topic 多次
+`ReadMcapMessages<T>` 扫描、也不再用 `capture_time / 0.2s` 反推 `kfN` 关键帧
+id——一次 `uw::runtime::McapEventSource` 顺序扫描（按 `logTime` 排序，未知
+topic/schema 不匹配/payload 解析失败都计入 `EventSourceReport`，不会静默丢失）
+把 bag 拆成规范化的 `uw::runtime::CanonicalEvent`，经
+`uw::application::PumpEvents` 分发进 `PipelineInputPort`；`replay_demo` 用的
+实现是 `ReplayInputAccumulator`（`include/application/replay_input_accumulator.hpp`），
+身份只认 wire 里的 `ObservationId`/`MeasurementEvidence.source_observations`，
+空 id、`(sensor_id, observation_id)` 重复、evidence 引用不存在的 source
+observation 都进 `ReplayInputDiagnostics` 并使整个 run 以非零退出码失败，
+而不是被悄悄吞掉。
+
+这套 `EventSource`/`PipelineInputPort` 接口本身与来源无关——`tests/integration/
+event_source_parity_test.cpp` 验证同一批事件经 MCAP 与内存两种 `EventSource`
+注入，应用侧观察到的顺序完全一致，这是它已经可靠的证明，不是"实时调度已经
+接通"的证明。**已完成**：规范事件契约（`CanonicalEvent`/`canonical_topics.hpp`）、
+单次 MCAP `EventSource`、与来源无关的 `PipelineInputPort`/`PumpEvents`、
+`replay_demo` 输入阶段的迁移。**尚未完成**（下一实施包起点）：供应商 SDK 的
+`EventSource` 实现、有界队列/背压调度、Start/Stop/Drain 生命周期、异步
+recorder tap、HMI presentation adapter。新代码不允许绕过 `PipelineInputPort`
+直接用 `ReadMcapMessages<T>`/vendor SDK 消息喂给算法层——`ReadMcapMessages<T>`
+本身仍保留给 `bag_audit` 等评测/审计工具用，但不再是 replay 主链的入口。
+
 ### 仓库结构
 
 | 目录 | 职责 |

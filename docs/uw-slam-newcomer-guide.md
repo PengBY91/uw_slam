@@ -109,18 +109,24 @@ CLI 入口是 [`apps/replay_demo.cpp`](../apps/replay_demo.cpp)，实际用例�
 1. `synth_bag_gen` 生成圆弧轨迹、相对位姿、深度、声呐帧和 ground truth，写入
    统一 MCAP 录制格式。
 2. `replay_demo` 加载四层 YAML 配置。
-3. 读取相对位姿量测结果，建立 keyframe 和初始里程计轨迹——具体怎么拿到这份
-   量测结果取决于历史字段名 `estimator_mode`（见下），不是选择估计求解器。
-4. 原始 `SonarFrame` 经 `CFAR → 极坐标转换 → DBSCAN`，得到声呐候选。
-5. `SubmapManager`（按 keyframe 索引的局部地图数据存储，不是完整的 submap 生命周期
+3. `McapEventSource` 顺序扫描一次 bag（按 `logTime` 排序），把消息拆成
+   `CanonicalEvent` 经 `PumpEvents` 分发进 `ReplayInputAccumulator`
+   （`include/application/replay_input_accumulator.hpp`）——关键帧身份来自
+   wire 里的 `ObservationId`/`source_observations`，不是时间反推；这一步产出
+   下面第 4 步开始要用的 `ReplayInputData`。
+4. 从 `ReplayInputData` 中取出相对位姿量测结果，建立 keyframe 和初始里程计
+   轨迹——具体怎么拿到这份量测结果取决于历史字段名 `estimator_mode`（见下），
+   不是选择估计求解器。
+5. 原始 `SonarFrame` 经 `CFAR → 极坐标转换 → DBSCAN`，得到声呐候选。
+6. `SubmapManager`（按 keyframe 索引的局部地图数据存储，不是完整的 submap 生命周期
    管理器）做最近邻地标关联，再生成声呐距离因子。
-6. 深度量测结果生成绝对 Z 方向因子。
-7. 相对位姿、声呐距离、深度残差一起进入 `PoseGraphProblem`。
-8. Gauss-Newton/LM 优化所有非固定 keyframe。
-9. 优化结果写入 `StateStore`，更新地图位姿，并计算 ATE。
-10. 输出 TUM 轨迹和 RunManifest。
+7. 深度量测结果生成绝对 Z 方向因子。
+8. 相对位姿、声呐距离、深度残差一起进入 `PoseGraphProblem`。
+9. Gauss-Newton/LM 优化所有非固定 keyframe。
+10. 优化结果写入 `StateStore`，更新地图位姿，并计算 ATE。
+11. 输出 TUM 轨迹和 RunManifest。
 
-`estimator_mode` 是保留兼容性的历史字段名，决定第 3 步怎么拿到相对位姿证据，而不是
+`estimator_mode` 是保留兼容性的历史字段名，决定第 4 步怎么拿到相对位姿证据，而不是
 选择求解器；两条路径最终使用同一个 `GaussNewtonSolver`。`frontends.landmark_detector`
 还会选择 blob/Harris 检测器。sonar/optical frontend 当前各只有一个实现；`map_backend`
 是预留的地图实现选择字段，目前只支持 `submap_point_cloud_v1`，未知标识符会 fail-fast：
@@ -144,6 +150,7 @@ CLI 入口是 [`apps/replay_demo.cpp`](../apps/replay_demo.cpp)，实际用例�
 ```text
 synth_bag_gen
  → 统一 MCAP 录制格式
+ → McapEventSource + PumpEvents → ReplayInputAccumulator
  → replay_demo
  → SonarCfarFrontend
  → RelativePose/SonarRange/Depth FactorBuilder
@@ -153,7 +160,15 @@ synth_bag_gen
  → ATE + trajectory + RunManifest
 ```
 
-这是一条批处理验证链：程序会按 topic 多次扫描 MCAP，而不是在线消息循环。
+这仍是一条批处理验证链，不是在线消息循环——但输入阶段已经不是"按 topic 多次
+扫描 MCAP"了：`McapEventSource` 只顺序扫描 bag 一次，按 `logTime` 排序把消息
+拆成 `CanonicalEvent`，`PumpEvents` 分发进 `PipelineInputPort`
+（`replay_demo` 用 `ReplayInputAccumulator` 实现）。这条 `EventSource`/
+`PipelineInputPort` 接口本身与来源无关——MCAP 回放和未来的供应商 SDK live
+source 都能喂给同一个 `PipelineInputPort`，但**有界调度、Start/Stop/Drain
+生命周期、真正的在线消息循环仍未实现**（下一实施包起点：供应商 SDK
+`EventSource` + runtime hardening），不要把"输入主链已统一"误读成"在线
+模式已经存在"。
 
 ### 2. 声光深度融合链
 
@@ -355,6 +370,11 @@ scenario_matrix/main.cpp
 - 位姿图只优化 keyframe 位姿，不联合优化地标。
 - 声呐消费者主要使用每帧 top-1 候选。
 - ROS2 HoloOcean 节点目前只完成传输和格式转换，尚未驱动完整算法链。
+- `McapEventSource`/`PipelineInputPort`/`PumpEvents`（`include/runtime/event_source.hpp`、
+  `include/application/pipeline_input_port.hpp`）统一了 MCAP 回放的输入读取方式，
+  并且这套接口本身与来源无关；但这只是"输入主链"这一层——供应商 SDK 的
+  `EventSource` 实现、有界队列/背压调度、Start/Stop/Drain 生命周期、真正的
+  在线消息循环都还不存在，不要把它读成"在线/实时模式已经接通"。
 - 声光组件和场景矩阵已经能够端到端运行，`replay_demo` 也会生成融合局部地图数据；
   但稠密声光结果不参与位姿图优化。
 - `camera_rectifier` 是已测试但未接线的有限 plumb-bob 去畸变原语，只适用于当前平行

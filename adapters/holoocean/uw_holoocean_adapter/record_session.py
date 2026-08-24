@@ -12,16 +12,17 @@ full WSL2-vs-native investigation. Run with:
 
     python -m uw_holoocean_adapter.record_session --out bag.mcap
 
-A keyframe is emitted only on ticks where the camera sensors actually
-published (they run at their own configured Hz, slower than the
-simulation's tick rate — see holoocean_driver.py's RawSensorFrame comment);
-non-camera ticks are stepped but produce no bag messages, matching how
-apps/tools/synth_bag_gen ties every message to a keyframe rather than to a
-raw tick. Sonar/IMU/DVL are each written to their own topic
-(/raw/sonar_frame, /raw/imu, /raw/dvl) whenever present on a
-camera-bearing tick — none of the three is required for the others or for
-the tick to count as a keyframe, since real hardware would run them at
-independent rates too.
+A "keyframe" (stereo camera pair + the GT/depth evidence keyed off it) is
+only formed on ticks where BOTH camera sensors published (they run at their
+own configured Hz, slower than the simulation's tick rate — see
+holoocean_driver.py's RawSensorFrame comment). Every other sensor —
+sonar, IMU, DVL, and even a single (monocular) camera — is written
+independently on ANY tick where it published, whether or not that tick also
+formed a stereo keyframe: real hardware runs each sensor at its own rate,
+so a non-camera-bearing tick's IMU/DVL/sonar reading is not discarded, and
+each of those sensors' observation_id is a stable "tick" + raw tick index
+identity of its own, never inherited from the (much lower-rate) camera
+keyframe counter.
 """
 from __future__ import annotations
 
@@ -91,73 +92,94 @@ def _default_command():
     return [0, 0, 0, 0, 10, 10, 10, 10]
 
 
-def _write_keyframe(
+def _write_sensor_tick(
     writer: CanonicalMcapWriter,
     modules: SchemaModules,
     frame: RawSensorFrame,
+    tick_index: int,
     keyframe_index: int,
     *,
     sonar_horizontal_fov_rad: float = _DEFAULT_SONAR_HORIZONTAL_FOV_RAD,
     sonar_min_range_m: float = _DEFAULT_SONAR_MIN_RANGE_M,
     sonar_max_range_m: float = _DEFAULT_SONAR_MAX_RANGE_M,
-) -> bool:
-    """Writes one RawSensorFrame's messages if it carries a stereo camera
-    pair; returns whether it did (so the caller knows whether to advance
-    its keyframe counter). Sonar/IMU/DVL are each written independently
-    when present in this tick — none of the three gates on the others or
-    on the camera pair being present, since they run at their own rates
-    (matching this file's existing camera-pair gating rationale, see the
-    module docstring)."""
+) -> tuple[int, bool]:
+    """Writes whatever this tick's RawSensorFrame carries. Returns
+    (messages_written, formed_stereo_pair): formed_stereo_pair is True only
+    when both LeftCamera and RightCamera published this tick -- that is the
+    one condition under which record_frames() below should advance its
+    keyframe counter, since GT state and depth evidence are genuinely
+    per-keyframe concepts (their identity fields reference the stereo
+    keyframe they belong to). A lone camera (monocular), sonar, IMU, and DVL
+    are each written whenever present, independent of a stereo pair or of
+    each other, with observation_id stably keyed on `tick_index` (this
+    frame's raw simulation-tick position) -- never on `keyframe_index`,
+    which only advances at the much lower stereo-camera rate."""
     sensors = frame.sensors
-    if "LeftCamera" not in sensors or "RightCamera" not in sensors:
-        return False
-
-    kf_id = "kf" + str(keyframe_index)
     log_time_ns = int(frame.sim_time_s * 1e9)
+    tick_id = "tick" + str(tick_index)
+    messages_written = 0
 
-    left_image = holoocean_camera_to_image_frame(
-        modules.image,
-        modules.observation,
-        modules.time,
-        np.asarray(sensors["LeftCamera"]),
-        sensor_id="camera_left",
-        sensor_frame="camera_left_link",
-        observation_id=kf_id,
-        capture_time_s=frame.sim_time_s,
-        receive_time_s=frame.receive_time_s,
-    )
-    right_image = holoocean_camera_to_image_frame(
-        modules.image,
-        modules.observation,
-        modules.time,
-        np.asarray(sensors["RightCamera"]),
-        sensor_id="camera_right",
-        sensor_frame="camera_right_link",
-        observation_id=kf_id,
-        capture_time_s=frame.sim_time_s,
-        receive_time_s=frame.receive_time_s,
-    )
-    writer.write_message("/raw/camera/left", log_time_ns, left_image)
-    writer.write_message("/raw/camera/right", log_time_ns, right_image)
+    has_left = "LeftCamera" in sensors
+    has_right = "RightCamera" in sensors
+    formed_stereo_pair = has_left and has_right
+    # Only a genuine stereo pair earns the low-rate "kfN" identity (and the
+    # GT/depth evidence keyed off it below); a lone camera still gets
+    # recorded, but under its own tick-based identity -- not a fabricated
+    # stereo keyframe.
+    camera_observation_id = ("kf" + str(keyframe_index)) if formed_stereo_pair else tick_id
 
-    if "PoseSensor" in sensors:
-        snapshot = pose_sensor_to_state_snapshot(
-            modules.state,
+    if has_left:
+        left_image = holoocean_camera_to_image_frame(
+            modules.image,
+            modules.observation,
             modules.time,
-            np.asarray(sensors["PoseSensor"]),
-            state_id=kf_id,
+            np.asarray(sensors["LeftCamera"]),
+            sensor_id="camera_left",
+            sensor_frame="camera_left_link",
+            observation_id=camera_observation_id,
             capture_time_s=frame.sim_time_s,
+            receive_time_s=frame.receive_time_s,
         )
-        writer.write_message("/gt/state", log_time_ns, snapshot)
+        writer.write_message("/raw/camera/left", log_time_ns, left_image)
+        messages_written += 1
 
-    if "DepthSensor" in sensors:
-        evidence = depth_sensor_to_evidence(
-            modules.measurement,
-            np.asarray(sensors["DepthSensor"]),
-            evidence_id="depth_" + kf_id,
-            source_observation_id=kf_id,
+    if has_right:
+        right_image = holoocean_camera_to_image_frame(
+            modules.image,
+            modules.observation,
+            modules.time,
+            np.asarray(sensors["RightCamera"]),
+            sensor_id="camera_right",
+            sensor_frame="camera_right_link",
+            observation_id=camera_observation_id,
+            capture_time_s=frame.sim_time_s,
+            receive_time_s=frame.receive_time_s,
         )
-        writer.write_message("/evidence/depth", log_time_ns, evidence)
+        writer.write_message("/raw/camera/right", log_time_ns, right_image)
+        messages_written += 1
+
+    if formed_stereo_pair:
+        kf_id = camera_observation_id
+        if "PoseSensor" in sensors:
+            snapshot = pose_sensor_to_state_snapshot(
+                modules.state,
+                modules.time,
+                np.asarray(sensors["PoseSensor"]),
+                state_id=kf_id,
+                capture_time_s=frame.sim_time_s,
+            )
+            writer.write_message("/gt/state", log_time_ns, snapshot)
+            messages_written += 1
+
+        if "DepthSensor" in sensors:
+            evidence = depth_sensor_to_evidence(
+                modules.measurement,
+                np.asarray(sensors["DepthSensor"]),
+                evidence_id="depth_" + kf_id,
+                source_observation_id=kf_id,
+            )
+            writer.write_message("/evidence/depth", log_time_ns, evidence)
+            messages_written += 1
 
     if _SONAR_SENSOR_KEY in sensors:
         sonar_frame = holoocean_sonar_to_sonar_frame(
@@ -167,7 +189,7 @@ def _write_keyframe(
             np.asarray(sensors[_SONAR_SENSOR_KEY]),
             sensor_id="sonar0",
             sensor_frame="sonar_link",
-            observation_id=kf_id,
+            observation_id=tick_id,
             capture_time_s=frame.sim_time_s,
             receive_time_s=frame.receive_time_s,
             horizontal_fov_rad=sonar_horizontal_fov_rad,
@@ -175,6 +197,7 @@ def _write_keyframe(
             max_range_m=sonar_max_range_m,
         )
         writer.write_message("/raw/sonar_frame", log_time_ns, sonar_frame)
+        messages_written += 1
 
     if _IMU_SENSOR_KEY in sensors:
         imu_sample = holoocean_imu_to_imu_sample(
@@ -184,11 +207,12 @@ def _write_keyframe(
             np.asarray(sensors[_IMU_SENSOR_KEY]),
             sensor_id="imu0",
             sensor_frame="imu_link",
-            observation_id=kf_id,
+            observation_id=tick_id,
             capture_time_s=frame.sim_time_s,
             receive_time_s=frame.receive_time_s,
         )
         writer.write_message("/raw/imu", log_time_ns, imu_sample)
+        messages_written += 1
 
     if _DVL_SENSOR_KEY in sensors:
         dvl_sample = holoocean_dvl_to_dvl_sample(
@@ -198,13 +222,14 @@ def _write_keyframe(
             np.asarray(sensors[_DVL_SENSOR_KEY]),
             sensor_id="dvl0",
             sensor_frame="dvl_link",
-            observation_id=kf_id,
+            observation_id=tick_id,
             capture_time_s=frame.sim_time_s,
             receive_time_s=frame.receive_time_s,
         )
         writer.write_message("/raw/dvl", log_time_ns, dvl_sample)
+        messages_written += 1
 
-    return True
+    return messages_written, formed_stereo_pair
 
 
 def record_frames(
@@ -217,25 +242,29 @@ def record_frames(
     sonar_max_range_m: float = _DEFAULT_SONAR_MAX_RANGE_M,
 ) -> int:
     """Writes an iterable of RawSensorFrame (see holoocean_driver.py) into a
-    canonical MCAP bag at `out_path`, emitting one keyframe per
-    camera-bearing frame. This is the testable core — it knows nothing
-    about HoloOceanSession, so a test can pass in hand-built frames with no
-    real HoloOcean install; record_session() below wraps it with a real
-    session for the CLI entrypoint.
+    canonical MCAP bag at `out_path`, forming one keyframe per
+    stereo-camera-bearing frame while independently writing every other
+    sensor present on ANY tick (see _write_sensor_tick). This is the
+    testable core — it knows nothing about HoloOceanSession, so a test can
+    pass in hand-built frames with no real HoloOcean install;
+    record_session() below wraps it with a real session for the CLI
+    entrypoint. Returns the number of stereo keyframes formed (same public
+    contract as before this function wrote every sensor independently).
     """
     keyframe_index = 0
     with CanonicalMcapWriter(out_path) as writer:
-        for frame in frames:
-            wrote = _write_keyframe(
+        for tick_index, frame in enumerate(frames):
+            _, formed_stereo_pair = _write_sensor_tick(
                 writer,
                 modules,
                 frame,
+                tick_index,
                 keyframe_index,
                 sonar_horizontal_fov_rad=sonar_horizontal_fov_rad,
                 sonar_min_range_m=sonar_min_range_m,
                 sonar_max_range_m=sonar_max_range_m,
             )
-            if wrote:
+            if formed_stereo_pair:
                 keyframe_index += 1
     return keyframe_index
 

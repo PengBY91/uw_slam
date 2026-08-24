@@ -220,7 +220,7 @@ const uw::domain::CameraIntrinsics* FindRigCamera(const uw::domain::RigCalibrati
 
 std::pair<uw::domain::ImageFrame, uw::domain::ImageFrame> BuildStereoPair(
     const uw::sensor_models::StereoGeometry& stereo_geometry,
-    const std::vector<VisibleLandmark>& visible_landmarks, uint64_t t_ns) {
+    const std::vector<VisibleLandmark>& visible_landmarks, uint64_t t_ns, const std::string& kf_id) {
   constexpr double kBackgroundDepthM = 15.0;
   const int background_disparity_px = std::max(
       1, static_cast<int>(std::lround(stereo_geometry.left.fx * stereo_geometry.baseline_m / kBackgroundDepthM)));
@@ -271,6 +271,7 @@ std::pair<uw::domain::ImageFrame, uw::domain::ImageFrame> BuildStereoPair(
 
   auto make_frame = [&](const std::string& frame_name, std::string pixels) {
     uw::domain::ImageFrame image;
+    image.mutable_header()->mutable_observation_id()->set_value(kf_id);
     image.mutable_header()->mutable_sensor_frame()->set_value(frame_name);
     image.mutable_header()->mutable_sensor_id()->set_value(
         frame_name == "camera_left_link" ? "camera_left" : "camera_right");
@@ -497,7 +498,7 @@ int main(int argc, char** argv) {
             }
             visible.push_back(VisibleLandmark{static_cast<int>(100000 + ti), local_optical});
           }
-          auto stereo_pair = BuildStereoPair(stereo_geometry, visible, t_ns);
+          auto stereo_pair = BuildStereoPair(stereo_geometry, visible, t_ns, kf_id);
           writer.WriteMessage("/raw/camera/left", t_ns, stereo_pair.first);
           writer.WriteMessage("/raw/camera/right", t_ns, stereo_pair.second);
         }

@@ -79,6 +79,8 @@ add_executable(runtime_tests
   tests/runtime/acoustic_optic_synchronizer_test.cpp
   tests/runtime/bag_audit_checks_test.cpp
   tests/runtime/synthetic_sonar_test.cpp
+  tests/runtime/canonical_event_test.cpp
+  tests/runtime/mcap_event_source_test.cpp
 )
 target_compile_definitions(runtime_tests PRIVATE UW_REPO_ROOT="${PROJECT_SOURCE_DIR}")
 target_link_libraries(runtime_tests PRIVATE
@@ -115,6 +117,8 @@ uw_register_gtest(spatial_index_adapters_tests "unit.spatial_index_adapters" "un
 
 add_executable(application_tests
   tests/application/replay_pipeline_test.cpp
+  tests/application/event_pump_test.cpp
+  tests/application/replay_input_accumulator_test.cpp
 )
 target_link_libraries(application_tests PRIVATE
   uw::application uw::domain uw::core uw::runtime GTest::gtest GTest::gtest_main
@@ -127,6 +131,14 @@ add_executable(contract_tests
 )
 target_link_libraries(contract_tests PRIVATE uw::domain uw::core GTest::gtest GTest::gtest_main)
 uw_register_gtest(contract_tests "contract" "contract")
+
+add_executable(event_source_parity_test tests/integration/event_source_parity_test.cpp)
+target_link_libraries(event_source_parity_test PRIVATE uw::application uw::domain uw::core uw::runtime)
+set_target_properties(event_source_parity_test PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/tests"
+)
+add_test(NAME integration.event_source_parity COMMAND event_source_parity_test)
+set_tests_properties(integration.event_source_parity PROPERTIES LABELS "integration;replay;runtime")
 
 add_test(
   NAME integration.replay_determinism

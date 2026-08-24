@@ -1,0 +1,94 @@
+#include "application/replay_input_accumulator.hpp"
+
+#include <variant>
+
+namespace uw::application {
+
+bool ReplayInputAccumulator::ValidateRawIdentity(const std::string& sensor_id,
+                                                 const std::string& observation_id,
+                                                 const std::string& kind_label,
+                                                 bool allow_duplicate_identity) {
+  if (observation_id.empty()) {
+    ++diagnostics_.empty_observation_id_count;
+    diagnostics_.messages.push_back("empty observation_id on a " + kind_label +
+                                    " (sensor_id=" + sensor_id + ")");
+    return false;
+  }
+  const std::string key = sensor_id + "\x1F" + observation_id;
+  const bool is_new = seen_raw_identities_.insert(key).second;
+  if (!is_new && !allow_duplicate_identity) {
+    ++diagnostics_.duplicate_observation_count;
+    diagnostics_.messages.push_back("duplicate (sensor_id, observation_id) = (" + sensor_id + ", " +
+                                    observation_id + ") on a " + kind_label);
+    return false;
+  }
+  known_observation_ids_.insert(observation_id);
+  return true;
+}
+
+bool ReplayInputAccumulator::OnImageFrame(const uw::runtime::CanonicalEvent& event) {
+  const auto& frame = std::get<uw::domain::ImageFrame>(event.payload);
+  if (ValidateRawIdentity(frame.header().sensor_id().value(), frame.header().observation_id().value(),
+                          "ImageFrame", /*allow_duplicate_identity=*/false)) {
+    data_.images.push_back(frame);
+  }
+  return true;
+}
+
+bool ReplayInputAccumulator::OnSonarFrame(const uw::runtime::CanonicalEvent& event) {
+  const auto& frame = std::get<uw::domain::SonarFrame>(event.payload);
+  if (ValidateRawIdentity(frame.header().sensor_id().value(), frame.header().observation_id().value(),
+                          "SonarFrame", /*allow_duplicate_identity=*/true)) {
+    data_.sonar_frames.push_back(frame);
+  }
+  return true;
+}
+
+bool ReplayInputAccumulator::OnImuSample(const uw::runtime::CanonicalEvent& event) {
+  const auto& sample = std::get<uw::domain::ImuSample>(event.payload);
+  if (ValidateRawIdentity(sample.header().sensor_id().value(), sample.header().observation_id().value(),
+                          "ImuSample", /*allow_duplicate_identity=*/false)) {
+    data_.imu_samples.push_back(sample);
+  }
+  return true;
+}
+
+bool ReplayInputAccumulator::OnDvlSample(const uw::runtime::CanonicalEvent& event) {
+  const auto& sample = std::get<uw::domain::DvlSample>(event.payload);
+  if (ValidateRawIdentity(sample.header().sensor_id().value(), sample.header().observation_id().value(),
+                          "DvlSample", /*allow_duplicate_identity=*/false)) {
+    data_.dvl_samples.push_back(sample);
+  }
+  return true;
+}
+
+bool ReplayInputAccumulator::OnMeasurementEvidence(const uw::runtime::CanonicalEvent& event) {
+  data_.evidence.push_back(std::get<uw::domain::MeasurementEvidence>(event.payload));
+  evidence_log_time_ns_.push_back(event.log_time_ns);
+  return true;
+}
+
+bool ReplayInputAccumulator::OnReferenceState(const uw::runtime::CanonicalEvent& event) {
+  data_.reference_states.push_back(std::get<uw::domain::StateSnapshot>(event.payload));
+  return true;
+}
+
+bool ReplayInputAccumulator::OnHealthReport(const uw::runtime::CanonicalEvent&) { return true; }
+
+bool ReplayInputAccumulator::OnMapEvidence(const uw::runtime::CanonicalEvent&) { return true; }
+
+bool ReplayInputAccumulator::Flush() {
+  for (const auto& evidence : data_.evidence) {
+    for (const auto& source : evidence.source_observations()) {
+      if (known_observation_ids_.find(source.value()) == known_observation_ids_.end()) {
+        ++diagnostics_.dangling_evidence_reference_count;
+        diagnostics_.messages.push_back("evidence " + evidence.evidence_id().value() +
+                                        " references unknown source observation '" + source.value() +
+                                        "'");
+      }
+    }
+  }
+  return true;
+}
+
+}  // namespace uw::application
