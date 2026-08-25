@@ -137,3 +137,28 @@ TEST(SonarTargetExtractor, SkipsEveryCandidateThatCouldEmitNonFiniteValues) {
   ASSERT_EQ(detections.size(), 1u);
   EXPECT_EQ(detections[0].source_observation().value(), "valid");
 }
+
+TEST(SonarTargetExtractor, SkipsInvalidSigmaAndNonNegativeMetricsButKeepsSignedMetrics) {
+  uw::domain::HypothesisSet hypotheses;
+  auto valid = MakeSonarCandidate("valid_signed_metric", "valid", 0.1, 2.0);
+  (*valid.mutable_quality_features())["signed_residual_m"] = -0.25;
+  *hypotheses.add_candidates() = std::move(valid);
+  *hypotheses.add_candidates() =
+      MakeSonarCandidate("zero_bearing_sigma", "zero_bearing_sigma", 0.1, 2.0, 0.0, 0.05);
+  *hypotheses.add_candidates() =
+      MakeSonarCandidate("zero_range_sigma", "zero_range_sigma", 0.1, 2.0, 0.01, 0.0);
+
+  for (const std::string metric : {"cfar_score", "angular_extent_rad", "range_extent_m",
+                                   "intensity_score", "cluster_size"}) {
+    auto invalid = MakeSonarCandidate("negative_" + metric, "negative_" + metric, 0.1, 2.0);
+    (*invalid.mutable_quality_features())[metric] = -0.5;
+    *hypotheses.add_candidates() = std::move(invalid);
+  }
+
+  const auto detections =
+      uw::frontends::SonarTargetExtractor().Extract(hypotheses, MakeTwoClusterSonarFrame());
+
+  ASSERT_EQ(detections.size(), 1u);
+  EXPECT_EQ(detections[0].source_observation().value(), "valid_signed_metric");
+  EXPECT_DOUBLE_EQ(detections[0].quality_metrics().at("signed_residual_m"), -0.25);
+}

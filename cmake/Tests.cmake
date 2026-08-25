@@ -169,6 +169,15 @@ set_tests_properties(integration.acoustic_optic_scenario_matrix_determinism
   PROPERTIES LABELS "integration;replay")
 
 add_test(
+  NAME integration.acoustic_optic_scenario_matrix_config
+  COMMAND bash ${PROJECT_SOURCE_DIR}/tests/integration/acoustic_optic_scenario_matrix_config_test.sh
+          $<TARGET_FILE:acoustic_optic_scenario_matrix>
+          ${PROJECT_SOURCE_DIR}
+)
+set_tests_properties(integration.acoustic_optic_scenario_matrix_config
+  PROPERTIES LABELS "integration;replay")
+
+add_test(
   NAME integration.live_ingress_smoke
   COMMAND bash ${PROJECT_SOURCE_DIR}/tests/integration/live_ingress_smoke_test.sh
           ${CMAKE_BINARY_DIR}/bin/live_ingress_smoke

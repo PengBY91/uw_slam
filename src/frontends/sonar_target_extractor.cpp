@@ -18,9 +18,24 @@ double QualityMetricOr(const uw::domain::MeasurementEvidence& evidence,
   return it == evidence.quality_features().end() ? fallback : it->second;
 }
 
-bool HasOnlyFiniteQualityMetrics(const uw::domain::MeasurementEvidence& evidence) {
+bool EndsWith(const std::string& value, const std::string& suffix) {
+  return value.size() >= suffix.size() &&
+         value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+bool RequiresNonNegativeValue(const std::string& name) {
+  return name == "score" || EndsWith(name, "_score") || name == "extent" ||
+         name.find("_extent_") != std::string::npos || EndsWith(name, "_extent") ||
+         name == "count" || EndsWith(name, "_count") || name == "size" ||
+         EndsWith(name, "_size");
+}
+
+bool HasValidQualityMetrics(const uw::domain::MeasurementEvidence& evidence) {
   return std::all_of(evidence.quality_features().begin(), evidence.quality_features().end(),
-                     [](const auto& entry) { return std::isfinite(entry.second); });
+                     [](const auto& entry) {
+                       return std::isfinite(entry.second) &&
+                              (!RequiresNonNegativeValue(entry.first) || entry.second >= 0.0);
+                     });
 }
 
 std::string CanonicalEvidenceBytes(const uw::domain::MeasurementEvidence& evidence) {
@@ -57,8 +72,8 @@ std::vector<uw::domain::TargetDetection> SonarTargetExtractor::Extract(
     if (!std::isfinite(measurement.bearing_rad()) || !std::isfinite(measurement.range_m()) ||
         !std::isfinite(measurement.bearing_sigma_rad()) ||
         !std::isfinite(measurement.range_sigma_m()) || measurement.range_m() < 0.0 ||
-        measurement.bearing_sigma_rad() < 0.0 || measurement.range_sigma_m() < 0.0 ||
-        !HasOnlyFiniteQualityMetrics(evidence)) {
+        measurement.bearing_sigma_rad() <= 0.0 || measurement.range_sigma_m() <= 0.0 ||
+        !HasValidQualityMetrics(evidence)) {
       continue;
     }
     const double bearing_variance =

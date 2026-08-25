@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "acoustic_optic_scenarios.hpp"
+#include "application/replay_pipeline.hpp"
 #include "evaluation/depth_metrics.hpp"
 #include "evaluation/fusion_metrics.hpp"
 #include "frontends/acoustic_optic_depth_fusion_frontend.hpp"
@@ -185,7 +186,8 @@ int main(int argc, char** argv) {
 
       uw::domain::HypothesisSet sonar_hypotheses;
       if (trial.sonar.has_value()) {
-        uw::frontends::SonarCfarFrontendParams cfar_params;
+        const auto cfar_params = uw::application::BuildSonarCfarFrontendParams(
+            experiment.defaults.sonar_frontend);
         uw::frontends::SonarCfarFrontend cfar(cfar_params);
         sonar_hypotheses = cfar.ProcessSonarFrame(*trial.sonar);
       }
