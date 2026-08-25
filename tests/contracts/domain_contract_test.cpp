@@ -70,6 +70,29 @@ TEST(DomainContract, VehicleStateRoundTripsWithCanonicalHeaderAndDeviceHealth) {
   EXPECT_TRUE(parsed.device_health_valid());
 }
 
+TEST(DomainContract, TargetTrackPreservesSourcesAgeAndUncertainty) {
+  uw::domain::TargetTrack track;
+  track.mutable_track_id()->set_value("track_9");
+  track.set_class_label("aquaculture_zone");
+  track.set_bearing_rad(0.2);
+  track.set_range_m(4.0);
+  track.add_covariance_2x2_row_major(0.01);
+  track.add_covariance_2x2_row_major(0.0);
+  track.add_covariance_2x2_row_major(0.0);
+  track.add_covariance_2x2_row_major(0.04);
+  track.add_sources(uw::domain::ASSIST_SOURCE_VISUAL);
+  track.add_sources(uw::domain::ASSIST_SOURCE_SONAR);
+  track.add_source_observations()->set_value("cam_1");
+  track.add_source_observations()->set_value("sonar_1");
+  track.set_status(uw::domain::TARGET_TRACK_STATUS_CONFIRMED);
+
+  EXPECT_EQ(track.track_id().value(), "track_9");
+  EXPECT_EQ(track.sources_size(), 2);
+  EXPECT_EQ(track.source_observations_size(), 2);
+  EXPECT_EQ(track.covariance_2x2_row_major_size(), 4);
+  EXPECT_EQ(track.status(), uw::domain::TARGET_TRACK_STATUS_CONFIRMED);
+}
+
 TEST(DomainContract, SonarFrameAscendingAzimuthAccepted) {
   uw::domain::SonarFrame frame;
   frame.add_azimuth_angles(-0.5f);

@@ -1,0 +1,74 @@
+syntax = "proto3";
+
+package uw.domain;
+
+import "uw/domain/health.proto";
+import "uw/domain/ids.proto";
+import "uw/domain/time.proto";
+
+enum AssistSource {
+  ASSIST_SOURCE_UNSPECIFIED = 0;
+  ASSIST_SOURCE_VISUAL = 1;
+  ASSIST_SOURCE_SONAR = 2;
+  ASSIST_SOURCE_ACOUSTIC_OPTIC = 3;
+}
+
+message TargetDetection {
+  ObservationId source_observation = 1;
+  Stamp capture_time = 2;
+  string class_label = 3;
+  double confidence = 4;
+  double bearing_rad = 5;
+  bool has_range = 6;
+  double range_m = 7;
+  repeated double covariance_2x2_row_major = 8;
+  uint32 bbox_x = 9;
+  uint32 bbox_y = 10;
+  uint32 bbox_width = 11;
+  uint32 bbox_height = 12;
+  AssistSource source = 13;
+  map<string, double> quality_metrics = 14;
+  double angular_extent_rad = 15;
+  double range_extent_m = 16;
+  double intensity_score = 17;
+}
+
+enum TargetTrackStatus {
+  TARGET_TRACK_STATUS_UNSPECIFIED = 0;
+  TARGET_TRACK_STATUS_TENTATIVE = 1;
+  TARGET_TRACK_STATUS_CONFIRMED = 2;
+  TARGET_TRACK_STATUS_DEGRADED = 3;
+  TARGET_TRACK_STATUS_STALE = 4;
+}
+
+message TargetTrack {
+  TrackId track_id = 1;
+  string class_label = 2;
+  double class_confidence = 3;
+  double bearing_rad = 4;
+  double range_m = 5;
+  repeated double covariance_2x2_row_major = 6;
+  Stamp first_capture_time = 7;
+  Stamp last_capture_time = 8;
+  Stamp publish_time = 9;
+  repeated AssistSource sources = 10;
+  repeated ObservationId source_observations = 11;
+  TargetTrackStatus status = 12;
+}
+
+message TargetTrackSet {
+  repeated TargetTrack tracks = 1;
+  Stamp publish_time = 2;
+}
+
+message OperatorAssistState {
+  TargetTrackSet target_tracks = 1;
+  bool has_path_lateral_offset = 2;
+  double path_lateral_offset_m = 3;
+  double path_offset_sigma_m = 4;
+  HealthReport system_health = 5;
+  double data_age_ms = 6;
+  bool guidance_valid = 7;
+  string degradation_reason = 8;
+  repeated HealthReport sensor_health = 9;
+}

@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 
+#include "application/assist_output_sink.hpp"
 #include "measurement_api/frontend.hpp"
 #include "measurement_api/providers.hpp"
 
@@ -47,6 +48,16 @@ class FakeMetricOpticalFrontend final : public uw::measurement_api::OpticalDepth
   uw::domain::HealthReport Health() const override { return {}; }
 };
 
+class FakeAssistOutputSink final : public uw::application::AssistOutputSink {
+ public:
+  void Publish(const uw::domain::OperatorAssistState& state) override { published_ = state; }
+
+  const std::optional<uw::domain::OperatorAssistState>& Published() const { return published_; }
+
+ private:
+  std::optional<uw::domain::OperatorAssistState> published_;
+};
+
 }  // namespace
 
 TEST(MeasurementApiContract, CameraProviderPollsCanonicalImageFrame) {
@@ -67,4 +78,37 @@ TEST(MeasurementApiContract, OpticalFrontendDoesNotRequireStereoAtInterfaceBound
       uw::domain::GetPayload<uw::domain::OpticalDepthPriorMeasurement>(*evidence);
   EXPECT_EQ(prior.producer_type(), "fake_monocular_metric");
   EXPECT_EQ(prior.scale_status(), uw::domain::OPTICAL_DEPTH_SCALE_STATUS_METRIC);
+}
+
+TEST(MeasurementApiContract, AssistOutputSinkPublishesCompleteCanonicalState) {
+  uw::domain::OperatorAssistState state;
+  auto* track = state.mutable_target_tracks()->add_tracks();
+  track->mutable_track_id()->set_value("track_9");
+  track->set_class_label("aquaculture_zone");
+  track->set_class_confidence(0.9);
+  track->set_bearing_rad(0.2);
+  track->set_range_m(4.0);
+  track->set_status(uw::domain::TARGET_TRACK_STATUS_CONFIRMED);
+  state.mutable_target_tracks()->mutable_publish_time()->set_seconds(12);
+  state.set_has_path_lateral_offset(true);
+  state.set_path_lateral_offset_m(0.3);
+  state.set_path_offset_sigma_m(0.05);
+  state.mutable_system_health()->set_status(uw::domain::HealthReport::STATUS_HEALTHY);
+  state.set_data_age_ms(8.0);
+  state.set_guidance_valid(true);
+  state.set_degradation_reason("");
+  state.add_sensor_health()->set_component_id("camera_left");
+
+  FakeAssistOutputSink sink;
+  sink.Publish(state);
+
+  ASSERT_TRUE(sink.Published().has_value());
+  ASSERT_EQ(sink.Published()->target_tracks().tracks_size(), 1);
+  EXPECT_EQ(sink.Published()->target_tracks().tracks(0).track_id().value(), "track_9");
+  EXPECT_TRUE(sink.Published()->has_path_lateral_offset());
+  EXPECT_DOUBLE_EQ(sink.Published()->path_lateral_offset_m(), 0.3);
+  EXPECT_EQ(sink.Published()->system_health().status(), uw::domain::HealthReport::STATUS_HEALTHY);
+  EXPECT_DOUBLE_EQ(sink.Published()->data_age_ms(), 8.0);
+  EXPECT_TRUE(sink.Published()->guidance_valid());
+  EXPECT_EQ(sink.Published()->sensor_health_size(), 1);
 }
