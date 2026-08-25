@@ -223,3 +223,22 @@ set_tests_properties(lint.layer_dependencies PROPERTIES
   WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
   LABELS "lint"
 )
+
+add_test(
+  NAME lint.realtime_traceability_unit
+  COMMAND ${Python3_EXECUTABLE} tests/tools/test_realtime_traceability.py -v
+)
+set_tests_properties(lint.realtime_traceability_unit PROPERTIES
+  WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+  LABELS "lint"
+)
+
+add_test(
+  NAME lint.realtime_traceability
+  COMMAND ${Python3_EXECUTABLE} tools/lint/check_realtime_traceability.py
+          docs/traceability/rov-realtime-closed-loop.csv .
+)
+set_tests_properties(lint.realtime_traceability PROPERTIES
+  WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+  LABELS "lint"
+)

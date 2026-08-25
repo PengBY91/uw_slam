@@ -1,0 +1,23 @@
+# Disturbed profile: keeps nominal rates (20/10/50 Hz) but enables the full
+# optical/acoustic/timing/current/single-thruster perturbation matrix
+# (adapters/holoocean/uw_holoocean_adapter/sensor_perturbation.py +
+# fault_injector.py) for 10-seed task scoring. Consumed by
+# `python -m uw_holoocean_adapter.realtime_gate --profile <this file>`
+# (Task 6) -- see rov_realtime_minimum.yaml's header comment for the
+# directory-collision note (this is NOT a C++-side experiment config).
+profile: disturbed
+duration_s: null  # defaults to the task manifest's max_duration_s
+camera:
+  hz: 20.0
+  width: 1280
+  height: 720
+  payload_scale: 1.0
+sonar_hz: 10.0
+state_hz: 50.0
+faults_enabled: true
+disturbance_matrix_enabled: true
+randomization: critical_degraded  # see scenario_randomization.PRESET_CRITICAL_DEGRADED
+fault_profile: critical
+soak: false
+min_output_hz: 10.0
+gate: nominal  # disturbed keeps nominal latency/deadline budgets; only task success rate targets differ

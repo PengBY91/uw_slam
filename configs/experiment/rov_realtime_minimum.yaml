@@ -1,0 +1,20 @@
+# Minimum release gate: 720p stereo at 15 Hz, sonar 5 Hz, state 20 Hz,
+# 1800s (30 min). Consumed by `python -m uw_holoocean_adapter.realtime_gate
+# --profile <this file>` (Task 6 of docs/superpowers/plans/2026-08-24-
+# holoocean-realtime-closed-loop.md) -- NOT the C++ side's
+# include/runtime/config.hpp experiment-layering system (different
+# directory-by-convention only, see adapters/holoocean/README.md).
+profile: minimum
+duration_s: 1800.0
+camera:
+  hz: 15.0
+  width: 1280
+  height: 720
+  payload_scale: 1.0
+sonar_hz: 5.0
+state_hz: 20.0
+faults_enabled: false
+disturbance_matrix_enabled: false
+soak: false
+min_output_hz: 5.0
+gate: minimum
