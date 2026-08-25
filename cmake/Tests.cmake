@@ -128,6 +128,7 @@ add_executable(application_tests
   tests/application/target_fusion_binding_test.cpp
   tests/application/event_pump_test.cpp
   tests/application/replay_input_accumulator_test.cpp
+  tests/application/online_assist_pipeline_test.cpp
 )
 target_compile_definitions(application_tests PRIVATE UW_REPO_ROOT="${PROJECT_SOURCE_DIR}")
 target_link_libraries(application_tests PRIVATE

@@ -238,6 +238,34 @@ PlatformDefaultsConfig LoadPlatformDefaultsConfig(const std::string& path) {
     }
   }
 
+  if (root["online_assist"]) {
+    const auto online_assist = root["online_assist"];
+    RejectUnknownKeys(online_assist,
+                      {"dense", "vehicle_state_stale_after_s", "modality_stale_after_s"},
+                      "online_assist");
+    auto& out = config.online_assist;
+    if (online_assist["dense"]) {
+      const auto dense = online_assist["dense"];
+      RejectUnknownKeys(dense, {"enabled", "budget_ms"}, "online_assist.dense");
+      out.dense.enabled = GetOr<bool>(dense, "enabled", out.dense.enabled);
+      out.dense.budget_ms = GetOr<double>(dense, "budget_ms", out.dense.budget_ms);
+      if (!std::isfinite(out.dense.budget_ms) || out.dense.budget_ms <= 0.0) {
+        throw std::runtime_error("online_assist.dense.budget_ms must be finite and positive");
+      }
+    }
+    out.vehicle_state_stale_after_s = GetOr<double>(
+        online_assist, "vehicle_state_stale_after_s", out.vehicle_state_stale_after_s);
+    if (!std::isfinite(out.vehicle_state_stale_after_s) || out.vehicle_state_stale_after_s <= 0.0) {
+      throw std::runtime_error(
+          "online_assist.vehicle_state_stale_after_s must be finite and positive");
+    }
+    out.modality_stale_after_s =
+        GetOr<double>(online_assist, "modality_stale_after_s", out.modality_stale_after_s);
+    if (!std::isfinite(out.modality_stale_after_s) || out.modality_stale_after_s <= 0.0) {
+      throw std::runtime_error("online_assist.modality_stale_after_s must be finite and positive");
+    }
+  }
+
   if (root["reliability"] && root["reliability"]["default_sqrt_information"]) {
     const auto info = root["reliability"]["default_sqrt_information"];
     if (info["relative_pose"]) {

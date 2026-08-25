@@ -164,6 +164,8 @@ add_library(application STATIC
   src/application/replay_pipeline.cpp
   src/application/event_pump.cpp
   src/application/replay_input_accumulator.cpp
+  src/application/online_assist_pipeline.cpp
+  src/application/latest_assist_sink.cpp
 )
 add_library(uw::application ALIAS application)
 target_include_directories(application PUBLIC "${PROJECT_SOURCE_DIR}/include")

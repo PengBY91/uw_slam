@@ -148,6 +148,70 @@ TEST(Config, StereoRectificationDefaultsWhenSectionAbsent) {
   EXPECT_EQ(config.stereo_rectification.frame_suffix, "_rectified");
 }
 
+TEST(Config, OnlineAssistDefaultsWhenSectionAbsent) {
+  const auto config = uw::runtime::PlatformDefaultsConfig{};
+  EXPECT_FALSE(config.online_assist.dense.enabled);
+  EXPECT_DOUBLE_EQ(config.online_assist.dense.budget_ms, 100.0);
+  EXPECT_DOUBLE_EQ(config.online_assist.vehicle_state_stale_after_s, 0.5);
+  EXPECT_DOUBLE_EQ(config.online_assist.modality_stale_after_s, 1.0);
+}
+
+TEST(Config, ParsesOnlineAssistOverrides) {
+  const auto tmp_path = std::filesystem::temp_directory_path() / "uw_config_test_online_assist.yaml";
+  {
+    std::ofstream out(tmp_path);
+    out << "online_assist:\n"
+           "  dense:\n"
+           "    enabled: true\n"
+           "    budget_ms: 75.0\n"
+           "  vehicle_state_stale_after_s: 0.25\n"
+           "  modality_stale_after_s: 2.0\n";
+  }
+  const auto config = uw::runtime::LoadPlatformDefaultsConfig(tmp_path.string());
+  EXPECT_TRUE(config.online_assist.dense.enabled);
+  EXPECT_DOUBLE_EQ(config.online_assist.dense.budget_ms, 75.0);
+  EXPECT_DOUBLE_EQ(config.online_assist.vehicle_state_stale_after_s, 0.25);
+  EXPECT_DOUBLE_EQ(config.online_assist.modality_stale_after_s, 2.0);
+  std::remove(tmp_path.string().c_str());
+}
+
+TEST(Config, RejectsNonPositiveOnlineAssistDenseBudget) {
+  const auto tmp_path =
+      std::filesystem::temp_directory_path() / "uw_config_test_online_assist_budget.yaml";
+  {
+    std::ofstream out(tmp_path);
+    out << "online_assist:\n"
+           "  dense:\n"
+           "    budget_ms: 0.0\n";
+  }
+  EXPECT_THROW(uw::runtime::LoadPlatformDefaultsConfig(tmp_path.string()), std::runtime_error);
+  std::remove(tmp_path.string().c_str());
+}
+
+TEST(Config, RejectsNonPositiveOnlineAssistVehicleStateStaleAfter) {
+  const auto tmp_path =
+      std::filesystem::temp_directory_path() / "uw_config_test_online_assist_stale.yaml";
+  {
+    std::ofstream out(tmp_path);
+    out << "online_assist:\n"
+           "  vehicle_state_stale_after_s: -1.0\n";
+  }
+  EXPECT_THROW(uw::runtime::LoadPlatformDefaultsConfig(tmp_path.string()), std::runtime_error);
+  std::remove(tmp_path.string().c_str());
+}
+
+TEST(Config, RejectsOnlineAssistUnknownKey) {
+  const auto tmp_path =
+      std::filesystem::temp_directory_path() / "uw_config_test_online_assist_unknown.yaml";
+  {
+    std::ofstream out(tmp_path);
+    out << "online_assist:\n"
+           "  bogus_key: 1.0\n";
+  }
+  EXPECT_THROW(uw::runtime::LoadPlatformDefaultsConfig(tmp_path.string()), std::runtime_error);
+  std::remove(tmp_path.string().c_str());
+}
+
 TEST(Config, ParsesTypedSonarCfarOverrides) {
   const auto tmp_path = std::filesystem::temp_directory_path() / "uw_config_test_sonar_cfar.yaml";
   {
