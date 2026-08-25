@@ -1,5 +1,6 @@
 #include "runtime/live_event_source.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <exception>
 #include <future>
@@ -554,6 +555,117 @@ TEST(LiveEventSourceHealth, AttributesRejectsGapsAndLastValidRawStampsToTheirLan
   source.Close();
   EXPECT_EQ(source.Submit(MakeHealthEvent(9)), LiveSubmitStatus::kClosed);
   EXPECT_EQ(source.HealthReports()[3].rejected_frame_count(), 0u);
+}
+
+TEST(LiveEventSourceHealth,
+     DequeuesBeforeSamplingClocksWhenAHigherPriorityEventArrivesConcurrently) {
+  struct ClockCoordination {
+    std::atomic<int> monotonic_call_count{0};
+    std::atomic<bool> clock_wait_timed_out{false};
+    std::promise<void> run_clock_entered;
+    std::promise<void> concurrent_submit_done;
+  };
+
+  auto coordination = std::make_shared<ClockCoordination>();
+  auto submit_done = coordination->concurrent_submit_done.get_future().share();
+  auto config = LiveSourceConfig::ForTest();
+  config.monotonic_now = [coordination, submit_done] {
+    const int call = coordination->monotonic_call_count.fetch_add(1) + 1;
+    if (call == 1) return std::chrono::steady_clock::time_point{};
+    if (call == 2) {
+      coordination->run_clock_entered.set_value();
+      if (submit_done.wait_for(std::chrono::seconds(1)) !=
+          std::future_status::ready) {
+        coordination->clock_wait_timed_out = true;
+      }
+      return std::chrono::steady_clock::time_point{std::chrono::milliseconds(50)};
+    }
+    if (call == 3) {
+      return std::chrono::steady_clock::time_point{std::chrono::milliseconds(100)};
+    }
+    return std::chrono::steady_clock::time_point{std::chrono::milliseconds(50)};
+  };
+  config.wall_now = [] {
+    return std::chrono::system_clock::time_point{std::chrono::seconds(321)};
+  };
+  auto source = std::make_shared<LiveEventSource>(config);
+  ASSERT_EQ(source->Submit(MakeHealthEvent(1)), LiveSubmitStatus::kAccepted);
+
+  auto run_clock_entered = coordination->run_clock_entered.get_future();
+  std::promise<uw::runtime::EventSourceReport> report_promise;
+  auto report_future = report_promise.get_future();
+  std::promise<std::string> delivered_topic_promise;
+  auto delivered_topic_future = delivered_topic_promise.get_future();
+  std::thread worker(
+      [source, report = std::move(report_promise),
+       delivered = std::move(delivered_topic_promise)]() mutable {
+        try {
+          report.set_value(source->Run([&delivered](const CanonicalEvent& event) {
+            delivered.set_value(event.topic);
+            return false;
+          }));
+        } catch (...) {
+          try {
+            report.set_exception(std::current_exception());
+          } catch (...) {
+            // The report future will expose a broken promise if its state was
+            // unexpectedly unavailable; never terminate the worker.
+          }
+        }
+      });
+
+  if (run_clock_entered.wait_for(std::chrono::seconds(1)) !=
+      std::future_status::ready) {
+    coordination->concurrent_submit_done.set_value();
+    source->Close();
+    if (report_future.wait_for(std::chrono::seconds(2)) ==
+        std::future_status::ready) {
+      worker.join();
+    } else {
+      worker.detach();
+    }
+    ADD_FAILURE() << "Run did not reach the controlled clock callback";
+    return;
+  }
+
+  EXPECT_EQ(source->Submit(MakeVehicleEvent(2, 1)), LiveSubmitStatus::kAccepted);
+  coordination->concurrent_submit_done.set_value();
+  if (report_future.wait_for(std::chrono::seconds(2)) !=
+      std::future_status::ready) {
+    source->Close();
+    worker.detach();
+    ADD_FAILURE() << "Run did not finish after the controlled submit completed";
+    return;
+  }
+
+  uw::runtime::EventSourceReport report;
+  std::exception_ptr worker_error;
+  try {
+    report = report_future.get();
+  } catch (...) {
+    worker_error = std::current_exception();
+  }
+  worker.join();
+  if (worker_error != nullptr) {
+    try {
+      std::rethrow_exception(worker_error);
+    } catch (const std::exception& error) {
+      ADD_FAILURE() << "LiveEventSource::Run worker threw: " << error.what();
+    } catch (...) {
+      ADD_FAILURE() << "LiveEventSource::Run worker threw a non-standard exception";
+    }
+    return;
+  }
+
+  ASSERT_EQ(report.status, EventSourceStatus::kStoppedByConsumer);
+  ASSERT_EQ(delivered_topic_future.wait_for(std::chrono::seconds(0)),
+            std::future_status::ready);
+  EXPECT_EQ(delivered_topic_future.get(), uw::runtime::kTopicHealth);
+  EXPECT_FALSE(coordination->clock_wait_timed_out.load());
+  const auto evidence = source->HealthReports()[3];
+  EXPECT_DOUBLE_EQ(evidence.latency_p50_ms(), 50.0);
+  EXPECT_DOUBLE_EQ(uw::domain::ToSeconds(evidence.last_processed_time()), 321.0);
+  source->Close();
 }
 
 }  // namespace

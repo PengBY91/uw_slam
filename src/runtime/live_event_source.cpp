@@ -224,19 +224,18 @@ EventSourceReport LiveEventSource::Run(const EventConsumer& consumer) {
       return report;
     }
 
-    lock.unlock();
-    const MonotonicTime pop_time = monotonic_now_();
-    const auto processed_time = wall_now_();
-    lock.lock();
-
     auto popped = PopNextLocked();
     if (!popped.has_value()) {
       throw std::logic_error("live-source queue depth is inconsistent");
     }
+    lock.unlock();
+    const MonotonicTime pop_time = monotonic_now_();
+    const auto processed_time = wall_now_();
     const double residence_ms = std::max(
         0.0, std::chrono::duration<double, std::milli>(pop_time - popped->ingress_time)
                  .count());
     LatencyForLane(popped->lane).ObserveMs(residence_ms);
+    lock.lock();
     last_processed_times_[LaneIndex(popped->lane)] = uw::domain::ToStamp(processed_time);
     lock.unlock();
 
