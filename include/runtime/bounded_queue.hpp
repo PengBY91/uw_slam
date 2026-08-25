@@ -51,14 +51,17 @@ class BoundedQueue {
 
   PushResult Push(T item) {
     std::lock_guard<std::mutex> lock(mutex_);
-    PushResult result = PushResult::kEnqueued;
     if (items_.size() >= capacity_) {
       switch (policy_) {
         case OverflowPolicy::kDropOldest:
+          items_.push_back(std::move(item));
           items_.pop_front();
           ++stats_.dropped_oldest_count;
-          result = PushResult::kDroppedOldestAndEnqueued;
-          break;
+          ++stats_.enqueued_count;
+          stats_.current_depth = items_.size();
+          stats_.high_watermark = std::max(stats_.high_watermark, stats_.current_depth);
+          cv_.notify_one();
+          return PushResult::kDroppedOldestAndEnqueued;
         case OverflowPolicy::kDropNewest:
           ++stats_.dropped_newest_count;
           return PushResult::kDroppedNewest;
@@ -72,7 +75,7 @@ class BoundedQueue {
     stats_.current_depth = items_.size();
     stats_.high_watermark = std::max(stats_.high_watermark, stats_.current_depth);
     cv_.notify_one();
-    return result;
+    return PushResult::kEnqueued;
   }
 
   std::optional<T> TryPop() {

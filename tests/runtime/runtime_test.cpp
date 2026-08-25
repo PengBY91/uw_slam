@@ -10,6 +10,28 @@
 
 using namespace uw::runtime;
 
+namespace {
+
+struct ThrowOnMove {
+  ThrowOnMove(int value_in, bool* throw_on_move_in)
+      : value(value_in), throw_on_move(throw_on_move_in) {}
+
+  ThrowOnMove(const ThrowOnMove&) = delete;
+  ThrowOnMove& operator=(const ThrowOnMove&) = delete;
+
+  ThrowOnMove(ThrowOnMove&& other)
+      : value(other.value), throw_on_move(other.throw_on_move) {
+    if (*throw_on_move) throw std::runtime_error("move failed");
+  }
+
+  ThrowOnMove& operator=(ThrowOnMove&&) = delete;
+
+  int value;
+  bool* throw_on_move;
+};
+
+}  // namespace
+
 TEST(RunManifest, SerializesCalibrationAndDerivedCalibrationHashesAsIndependentFields) {
   RunManifest manifest;
   manifest.calibration_hash = "raw_hash_123";
@@ -134,6 +156,53 @@ TEST(BoundedQueue, StatsSnapshotRemainsConsistentDuringConcurrentPushes) {
   EXPECT_EQ(stats.dequeued_count, 0u);
   EXPECT_EQ(stats.current_depth, 2u * kItemsPerProducer);
   EXPECT_EQ(stats.high_watermark, 2u * kItemsPerProducer);
+}
+
+TEST(BoundedQueue, FailedDropOldestEnqueuePreservesQueueAndStats) {
+  bool throw_on_move = false;
+  BoundedQueue<ThrowOnMove> queue(2, OverflowPolicy::kDropOldest);
+  ASSERT_EQ(queue.Push(ThrowOnMove{1, &throw_on_move}), PushResult::kEnqueued);
+  ASSERT_EQ(queue.Push(ThrowOnMove{2, &throw_on_move}), PushResult::kEnqueued);
+  const QueueStats before = queue.Stats();
+
+  throw_on_move = true;
+  EXPECT_THROW(queue.Push(ThrowOnMove{3, &throw_on_move}), std::runtime_error);
+  throw_on_move = false;
+
+  const QueueStats after = queue.Stats();
+  EXPECT_EQ(after.enqueued_count, before.enqueued_count);
+  EXPECT_EQ(after.dequeued_count, before.dequeued_count);
+  EXPECT_EQ(after.dropped_oldest_count, before.dropped_oldest_count);
+  EXPECT_EQ(after.dropped_newest_count, before.dropped_newest_count);
+  EXPECT_EQ(after.rejected_count, before.rejected_count);
+  EXPECT_EQ(after.current_depth, before.current_depth);
+  EXPECT_EQ(after.high_watermark, before.high_watermark);
+
+  ASSERT_EQ(queue.Size(), 2u);
+  const auto first = queue.TryPop();
+  const auto second = queue.TryPop();
+  ASSERT_TRUE(first.has_value());
+  ASSERT_TRUE(second.has_value());
+  EXPECT_EQ(first->value, 1);
+  EXPECT_EQ(second->value, 2);
+}
+
+TEST(BoundedQueue, FailedUnderCapacityEnqueuePreservesEmptyQueueAndStats) {
+  bool throw_on_move = true;
+  BoundedQueue<ThrowOnMove> queue(2, OverflowPolicy::kReject);
+
+  EXPECT_THROW(queue.Push(ThrowOnMove{1, &throw_on_move}), std::runtime_error);
+  throw_on_move = false;
+
+  const QueueStats stats = queue.Stats();
+  EXPECT_EQ(stats.enqueued_count, 0u);
+  EXPECT_EQ(stats.dequeued_count, 0u);
+  EXPECT_EQ(stats.dropped_oldest_count, 0u);
+  EXPECT_EQ(stats.dropped_newest_count, 0u);
+  EXPECT_EQ(stats.rejected_count, 0u);
+  EXPECT_EQ(stats.current_depth, 0u);
+  EXPECT_EQ(stats.high_watermark, 0u);
+  EXPECT_FALSE(queue.TryPop().has_value());
 }
 
 TEST(SystemStateMachine, RespectsMinimumHoldTime) {
