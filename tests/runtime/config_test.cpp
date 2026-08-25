@@ -515,6 +515,26 @@ TEST(Config, RejectsNonFiniteOnlineOffsetAndEmptyProvenance) {
   std::remove(empty.string().c_str());
 }
 
+TEST(Config, FullAcousticOpticRigRequiresExactlyOneVehicleStateSensor) {
+  const std::string offsets =
+      "  camera_left: 0.0\n  camera_right: 0.0\n  sonar0: 0.0\n  rov-state: 0.0\n"
+      "  backup-state: 0.0\n";
+  const std::string provenance =
+      "  camera_left: measured:left\n  camera_right: measured:right\n"
+      "  sonar0: measured:sonar\n  rov-state: measured:state\n"
+      "  backup-state: measured:backup\n";
+  const auto missing = WriteRig("uw_online_rig_no_state_role.yaml",
+                                 MinimalOnlineRigYaml(offsets, provenance, ""));
+  EXPECT_THROW(uw::runtime::LoadRigConfig(missing.string()), std::runtime_error);
+  std::remove(missing.string().c_str());
+
+  const auto multiple = WriteRig(
+      "uw_online_rig_multiple_state_roles.yaml",
+      MinimalOnlineRigYaml(offsets, provenance, "  - rov-state\n  - backup-state\n"));
+  EXPECT_THROW(uw::runtime::LoadRigConfig(multiple.string()), std::runtime_error);
+  std::remove(multiple.string().c_str());
+}
+
 TEST(Config, ValidateExperimentConfigSelectionsAcceptsDefaults) {
   // Default-constructed ExperimentConfig must always validate — every
   // configs/experiment/*.yaml either uses these defaults or overrides them

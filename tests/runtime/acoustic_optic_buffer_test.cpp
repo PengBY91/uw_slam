@@ -61,6 +61,7 @@ uw::domain::VehicleState MakeVehicleState(double seconds, double yaw_rad,
   state.set_supply_voltage_v(15.0 + sequence);
   state.set_supply_current_a(2.0);
   state.set_link_quality(0.9);
+  for (int i = 0; i < 49; ++i) state.add_covariance_7x7_row_major(0.0);
   return state;
 }
 
@@ -98,14 +99,14 @@ AcousticOpticBufferConfig TestBufferConfig() {
 }
 
 void AddBracket(AcousticOpticBuffer* buffer, double center) {
-  buffer->AddVehicleState(MakeVehicleState(center - 0.05, 0.0, 1));
-  buffer->AddVehicleState(MakeVehicleState(center + 0.05, 0.1, 2));
+  buffer->AddVehicleState(MakeVehicleState(center - 0.04, 0.0, 1));
+  buffer->AddVehicleState(MakeVehicleState(center + 0.04, 0.1, 2));
 }
 
 std::optional<uw::runtime::OnlineAcousticOpticBundle> AddNominal(
     AcousticOpticBuffer* buffer, double left, double right, double sonar,
     const std::string& left_id = "kf8", const std::string& right_id = "kf8") {
-  AddBracket(buffer, sonar);
+  AddBracket(buffer, 0.5 * (left + right));
   buffer->AddImage(MakeImage("camera_left", left_id, left, 10));
   buffer->AddImage(MakeImage("camera_right", right_id, right, 11));
   return buffer->AddSonar(MakeSonar("tick1001", sonar, 12));
@@ -115,8 +116,8 @@ std::optional<uw::runtime::OnlineAcousticOpticBundle> AddNominal(
 
 TEST(AcousticOpticBuffer, PairsNearestTimeNotObservationId) {
   AcousticOpticBuffer buffer(TestBufferConfig(), TestRig());
-  buffer.AddVehicleState(MakeVehicleState(9.95, 0.0));
-  buffer.AddVehicleState(MakeVehicleState(10.05, 0.1, 2));
+  buffer.AddVehicleState(MakeVehicleState(9.96, 0.0));
+  buffer.AddVehicleState(MakeVehicleState(10.04, 0.1, 2));
   buffer.AddImage(MakeImage("camera_left", "wrong-time", 9.90, 1));
   buffer.AddImage(MakeImage("camera_left", "kf8", 10.01, 2));
   buffer.AddImage(MakeImage("camera_right", "kf8", 10.011, 3));
@@ -167,8 +168,8 @@ TEST(AcousticOpticBuffer, ObservationIdMismatchRejectsSelectedPairWithoutSearchi
 
 TEST(AcousticOpticBuffer, InterpolatesStateWithNormalizedShortestPathSlerp) {
   AcousticOpticBuffer buffer(TestBufferConfig(), TestRig());
-  auto before = MakeVehicleState(9.95, 0.0, 1);
-  auto after = MakeVehicleState(10.05, 0.2, 2);
+  auto before = MakeVehicleState(9.96, 0.0, 1);
+  auto after = MakeVehicleState(10.04, 0.2, 2);
   for (int i = 0; i < 4; ++i) after.set_orientation_xyzw(i, -after.orientation_xyzw(i));
   buffer.AddVehicleState(before);
   buffer.AddVehicleState(after);
@@ -253,7 +254,14 @@ TEST(AcousticOpticBuffer, CalibrationChangeClearsPendingFrames) {
 
 TEST(AcousticOpticBuffer, SameVersionMutationIsRejectedButIdenticalUpdateIsNoOp) {
   AcousticOpticBuffer buffer(TestBufferConfig(), TestRig("rig_v1"));
-  EXPECT_NO_THROW(buffer.UpdateRig(TestRig("rig_v1")));
+  auto reordered = TestRig("rig_v1");
+  reordered.mutable_time_offset_seconds()->clear();
+  reordered.mutable_time_offset_provenance()->clear();
+  for (const std::string sensor : {"rov-state", "sonar0", "camera_right", "camera_left"}) {
+    (*reordered.mutable_time_offset_seconds())[sensor] = 0.0;
+    (*reordered.mutable_time_offset_provenance())[sensor] = "measured:test";
+  }
+  EXPECT_NO_THROW(buffer.UpdateRig(reordered));
   EXPECT_THROW(buffer.UpdateRig(TestRig("rig_v1", 0.001)), std::invalid_argument);
   EXPECT_EQ(buffer.Diagnostics().calibration_reset_count, 0u);
 }
@@ -277,4 +285,180 @@ TEST(AcousticOpticBuffer, UndeclaredVehicleStateSensorFailsClosed) {
   state.mutable_header()->mutable_sensor_id()->set_value("other-state");
   EXPECT_FALSE(buffer.AddVehicleState(state).has_value());
   EXPECT_EQ(buffer.Diagnostics().invalid_input_count, 1u);
+}
+
+TEST(AcousticOpticBuffer, NewerEligibleSonarIsNotBlockedByOlderOverWindowSonar) {
+  AcousticOpticBuffer buffer(TestBufferConfig(), TestRig());
+  AddBracket(&buffer, 10.0);
+  buffer.AddImage(MakeImage("camera_left", "kf", 10.0, 1));
+  buffer.AddImage(MakeImage("camera_right", "kf", 10.0, 2));
+  EXPECT_FALSE(buffer.AddSonar(MakeSonar("old", 9.9, 3)).has_value());
+  const auto bundle = buffer.AddSonar(MakeSonar("eligible", 10.0, 4));
+  ASSERT_TRUE(bundle.has_value());
+  EXPECT_EQ(bundle->sonar.header().observation_id().value(), "eligible");
+  EXPECT_EQ(buffer.Diagnostics().buffered_sonar_count, 1u);
+}
+
+TEST(AcousticOpticBuffer, BufferedSelectionIsIndependentOfInsertionPermutation) {
+  auto run = [](bool reverse_sonars, bool reverse_images) {
+    AcousticOpticBuffer buffer(TestBufferConfig(), TestRig());
+    AddBracket(&buffer, 10.0);
+    const auto old = MakeSonar("old", 9.9, 30);
+    const auto best = MakeSonar("best", 10.0, 40);
+    if (reverse_sonars) {
+      buffer.AddSonar(best);
+      buffer.AddSonar(old);
+    } else {
+      buffer.AddSonar(old);
+      buffer.AddSonar(best);
+    }
+    std::optional<uw::runtime::OnlineAcousticOpticBundle> bundle;
+    if (reverse_images) {
+      buffer.AddImage(MakeImage("camera_right", "kf", 10.0, 20));
+      bundle = buffer.AddImage(MakeImage("camera_left", "kf", 10.0, 10));
+    } else {
+      buffer.AddImage(MakeImage("camera_left", "kf", 10.0, 10));
+      bundle = buffer.AddImage(MakeImage("camera_right", "kf", 10.0, 20));
+    }
+    EXPECT_TRUE(bundle.has_value());
+    return bundle ? bundle->sonar.header().observation_id().value() : std::string{};
+  };
+  EXPECT_EQ(run(false, false), "best");
+  EXPECT_EQ(run(false, true), "best");
+  EXPECT_EQ(run(true, false), "best");
+  EXPECT_EQ(run(true, true), "best");
+}
+
+TEST(AcousticOpticBuffer, RejectsNonCanonicalHeadersAndCalibrationMismatch) {
+  AcousticOpticBuffer buffer(TestBufferConfig(), TestRig());
+  auto missing_receive = MakeImage("camera_left", "bad-header", 1.0);
+  missing_receive.mutable_header()->clear_receive_time();
+  EXPECT_FALSE(buffer.AddImage(missing_receive).has_value());
+  EXPECT_EQ(buffer.Diagnostics().buffered_image_count, 0u);
+
+  auto missing_sequence = MakeImage("camera_left", "missing-sequence", 1.0, 10);
+  missing_sequence.mutable_header()->clear_sequence_id();
+  buffer.AddImage(missing_sequence);
+  auto missing_capture = MakeImage("camera_left", "missing-capture", 1.0, 11);
+  missing_capture.mutable_header()->clear_capture_time();
+  buffer.AddImage(missing_capture);
+  auto missing_frame = MakeSonar("missing-frame", 1.0, 12);
+  missing_frame.mutable_header()->mutable_sensor_frame()->clear_value();
+  buffer.AddSonar(missing_frame);
+  auto unspecified_clock = MakeImage("camera_left", "unspecified-clock", 1.0, 13);
+  unspecified_clock.mutable_header()->set_clock_domain(uw::domain::CLOCK_DOMAIN_UNSPECIFIED);
+  buffer.AddImage(unspecified_clock);
+  auto rejected_state = MakeVehicleState(1.0, 0.0, 14);
+  rejected_state.mutable_header()->set_validity(
+      uw::domain::ObservationHeader::VALIDITY_REJECTED);
+  buffer.AddVehicleState(rejected_state);
+
+  auto wrong_image = MakeImage("camera_left", "wrong-image", 1.0, 2);
+  wrong_image.mutable_header()->mutable_calibration_version()->set_value("other-rig");
+  auto wrong_sonar = MakeSonar("wrong-sonar", 1.0, 3);
+  wrong_sonar.mutable_header()->mutable_calibration_version()->set_value("other-rig");
+  auto wrong_state = MakeVehicleState(1.0, 0.0, 4);
+  wrong_state.mutable_header()->mutable_calibration_version()->set_value("other-rig");
+  buffer.AddImage(wrong_image);
+  buffer.AddSonar(wrong_sonar);
+  buffer.AddVehicleState(wrong_state);
+  EXPECT_EQ(buffer.Diagnostics().invalid_input_count, 8u);
+  EXPECT_EQ(buffer.Diagnostics().invalid_time_count, 1u);
+  EXPECT_EQ(buffer.Diagnostics().buffered_image_count, 0u);
+  EXPECT_EQ(buffer.Diagnostics().buffered_sonar_count, 0u);
+  EXPECT_EQ(buffer.Diagnostics().buffered_vehicle_state_count, 0u);
+}
+
+TEST(AcousticOpticBuffer, RejectsStaleInputsAfterCalibrationUpdate) {
+  AcousticOpticBuffer buffer(TestBufferConfig(), TestRig("rig_v1"));
+  buffer.UpdateRig(TestRig("rig_v2"));
+  EXPECT_FALSE(buffer.AddImage(MakeImage("camera_left", "stale", 1.0)).has_value());
+  EXPECT_EQ(buffer.Diagnostics().invalid_input_count, 1u);
+  EXPECT_EQ(buffer.Diagnostics().buffered_image_count, 0u);
+}
+
+TEST(AcousticOpticBuffer, RejectsInvalidCovarianceAndDeviceHealth) {
+  AcousticOpticBuffer buffer(TestBufferConfig(), TestRig());
+  auto missing_covariance = MakeVehicleState(1.0, 0.0, 1);
+  missing_covariance.clear_covariance_7x7_row_major();
+  buffer.AddVehicleState(missing_covariance);
+  auto nonfinite_covariance = MakeVehicleState(1.0, 0.0, 2);
+  nonfinite_covariance.set_covariance_7x7_row_major(
+      10, std::numeric_limits<double>::quiet_NaN());
+  buffer.AddVehicleState(nonfinite_covariance);
+  auto invalid_link = MakeVehicleState(1.0, 0.0, 3);
+  invalid_link.set_link_quality(1.01);
+  buffer.AddVehicleState(invalid_link);
+  EXPECT_EQ(buffer.Diagnostics().invalid_input_count, 3u);
+  EXPECT_EQ(buffer.Diagnostics().buffered_vehicle_state_count, 0u);
+}
+
+TEST(AcousticOpticBuffer, StateBracketLimitAppliesToFullSpan) {
+  AcousticOpticBuffer buffer(TestBufferConfig(), TestRig());
+  buffer.AddVehicleState(MakeVehicleState(9.9, 0.0, 1));
+  buffer.AddVehicleState(MakeVehicleState(10.1, 0.2, 2));
+  buffer.AddImage(MakeImage("camera_left", "kf", 10.0));
+  buffer.AddImage(MakeImage("camera_right", "kf", 10.0));
+  EXPECT_FALSE(buffer.AddSonar(MakeSonar("sonar", 10.0)).has_value());
+}
+
+TEST(AcousticOpticBuffer, DoesNotApplyHiddenEpsilonToConfiguredWindowsOrExpiry) {
+  auto stereo_config = TestBufferConfig();
+  stereo_config.max_stereo_delta_s = 0.002 - 5e-13;
+  AcousticOpticBuffer stereo(stereo_config, TestRig());
+  EXPECT_FALSE(AddNominal(&stereo, 10.0, 10.002, 10.001).has_value());
+
+  auto sonar_config = TestBufferConfig();
+  sonar_config.max_sonar_camera_delta_s = 0.05 - 5e-13;
+  AcousticOpticBuffer sonar(sonar_config, TestRig());
+  EXPECT_FALSE(AddNominal(&sonar, 10.0, 10.0, 10.05).has_value());
+
+  auto expiry_config = TestBufferConfig();
+  expiry_config.max_residence_s = 0.1 - 5e-13;
+  AcousticOpticBuffer expiry(expiry_config, TestRig());
+  expiry.AddImage(MakeImage("camera_left", "old", 1.0, 1));
+  expiry.AddImage(MakeImage("camera_left", "new", 1.1, 2));
+  EXPECT_EQ(expiry.Diagnostics().buffered_image_count, 1u);
+  EXPECT_EQ(expiry.Diagnostics().expiry_count, 1u);
+}
+
+TEST(AcousticOpticBuffer, StateAndExpiryWindowsAreInclusiveOnlyAtExactBoundary) {
+  AcousticOpticBuffer exact_state(TestBufferConfig(), TestRig());
+  exact_state.AddVehicleState(MakeVehicleState(0.0, 0.0, 1));
+  exact_state.AddVehicleState(MakeVehicleState(0.1, 0.2, 2));
+  exact_state.AddImage(MakeImage("camera_left", "kf", 0.05, 3));
+  exact_state.AddImage(MakeImage("camera_right", "kf", 0.05, 4));
+  EXPECT_TRUE(exact_state.AddSonar(MakeSonar("sonar", 0.05, 5)).has_value());
+
+  auto just_over_config = TestBufferConfig();
+  just_over_config.max_state_bracket_s = 0.1 - 5e-13;
+  AcousticOpticBuffer just_over_state(just_over_config, TestRig());
+  just_over_state.AddVehicleState(MakeVehicleState(0.0, 0.0, 1));
+  just_over_state.AddVehicleState(MakeVehicleState(0.1, 0.2, 2));
+  just_over_state.AddImage(MakeImage("camera_left", "kf", 0.05, 3));
+  just_over_state.AddImage(MakeImage("camera_right", "kf", 0.05, 4));
+  EXPECT_FALSE(just_over_state.AddSonar(MakeSonar("sonar", 0.05, 5)).has_value());
+
+  auto expiry_config = TestBufferConfig();
+  expiry_config.max_residence_s = 0.1;
+  AcousticOpticBuffer exact_expiry(expiry_config, TestRig());
+  exact_expiry.AddImage(MakeImage("camera_left", "old", 0.0, 1));
+  exact_expiry.AddImage(MakeImage("camera_left", "boundary", 0.1, 2));
+  EXPECT_EQ(exact_expiry.Diagnostics().buffered_image_count, 2u);
+  EXPECT_EQ(exact_expiry.Diagnostics().expiry_count, 0u);
+}
+
+TEST(AcousticOpticBuffer, CalibrationChangeResetsVersionScopedDiagnosticsAndDeltaWindow) {
+  AcousticOpticBuffer buffer(TestBufferConfig(), TestRig("rig_v1"));
+  ASSERT_TRUE(AddNominal(&buffer, 10.0, 10.0, 10.01).has_value());
+  auto before = buffer.Diagnostics();
+  ASSERT_EQ(before.accepted_count, 1u);
+  ASSERT_GT(before.corrected_delta_max_s, 0.0);
+  buffer.UpdateRig(TestRig("rig_v2"));
+  const auto after = buffer.Diagnostics();
+  EXPECT_EQ(after.accepted_count, 0u);
+  EXPECT_EQ(after.synchronization_candidate_count, 0u);
+  EXPECT_EQ(after.corrected_delta_p95_s, 0.0);
+  EXPECT_EQ(after.corrected_delta_max_s, 0.0);
+  EXPECT_EQ(after.calibration_reset_count, 1u);
 }

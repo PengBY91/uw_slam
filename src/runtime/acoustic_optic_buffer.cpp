@@ -18,8 +18,8 @@ namespace uw::runtime {
 namespace {
 
 constexpr int32_t kNanosPerSecond = 1'000'000'000;
-constexpr double kComparisonEpsilon = 1e-12;
 constexpr std::size_t kDeltaWindowSize = 256;
+using CorrectedTimeValue = long double;
 
 bool ValidStamp(const uw::domain::ObservationHeader& header) {
   return header.has_capture_time() && header.capture_time().nanos() >= 0 &&
@@ -75,7 +75,7 @@ void ValidateRig(const uw::domain::RigCalibrationSnapshot& rig) {
 
 template <typename Message>
 struct Timed {
-  double corrected_time = 0.0;
+  CorrectedTimeValue corrected_time = 0.0L;
   uint64_t sequence = 0;
   Message message;
 };
@@ -95,10 +95,13 @@ double Percentile(std::vector<double> values, double percentile) {
 
 bool FiniteState(const uw::domain::VehicleState& state) {
   if (state.orientation_xyzw_size() != 4 || state.angular_velocity_radps_size() != 3 ||
+      state.covariance_7x7_row_major_size() != 49 ||
       !state.attitude_valid() || !state.depth_valid() || !state.device_health_valid() ||
       !std::isfinite(state.depth_m()) || state.depth_m() < 0.0 ||
-      !std::isfinite(state.supply_voltage_v()) || !std::isfinite(state.supply_current_a()) ||
-      !std::isfinite(state.link_quality())) {
+      !std::isfinite(state.supply_voltage_v()) || state.supply_voltage_v() <= 0.0 ||
+      !std::isfinite(state.supply_current_a()) || state.supply_current_a() <= 0.0 ||
+      !std::isfinite(state.link_quality()) || state.link_quality() < 0.0 ||
+      state.link_quality() > 1.0) {
     return false;
   }
   double norm2 = 0.0;
@@ -109,7 +112,11 @@ bool FiniteState(const uw::domain::VehicleState& state) {
   for (double value : state.angular_velocity_radps()) {
     if (!std::isfinite(value)) return false;
   }
-  return std::isfinite(norm2) && norm2 > std::numeric_limits<double>::epsilon();
+  for (double value : state.covariance_7x7_row_major()) {
+    if (!std::isfinite(value)) return false;
+  }
+  return std::isfinite(norm2) &&
+         std::abs(std::sqrt(norm2) - 1.0) <= 1e-3;
 }
 
 }  // namespace
@@ -127,7 +134,7 @@ class AcousticOpticBuffer::Impl {
   }
 
   template <typename Message>
-  std::optional<double> CorrectedTime(const Message& message) {
+  std::optional<CorrectedTimeValue> CorrectedTime(const Message& message) {
     const auto& header = message.header();
     if (!ValidStamp(header) || header.sensor_id().value().empty()) {
       ++diagnostics_.invalid_time_count;
@@ -138,7 +145,11 @@ class AcousticOpticBuffer::Impl {
       ++diagnostics_.invalid_time_count;
       return std::nullopt;
     }
-    const double corrected = uw::domain::ToSeconds(header.capture_time()) + offset->second;
+    const CorrectedTimeValue corrected =
+        static_cast<CorrectedTimeValue>(header.capture_time().seconds()) +
+        static_cast<CorrectedTimeValue>(header.capture_time().nanos()) /
+            static_cast<CorrectedTimeValue>(kNanosPerSecond) +
+        static_cast<CorrectedTimeValue>(offset->second);
     if (!std::isfinite(corrected)) {
       ++diagnostics_.invalid_time_count;
       return std::nullopt;
@@ -146,8 +157,28 @@ class AcousticOpticBuffer::Impl {
     return corrected;
   }
 
+  bool ValidateInputHeader(const uw::domain::ObservationHeader& header) {
+    const auto validation = uw::domain::ValidateObservationHeader(header);
+    if (!validation.ok()) {
+      if (!header.has_capture_time() ||
+          (header.has_capture_time() &&
+           (header.capture_time().nanos() < 0 ||
+            header.capture_time().nanos() >= kNanosPerSecond))) {
+        ++diagnostics_.invalid_time_count;
+      } else {
+        ++diagnostics_.invalid_input_count;
+      }
+      return false;
+    }
+    if (header.calibration_version().value() != rig_.calibration_version().value()) {
+      ++diagnostics_.invalid_input_count;
+      return false;
+    }
+    return true;
+  }
+
   template <typename Message>
-  bool Insert(std::deque<Timed<Message>>* queue, Message message, double corrected,
+  bool Insert(std::deque<Timed<Message>>* queue, Message message, CorrectedTimeValue corrected,
               std::size_t capacity) {
     Timed<Message> item{corrected, message.header().sequence_id().value(), std::move(message)};
     const auto position = std::lower_bound(queue->begin(), queue->end(), item, TimedLess<Message>);
@@ -167,6 +198,7 @@ class AcousticOpticBuffer::Impl {
   }
 
   std::optional<OnlineAcousticOpticBundle> AddImage(uw::domain::ImageFrame image) {
+    if (!ValidateInputHeader(image.header())) return std::nullopt;
     const auto sensor = image.header().sensor_id().value();
     const int camera_index = sensor == camera_ids_[0] ? 0 : (sensor == camera_ids_[1] ? 1 : -1);
     if (camera_index < 0 || image.header().observation_id().value().empty()) {
@@ -182,6 +214,7 @@ class AcousticOpticBuffer::Impl {
   }
 
   std::optional<OnlineAcousticOpticBundle> AddSonar(uw::domain::SonarFrame sonar) {
+    if (!ValidateInputHeader(sonar.header())) return std::nullopt;
     if (sonar_ids_.count(sonar.header().sensor_id().value()) == 0 ||
         sonar.header().observation_id().value().empty()) {
       ++diagnostics_.invalid_input_count;
@@ -195,6 +228,7 @@ class AcousticOpticBuffer::Impl {
   }
 
   std::optional<OnlineAcousticOpticBundle> AddVehicleState(uw::domain::VehicleState state) {
+    if (!ValidateInputHeader(state.header())) return std::nullopt;
     if (state.header().sensor_id().value() != state_sensor_id_ || !FiniteState(state)) {
       ++diagnostics_.invalid_input_count;
       return std::nullopt;
@@ -223,8 +257,14 @@ class AcousticOpticBuffer::Impl {
     images_[1].clear();
     sonars_.clear();
     states_.clear();
-    watermark_ = -std::numeric_limits<double>::infinity();
-    ++diagnostics_.calibration_reset_count;
+    watermark_ = -std::numeric_limits<CorrectedTimeValue>::infinity();
+    const uint64_t reset_count = diagnostics_.calibration_reset_count ==
+                                         std::numeric_limits<uint64_t>::max()
+                                     ? diagnostics_.calibration_reset_count
+                                     : diagnostics_.calibration_reset_count + 1;
+    diagnostics_ = {};
+    diagnostics_.calibration_reset_count = reset_count;
+    corrected_deltas_.clear();
   }
 
   AcousticOpticBufferDiagnostics Diagnostics() const {
@@ -245,15 +285,16 @@ class AcousticOpticBuffer::Impl {
   struct StereoPair {
     std::size_t left = 0;
     std::size_t right = 0;
-    double delta = 0.0;
-    double time = 0.0;
+    CorrectedTimeValue delta = 0.0L;
+    CorrectedTimeValue time = 0.0L;
   };
 
   void Expire() {
     if (!std::isfinite(watermark_)) return;
-    const double oldest = watermark_ - config_.max_residence_s;
+    const CorrectedTimeValue oldest =
+        watermark_ - static_cast<CorrectedTimeValue>(config_.max_residence_s);
     const auto expire = [&](auto* queue) {
-      while (!queue->empty() && queue->front().corrected_time + kComparisonEpsilon < oldest) {
+      while (!queue->empty() && queue->front().corrected_time < oldest) {
         queue->pop_front();
         ++diagnostics_.expiry_count;
       }
@@ -265,14 +306,22 @@ class AcousticOpticBuffer::Impl {
   }
 
   std::vector<StereoPair> StereoPairs() const {
-    struct Edge { std::size_t left; std::size_t right; double delta; double time; uint64_t ls; uint64_t rs; };
+    struct Edge {
+      std::size_t left;
+      std::size_t right;
+      CorrectedTimeValue delta;
+      CorrectedTimeValue time;
+      uint64_t ls;
+      uint64_t rs;
+    };
     std::vector<Edge> edges;
     for (std::size_t left = 0; left < images_[0].size(); ++left) {
       for (std::size_t right = 0; right < images_[1].size(); ++right) {
-        const double delta = std::abs(images_[0][left].corrected_time - images_[1][right].corrected_time);
-        if (delta <= config_.max_stereo_delta_s + kComparisonEpsilon) {
+        const CorrectedTimeValue delta =
+            std::abs(images_[0][left].corrected_time - images_[1][right].corrected_time);
+        if (delta <= static_cast<CorrectedTimeValue>(config_.max_stereo_delta_s)) {
           edges.push_back({left, right, delta,
-                           0.5 * (images_[0][left].corrected_time + images_[1][right].corrected_time),
+                           0.5L * (images_[0][left].corrected_time + images_[1][right].corrected_time),
                            images_[0][left].sequence, images_[1][right].sequence});
         }
       }
@@ -292,13 +341,13 @@ class AcousticOpticBuffer::Impl {
     return result;
   }
 
-  std::optional<uw::domain::VehicleState> InterpolateState(double target) const {
+  std::optional<uw::domain::VehicleState> InterpolateState(CorrectedTimeValue target) const {
     if (states_.empty()) return std::nullopt;
     auto upper = std::lower_bound(states_.begin(), states_.end(), target,
-                                  [](const auto& state, double time) {
+                                  [](const auto& state, CorrectedTimeValue time) {
                                     return state.corrected_time < time;
                                   });
-    if (upper != states_.end() && std::abs(upper->corrected_time - target) <= kComparisonEpsilon) {
+    if (upper != states_.end() && upper->corrected_time == target) {
       auto exact = upper->message;
       NormalizeOrientation(&exact);
       exact.mutable_header()->mutable_calibration_version()->set_value(rig_.calibration_version().value());
@@ -306,12 +355,12 @@ class AcousticOpticBuffer::Impl {
     }
     if (upper == states_.begin() || upper == states_.end()) return std::nullopt;
     const auto lower = std::prev(upper);
-    if (target - lower->corrected_time > config_.max_state_bracket_s + kComparisonEpsilon ||
-        upper->corrected_time - target > config_.max_state_bracket_s + kComparisonEpsilon) {
+    if (upper->corrected_time - lower->corrected_time >
+        static_cast<CorrectedTimeValue>(config_.max_state_bracket_s)) {
       return std::nullopt;
     }
-    const double alpha = (target - lower->corrected_time) /
-                         (upper->corrected_time - lower->corrected_time);
+    const double alpha = static_cast<double>((target - lower->corrected_time) /
+                                             (upper->corrected_time - lower->corrected_time));
     const Eigen::Quaterniond q0(lower->message.orientation_xyzw(3), lower->message.orientation_xyzw(0),
                                 lower->message.orientation_xyzw(1), lower->message.orientation_xyzw(2));
     const Eigen::Quaterniond q1(upper->message.orientation_xyzw(3), upper->message.orientation_xyzw(0),
@@ -332,7 +381,8 @@ class AcousticOpticBuffer::Impl {
                                                 lower->message.header().observation_id().value() + ":" +
                                                 upper->message.header().observation_id().value());
     const double offset = rig_.time_offset_seconds().at(state_sensor_id_);
-    *header->mutable_capture_time() = uw::domain::FromSeconds(target - offset);
+    *header->mutable_capture_time() =
+        uw::domain::FromSeconds(static_cast<double>(target - offset));
     header->mutable_calibration_version()->set_value(rig_.calibration_version().value());
     header->set_provenance("runtime/acoustic_optic_buffer:state_slerp");
     return result;
@@ -353,29 +403,42 @@ class AcousticOpticBuffer::Impl {
       if (!images_[0].empty() && !images_[1].empty()) ++diagnostics_.over_window_count;
       return std::nullopt;
     }
-    const auto& sonar = sonars_.front();
-    const auto selected = std::min_element(pairs.begin(), pairs.end(), [&](const auto& a, const auto& b) {
-      return std::make_tuple(std::abs(a.time - sonar.corrected_time), a.time,
-                             images_[0][a.left].sequence, images_[1][a.right].sequence) <
-             std::make_tuple(std::abs(b.time - sonar.corrected_time), b.time,
-                             images_[0][b.left].sequence, images_[1][b.right].sequence);
-    });
+    struct Candidate {
+      std::size_t sonar = 0;
+      StereoPair pair;
+      CorrectedTimeValue delta = 0.0L;
+    };
+    std::optional<Candidate> selected;
+    const auto key = [&](const Candidate& candidate) {
+      return std::make_tuple(candidate.delta, sonars_[candidate.sonar].corrected_time,
+                             candidate.pair.time, sonars_[candidate.sonar].sequence,
+                             images_[0][candidate.pair.left].sequence,
+                             images_[1][candidate.pair.right].sequence);
+    };
+    for (std::size_t sonar_index = 0; sonar_index < sonars_.size(); ++sonar_index) {
+      for (const auto& pair : pairs) {
+        Candidate candidate{sonar_index, pair,
+                            std::abs(pair.time - sonars_[sonar_index].corrected_time)};
+        if (!selected || key(candidate) < key(*selected)) selected = candidate;
+      }
+    }
     ++diagnostics_.synchronization_candidate_count;
-    const double delta = std::abs(selected->time - sonar.corrected_time);
-    if (delta > config_.max_sonar_camera_delta_s + kComparisonEpsilon) {
+    if (!selected || selected->delta >
+                         static_cast<CorrectedTimeValue>(config_.max_sonar_camera_delta_s)) {
       ++diagnostics_.over_window_count;
       return std::nullopt;
     }
-    const auto& left = images_[0][selected->left].message;
-    const auto& right = images_[1][selected->right].message;
+    const auto& pair = selected->pair;
+    const auto& left = images_[0][pair.left].message;
+    const auto& right = images_[1][pair.right].message;
     if (left.header().observation_id().value() != right.header().observation_id().value()) {
-      images_[0].erase(images_[0].begin() + static_cast<std::ptrdiff_t>(selected->left));
-      images_[1].erase(images_[1].begin() + static_cast<std::ptrdiff_t>(selected->right));
-      sonars_.pop_front();
+      images_[0].erase(images_[0].begin() + static_cast<std::ptrdiff_t>(pair.left));
+      images_[1].erase(images_[1].begin() + static_cast<std::ptrdiff_t>(pair.right));
+      sonars_.erase(sonars_.begin() + static_cast<std::ptrdiff_t>(selected->sonar));
       ++diagnostics_.integrity_rejection_count;
       return std::nullopt;
     }
-    auto state = InterpolateState(selected->time);
+    auto state = InterpolateState(pair.time);
     if (!state) {
       ++diagnostics_.no_pair_count;
       return std::nullopt;
@@ -383,13 +446,13 @@ class AcousticOpticBuffer::Impl {
     OnlineAcousticOpticBundle bundle;
     bundle.images.primary = left;
     bundle.images.secondary = right;
-    bundle.sonar = sonar.message;
+    bundle.sonar = sonars_[selected->sonar].message;
     bundle.interpolated_vehicle_state = std::move(*state);
-    bundle.corrected_time_delta_s = delta;
-    images_[0].erase(images_[0].begin() + static_cast<std::ptrdiff_t>(selected->left));
-    images_[1].erase(images_[1].begin() + static_cast<std::ptrdiff_t>(selected->right));
-    sonars_.pop_front();
-    corrected_deltas_.push_back(delta);
+    bundle.corrected_time_delta_s = static_cast<double>(selected->delta);
+    images_[0].erase(images_[0].begin() + static_cast<std::ptrdiff_t>(pair.left));
+    images_[1].erase(images_[1].begin() + static_cast<std::ptrdiff_t>(pair.right));
+    sonars_.erase(sonars_.begin() + static_cast<std::ptrdiff_t>(selected->sonar));
+    corrected_deltas_.push_back(static_cast<double>(selected->delta));
     if (corrected_deltas_.size() > kDeltaWindowSize) corrected_deltas_.erase(corrected_deltas_.begin());
     ++diagnostics_.accepted_count;
     return bundle;
@@ -403,7 +466,7 @@ class AcousticOpticBuffer::Impl {
   std::deque<Timed<uw::domain::ImageFrame>> images_[2];
   std::deque<Timed<uw::domain::SonarFrame>> sonars_;
   std::deque<Timed<uw::domain::VehicleState>> states_;
-  double watermark_ = -std::numeric_limits<double>::infinity();
+  CorrectedTimeValue watermark_ = -std::numeric_limits<CorrectedTimeValue>::infinity();
   AcousticOpticBufferDiagnostics diagnostics_;
   std::vector<double> corrected_deltas_;
 };

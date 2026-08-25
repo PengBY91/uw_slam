@@ -360,8 +360,10 @@ uw::domain::RigCalibrationSnapshot LoadRigConfig(const std::string& path) {
       throw std::runtime_error("camera sensor ids must be non-empty and unique: " + path);
     }
   }
+  std::size_t enabled_sonar_count = 0;
   for (const auto& sonar : snapshot.sonar_beam_models()) {
     if (!sonar.sonar_enabled()) continue;
+    ++enabled_sonar_count;
     if (sonar.sensor_id().value().empty() ||
         !online_sensor_ids.insert(sonar.sensor_id().value()).second) {
       throw std::runtime_error("enabled sonar sensor ids must be non-empty and unique: " + path);
@@ -371,6 +373,11 @@ uw::domain::RigCalibrationSnapshot LoadRigConfig(const std::string& path) {
     if (!online_sensor_ids.insert(sensor.value()).second) {
       throw std::runtime_error("online sensor roles must use unique sensor ids: " + path);
     }
+  }
+  if (snapshot.cameras_size() >= 2 && enabled_sonar_count > 0 &&
+      snapshot.vehicle_state_sensors_size() != 1) {
+    throw std::runtime_error(
+        "full acoustic-optic rigs require exactly one vehicle_state_sensor: " + path);
   }
   for (const std::string& sensor_id : online_sensor_ids) {
     const auto offset = snapshot.time_offset_seconds().find(sensor_id);
