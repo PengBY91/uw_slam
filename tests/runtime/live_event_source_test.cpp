@@ -1,10 +1,13 @@
 #include "runtime/live_event_source.hpp"
 
 #include <chrono>
+#include <exception>
 #include <future>
+#include <memory>
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -308,15 +311,51 @@ TEST(LiveEventSource, DroppedNewestDoesNotCommitSequenceBaselineOrGap) {
 }
 
 TEST(LiveEventSource, BlockedRunIsWokenByClose) {
-  LiveEventSource source(LiveSourceConfig::ForTest());
-  auto future = std::async(std::launch::async, [&] {
-    return source.Run([](const CanonicalEvent&) { return true; });
+  auto source = std::make_shared<LiveEventSource>(LiveSourceConfig::ForTest());
+  std::promise<uw::runtime::EventSourceReport> report_promise;
+  auto report_future = report_promise.get_future();
+  std::thread worker([source, promise = std::move(report_promise)]() mutable {
+    try {
+      promise.set_value(source->Run([](const CanonicalEvent&) { return true; }));
+    } catch (...) {
+      const auto error = std::current_exception();
+      try {
+        promise.set_exception(error);
+      } catch (...) {
+        // The future will observe a broken promise if its shared state was
+        // unexpectedly unavailable; never let a test worker terminate.
+      }
+    }
   });
 
-  EXPECT_EQ(future.wait_for(std::chrono::milliseconds(50)), std::future_status::timeout);
-  source.Close();
-  ASSERT_EQ(future.wait_for(std::chrono::seconds(1)), std::future_status::ready);
-  EXPECT_EQ(future.get().status, EventSourceStatus::kCompleted);
+  EXPECT_EQ(report_future.wait_for(std::chrono::milliseconds(50)),
+            std::future_status::timeout);
+  source->Close();
+  if (report_future.wait_for(std::chrono::seconds(1)) != std::future_status::ready) {
+    worker.detach();
+    ADD_FAILURE() << "LiveEventSource::Run did not wake within one second of Close";
+    return;
+  }
+
+  uw::runtime::EventSourceReport report;
+  std::exception_ptr worker_error;
+  try {
+    report = report_future.get();
+  } catch (...) {
+    worker_error = std::current_exception();
+  }
+  worker.join();
+  if (worker_error != nullptr) {
+    try {
+      std::rethrow_exception(worker_error);
+    } catch (const std::exception& error) {
+      ADD_FAILURE() << "LiveEventSource::Run worker threw: " << error.what();
+    } catch (...) {
+      ADD_FAILURE() << "LiveEventSource::Run worker threw a non-standard exception";
+    }
+    return;
+  }
+  EXPECT_EQ(report.status, EventSourceStatus::kCompleted);
 }
 
 TEST(LiveEventSource, CloseDrainsAcceptedEventsExactlyOnceAndRejectsLaterSubmit) {
