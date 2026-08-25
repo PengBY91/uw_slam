@@ -28,10 +28,12 @@ target_link_libraries(measurement_api INTERFACE uw::core)
 
 add_library(opencv_adapters STATIC
   adapters/opencv/src/stereo_rectifier.cpp
+  adapters/opencv/src/opencv_visual_assist_frontend.cpp
 )
 add_library(uw::opencv_adapters ALIAS opencv_adapters)
 target_include_directories(opencv_adapters PUBLIC
   "${PROJECT_SOURCE_DIR}/adapters/opencv/include"
+  PRIVATE "${PROJECT_SOURCE_DIR}/adapters/opencv/include/adapters"
 )
 target_link_libraries(opencv_adapters
   PUBLIC uw::measurement_api
@@ -43,6 +45,10 @@ add_library(frontends STATIC
   src/frontends/cfar_detector.cpp
   src/frontends/dbscan.cpp
   src/frontends/sonar_cfar_frontend.cpp
+  src/frontends/sonar_target_extractor.cpp
+  src/frontends/target_associator.cpp
+  src/frontends/target_tracker.cpp
+  src/frontends/target_fusion_components.cpp
   src/frontends/block_matcher.cpp
   src/frontends/stereo_optical_depth_frontend.cpp
   src/frontends/harris_corner_detector.cpp
@@ -97,6 +103,7 @@ add_library(runtime STATIC
   src/runtime/mcap_io.cpp
   src/runtime/config.cpp
   src/runtime/acoustic_optic_synchronizer.cpp
+  src/runtime/acoustic_optic_buffer.cpp
   src/runtime/bag_audit_checks.cpp
   src/runtime/synthetic_sonar.cpp
   src/runtime/mcap_event_source.cpp

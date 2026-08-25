@@ -62,7 +62,7 @@ add_executable(acoustic_optic_scenario_matrix
 )
 target_include_directories(acoustic_optic_scenario_matrix PRIVATE "${PROJECT_SOURCE_DIR}/apps")
 target_link_libraries(acoustic_optic_scenario_matrix PRIVATE
-  uw::domain uw::core uw::runtime uw::evaluation uw::frontends
+  uw::application uw::domain uw::core uw::runtime uw::evaluation uw::frontends
 )
 uw_apply_application_defaults(acoustic_optic_scenario_matrix)
 

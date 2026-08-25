@@ -13,6 +13,37 @@
 #define UW_REPO_ROOT "."
 #endif
 
+namespace {
+
+std::string MinimalOnlineRigYaml(const std::string& offsets,
+                                 const std::string& provenance,
+                                 const std::string& state_sensors = "  - rov-state\n") {
+  return "calibration_version: test_v1\n"
+         "cameras:\n"
+         "  - sensor_id: camera_left\n"
+         "    width: 1\n"
+         "    height: 1\n"
+         "    k_matrix_row_major: [1,0,0,0,1,0,0,0,1]\n"
+         "  - sensor_id: camera_right\n"
+         "    width: 1\n"
+         "    height: 1\n"
+         "    k_matrix_row_major: [1,0,0,0,1,0,0,0,1]\n"
+         "sonar_beam_models:\n"
+         "  - sensor_id: sonar0\n"
+         "    sonar_enabled: true\n"
+         "vehicle_state_sensors:\n" + state_sensors +
+         "time_offset_seconds:\n" + offsets +
+         "time_offset_provenance:\n" + provenance;
+}
+
+std::filesystem::path WriteRig(const std::string& name, const std::string& yaml) {
+  const auto path = std::filesystem::temp_directory_path() / name;
+  std::ofstream(path) << yaml;
+  return path;
+}
+
+}  // namespace
+
 TEST(Config, LoadsExperimentConfigWithAllThreeLayers) {
   const auto config =
       uw::runtime::LoadExperimentConfig(std::string(UW_REPO_ROOT) + "/configs/experiment/synthetic_smoke.yaml");
@@ -22,6 +53,14 @@ TEST(Config, LoadsExperimentConfigWithAllThreeLayers) {
   EXPECT_EQ(config.defaults.max_iterations, 30);
   EXPECT_DOUBLE_EQ(config.defaults.default_sqrt_information.sonar_range, 15.0);
   EXPECT_DOUBLE_EQ(config.defaults.warmup_seconds, 0.0);
+  EXPECT_EQ(config.defaults.sonar_frontend.training_cells, 16);
+  EXPECT_EQ(config.defaults.sonar_frontend.guard_cells, 4);
+  EXPECT_DOUBLE_EQ(config.defaults.sonar_frontend.probability_false_alarm, 0.01);
+  EXPECT_EQ(config.defaults.sonar_frontend.detector_threshold, 50);
+  EXPECT_DOUBLE_EQ(config.defaults.sonar_frontend.dbscan_eps_m, 0.20);
+  EXPECT_EQ(config.defaults.sonar_frontend.dbscan_min_samples, 2);
+  EXPECT_DOUBLE_EQ(config.defaults.sonar_frontend.default_range_sigma_m, 0.05);
+  EXPECT_DOUBLE_EQ(config.defaults.sonar_frontend.default_bearing_sigma_rad, 0.01);
 
   // rig/example_auv.yaml
   EXPECT_EQ(config.rig.calibration_version().value(), "example_auv_v2");
@@ -42,6 +81,9 @@ TEST(Config, LoadsExperimentConfigWithAllThreeLayers) {
   EXPECT_DOUBLE_EQ(config.rig.time_offset_seconds().at("camera_left"), 0.0);
   EXPECT_DOUBLE_EQ(config.rig.time_offset_seconds().at("camera_right"), 0.0);
   EXPECT_DOUBLE_EQ(config.rig.time_offset_seconds().at("sonar0"), 0.0);
+  ASSERT_EQ(config.rig.vehicle_state_sensors_size(), 1);
+  EXPECT_EQ(config.rig.vehicle_state_sensors(0).value(), "rov-state");
+  EXPECT_EQ(config.rig.time_offset_provenance().at("camera_left"), "measured:simulation");
 
   // scenario/synthetic_smoke.yaml
   EXPECT_EQ(config.scenario.seed, 42u);
@@ -56,6 +98,28 @@ TEST(Config, LoadsExperimentConfigWithAllThreeLayers) {
   EXPECT_EQ(config.landmark_detector, "bright_blob");  // not set in this experiment file; default
   EXPECT_EQ(config.estimator_mode, "black_box_vio");
   EXPECT_TRUE(config.write_run_manifest);
+}
+
+TEST(Config, LoadsEveryCheckedInRigUnderOnlineV1CardinalityContract) {
+  for (const std::string name : {"euroc_mh01.yaml", "example_auv.yaml",
+                                 "example_auv_real_camera.yaml",
+                                 "example_auv_sonar_only.yaml"}) {
+    EXPECT_NO_THROW(uw::runtime::LoadRigConfig(
+        std::string(UW_REPO_ROOT) + "/configs/rig/" + name))
+        << "rig file: " << name;
+  }
+
+  const auto euroc = uw::runtime::LoadRigConfig(
+      std::string(UW_REPO_ROOT) + "/configs/rig/euroc_mh01.yaml");
+  EXPECT_EQ(euroc.sonar_beam_models_size(), 0);
+  EXPECT_EQ(euroc.vehicle_state_sensors_size(), 0);
+
+  const auto sonar_only = uw::runtime::LoadRigConfig(
+      std::string(UW_REPO_ROOT) + "/configs/rig/example_auv_sonar_only.yaml");
+  EXPECT_EQ(sonar_only.cameras_size(), 0);
+  ASSERT_EQ(sonar_only.sonar_beam_models_size(), 1);
+  EXPECT_TRUE(sonar_only.sonar_beam_models(0).sonar_enabled());
+  EXPECT_EQ(sonar_only.vehicle_state_sensors_size(), 1);
 }
 
 TEST(Config, MissingOptionalFieldsFallBackToDefaults) {
@@ -82,6 +146,33 @@ TEST(Config, StereoRectificationDefaultsWhenSectionAbsent) {
   EXPECT_DOUBLE_EQ(config.stereo_rectification.alpha, 0.0);
   EXPECT_EQ(config.stereo_rectification.crop_policy, "full_canvas");
   EXPECT_EQ(config.stereo_rectification.frame_suffix, "_rectified");
+}
+
+TEST(Config, ParsesTypedSonarCfarOverrides) {
+  const auto tmp_path = std::filesystem::temp_directory_path() / "uw_config_test_sonar_cfar.yaml";
+  {
+    std::ofstream out(tmp_path);
+    out << "frontends:\n"
+           "  sonar_cfar:\n"
+           "    training_cells: 20\n"
+           "    guard_cells: 6\n"
+           "    probability_false_alarm: 0.005\n"
+           "    detector_threshold: 60\n"
+           "    dbscan_eps_m: 0.25\n"
+           "    dbscan_min_samples: 3\n"
+           "    default_range_sigma_m: 0.08\n"
+           "    default_bearing_sigma_rad: 0.02\n";
+  }
+  const auto config = uw::runtime::LoadPlatformDefaultsConfig(tmp_path.string());
+  EXPECT_EQ(config.sonar_frontend.training_cells, 20);
+  EXPECT_EQ(config.sonar_frontend.guard_cells, 6);
+  EXPECT_DOUBLE_EQ(config.sonar_frontend.probability_false_alarm, 0.005);
+  EXPECT_EQ(config.sonar_frontend.detector_threshold, 60);
+  EXPECT_DOUBLE_EQ(config.sonar_frontend.dbscan_eps_m, 0.25);
+  EXPECT_EQ(config.sonar_frontend.dbscan_min_samples, 3);
+  EXPECT_DOUBLE_EQ(config.sonar_frontend.default_range_sigma_m, 0.08);
+  EXPECT_DOUBLE_EQ(config.sonar_frontend.default_bearing_sigma_rad, 0.02);
+  std::remove(tmp_path.string().c_str());
 }
 
 TEST(Config, ParsesStereoRectificationOverrides) {
@@ -373,6 +464,145 @@ TEST(Config, RejectsCameraIntrinsicMatrixThatIsNotThreeByThree) {
   std::remove(path.string().c_str());
 }
 
+TEST(Config, AcceptsExplicitMeasuredZeroOffsetsForAllOnlineRoles) {
+  const auto path = WriteRig(
+      "uw_online_rig_zero.yaml",
+      MinimalOnlineRigYaml("  camera_left: 0.0\n  camera_right: 0.0\n  sonar0: 0.0\n  rov-state: 0.0\n",
+                           "  camera_left: measured:left\n  camera_right: measured:right\n"
+                           "  sonar0: measured:sonar\n  rov-state: measured:state\n"));
+  const auto rig = uw::runtime::LoadRigConfig(path.string());
+  EXPECT_DOUBLE_EQ(rig.time_offset_seconds().at("rov-state"), 0.0);
+  EXPECT_EQ(rig.vehicle_state_sensors(0).value(), "rov-state");
+  std::remove(path.string().c_str());
+}
+
+TEST(Config, RejectsMissingOffsetOrProvenanceForDeclaredOnlineSensor) {
+  const auto missing_offset = WriteRig(
+      "uw_online_rig_missing_offset.yaml",
+      MinimalOnlineRigYaml("  camera_left: 0.0\n  camera_right: 0.0\n  sonar0: 0.0\n",
+                           "  camera_left: measured:left\n  camera_right: measured:right\n"
+                           "  sonar0: measured:sonar\n  rov-state: measured:state\n"));
+  EXPECT_THROW(uw::runtime::LoadRigConfig(missing_offset.string()), std::runtime_error);
+  std::remove(missing_offset.string().c_str());
+
+  const auto missing_provenance = WriteRig(
+      "uw_online_rig_missing_provenance.yaml",
+      MinimalOnlineRigYaml("  camera_left: 0.0\n  camera_right: 0.0\n  sonar0: 0.0\n  rov-state: 0.0\n",
+                           "  camera_left: measured:left\n  camera_right: measured:right\n"
+                           "  sonar0: measured:sonar\n"));
+  EXPECT_THROW(uw::runtime::LoadRigConfig(missing_provenance.string()), std::runtime_error);
+  std::remove(missing_provenance.string().c_str());
+}
+
+TEST(Config, RejectsDuplicateEmptyOrUnknownVehicleTimingRoles) {
+  const std::string offsets =
+      "  camera_left: 0.0\n  camera_right: 0.0\n  sonar0: 0.0\n  rov-state: 0.0\n";
+  const std::string provenance =
+      "  camera_left: measured:left\n  camera_right: measured:right\n"
+      "  sonar0: measured:sonar\n  rov-state: measured:state\n";
+  const auto duplicate = WriteRig("uw_online_rig_duplicate.yaml",
+                                  MinimalOnlineRigYaml(offsets, provenance,
+                                                       "  - rov-state\n  - rov-state\n"));
+  EXPECT_THROW(uw::runtime::LoadRigConfig(duplicate.string()), std::runtime_error);
+  std::remove(duplicate.string().c_str());
+
+  const auto empty = WriteRig("uw_online_rig_empty.yaml",
+                              MinimalOnlineRigYaml(offsets, provenance, "  - \"\"\n"));
+  EXPECT_THROW(uw::runtime::LoadRigConfig(empty.string()), std::runtime_error);
+  std::remove(empty.string().c_str());
+
+  const auto unknown = WriteRig(
+      "uw_online_rig_unknown_provenance.yaml",
+      MinimalOnlineRigYaml(offsets,
+                           provenance + "  ghost: measured:unknown\n"));
+  EXPECT_THROW(uw::runtime::LoadRigConfig(unknown.string()), std::runtime_error);
+  std::remove(unknown.string().c_str());
+}
+
+TEST(Config, RejectsNonFiniteOnlineOffsetAndEmptyProvenance) {
+  const auto nonfinite = WriteRig(
+      "uw_online_rig_nonfinite.yaml",
+      MinimalOnlineRigYaml("  camera_left: .inf\n  camera_right: 0.0\n  sonar0: 0.0\n  rov-state: 0.0\n",
+                           "  camera_left: measured:left\n  camera_right: measured:right\n"
+                           "  sonar0: measured:sonar\n  rov-state: measured:state\n"));
+  EXPECT_THROW(uw::runtime::LoadRigConfig(nonfinite.string()), std::runtime_error);
+  std::remove(nonfinite.string().c_str());
+
+  const auto empty = WriteRig(
+      "uw_online_rig_empty_provenance.yaml",
+      MinimalOnlineRigYaml("  camera_left: 0.0\n  camera_right: 0.0\n  sonar0: 0.0\n  rov-state: 0.0\n",
+                           "  camera_left: \"\"\n  camera_right: measured:right\n"
+                           "  sonar0: measured:sonar\n  rov-state: measured:state\n"));
+  EXPECT_THROW(uw::runtime::LoadRigConfig(empty.string()), std::runtime_error);
+  std::remove(empty.string().c_str());
+}
+
+TEST(Config, FullAcousticOpticRigRequiresExactlyOneVehicleStateSensor) {
+  const std::string offsets =
+      "  camera_left: 0.0\n  camera_right: 0.0\n  sonar0: 0.0\n  rov-state: 0.0\n"
+      "  backup-state: 0.0\n";
+  const std::string provenance =
+      "  camera_left: measured:left\n  camera_right: measured:right\n"
+      "  sonar0: measured:sonar\n  rov-state: measured:state\n"
+      "  backup-state: measured:backup\n";
+  const auto missing = WriteRig("uw_online_rig_no_state_role.yaml",
+                                 MinimalOnlineRigYaml(offsets, provenance, ""));
+  EXPECT_THROW(uw::runtime::LoadRigConfig(missing.string()), std::runtime_error);
+  std::remove(missing.string().c_str());
+
+  const auto multiple = WriteRig(
+      "uw_online_rig_multiple_state_roles.yaml",
+      MinimalOnlineRigYaml(offsets, provenance, "  - rov-state\n  - backup-state\n"));
+  EXPECT_THROW(uw::runtime::LoadRigConfig(multiple.string()), std::runtime_error);
+  std::remove(multiple.string().c_str());
+}
+
+TEST(Config, SonarRigsRequireExactlyOneEnabledSonarAndVehicleStateSource) {
+  const std::string offsets =
+      "  sonar0: 0.0\n  sonar1: 0.0\n  rov-state: 0.0\n  backup-state: 0.0\n";
+  const std::string provenance =
+      "  sonar0: measured:sonar\n  sonar1: measured:sonar\n"
+      "  rov-state: measured:state\n  backup-state: measured:backup\n";
+  const auto make_sonar_rig = [&](const std::string& name, const std::string& sonars,
+                                  const std::string& states) {
+    return WriteRig(name,
+                    "calibration_version: sonar_v1\nsonar_beam_models:\n" + sonars +
+                        "vehicle_state_sensors:\n" + states +
+                        "time_offset_seconds:\n" + offsets +
+                        "time_offset_provenance:\n" + provenance);
+  };
+
+  const auto no_state = make_sonar_rig(
+      "uw_sonar_rig_no_state.yaml", "  - sensor_id: sonar0\n    sonar_enabled: true\n", "");
+  EXPECT_THROW(uw::runtime::LoadRigConfig(no_state.string()), std::runtime_error);
+  std::remove(no_state.string().c_str());
+
+  const auto multiple_state = make_sonar_rig(
+      "uw_sonar_rig_multiple_state.yaml", "  - sensor_id: sonar0\n    sonar_enabled: true\n",
+      "  - rov-state\n  - backup-state\n");
+  EXPECT_THROW(uw::runtime::LoadRigConfig(multiple_state.string()), std::runtime_error);
+  std::remove(multiple_state.string().c_str());
+
+  const auto multiple_sonar = make_sonar_rig(
+      "uw_sonar_rig_multiple_sonar.yaml",
+      "  - sensor_id: sonar0\n    sonar_enabled: true\n"
+      "  - sensor_id: sonar1\n    sonar_enabled: true\n",
+      "  - rov-state\n");
+  EXPECT_THROW(uw::runtime::LoadRigConfig(multiple_sonar.string()), std::runtime_error);
+  std::remove(multiple_sonar.string().c_str());
+}
+
+TEST(Config, RejectsHugeFiniteTimeOffset) {
+  const auto path = WriteRig(
+      "uw_online_rig_huge_offset.yaml",
+      MinimalOnlineRigYaml(
+          "  camera_left: 10.000001\n  camera_right: 0.0\n  sonar0: 0.0\n  rov-state: 0.0\n",
+          "  camera_left: measured:left\n  camera_right: measured:right\n"
+          "  sonar0: measured:sonar\n  rov-state: measured:state\n"));
+  EXPECT_THROW(uw::runtime::LoadRigConfig(path.string()), std::runtime_error);
+  std::remove(path.string().c_str());
+}
+
 TEST(Config, ValidateExperimentConfigSelectionsAcceptsDefaults) {
   // Default-constructed ExperimentConfig must always validate — every
   // configs/experiment/*.yaml either uses these defaults or overrides them
@@ -442,6 +672,31 @@ TEST(Config, ValidateExperimentConfigSelectionsAcceptsCeresV1Solver) {
   uw::runtime::ExperimentConfig config;
   config.defaults.solver = "ceres_v1";
   EXPECT_EQ(uw::runtime::ValidateExperimentConfigSelections(config), std::nullopt);
+}
+
+TEST(Config, LoadsAssociationAndTrackerDefaultsUsedByFusion) {
+  const auto config = uw::runtime::LoadPlatformDefaultsConfig(
+      std::string(UW_REPO_ROOT) + "/configs/defaults/platform.yaml");
+  EXPECT_DOUBLE_EQ(config.target_association.max_corrected_time_delta_s, 0.05);
+  EXPECT_DOUBLE_EQ(config.target_association.max_bearing_mahalanobis_sq, 9.0);
+  EXPECT_DOUBLE_EQ(config.target_association.max_range_mahalanobis_sq, 9.0);
+  EXPECT_DOUBLE_EQ(config.target_tracker.stale_after_s, 0.5);
+  EXPECT_EQ(config.target_tracker.confirm_hits, 2);
+  EXPECT_EQ(config.target_tracker.degraded_misses, 3);
+}
+
+TEST(Config, RejectsUnsafeAssociationAndTrackerThresholds) {
+  const auto path = std::filesystem::temp_directory_path() / "uw_bad_target_fusion.yaml";
+  {
+    std::ofstream out(path);
+    out << "frontends:\n"
+           "  target_association:\n"
+           "    max_corrected_time_delta_s: .nan\n"
+           "  target_tracker:\n"
+           "    stale_after_s: 0.0\n";
+  }
+  EXPECT_THROW(uw::runtime::LoadPlatformDefaultsConfig(path.string()), std::runtime_error);
+  std::remove(path.string().c_str());
 }
 
 // estimation.solver at the experiment-file level (not nested under a

@@ -21,6 +21,10 @@ struct RunManifest {
   // was constructed for this run.
   std::string derived_calibration_hash;
   std::string model_hash;
+  // Canonical resolved target-association/tracker parameters actually used
+  // by the run. Kept separate from config_hash because experiment YAML only
+  // references the defaults file rather than embedding its values.
+  std::string target_fusion_parameters;
   std::string dataset_or_scenario;
   std::string simulator;
   std::string os_info;

@@ -70,6 +70,23 @@ TEST(DomainContract, VehicleStateRoundTripsWithCanonicalHeaderAndDeviceHealth) {
   EXPECT_TRUE(parsed.device_health_valid());
 }
 
+TEST(DomainContract, RigCalibrationRoundTripsTimingProvenanceAndVehicleStateRole) {
+  uw::domain::RigCalibrationSnapshot rig;
+  rig.add_vehicle_state_sensors()->set_value("rov-state");
+  (*rig.mutable_time_offset_seconds())["rov-state"] = 0.0;
+  (*rig.mutable_time_offset_provenance())["rov-state"] = "measured:pps-v3";
+  std::string bytes;
+  ASSERT_TRUE(rig.SerializeToString(&bytes));
+  uw::domain::RigCalibrationSnapshot parsed;
+  ASSERT_TRUE(parsed.ParseFromString(bytes));
+  ASSERT_EQ(parsed.vehicle_state_sensors_size(), 1);
+  EXPECT_EQ(parsed.vehicle_state_sensors(0).value(), "rov-state");
+  EXPECT_EQ(parsed.time_offset_provenance().at("rov-state"), "measured:pps-v3");
+  const auto* field = parsed.GetDescriptor()->FindFieldByName("vehicle_state_sensors");
+  ASSERT_NE(field, nullptr);
+  EXPECT_EQ(field->number(), 10);
+}
+
 TEST(DomainContract, TargetTrackPreservesSourcesAgeAndUncertainty) {
   uw::domain::TargetTrack track;
   track.mutable_track_id()->set_value("track_9");
@@ -86,11 +103,55 @@ TEST(DomainContract, TargetTrackPreservesSourcesAgeAndUncertainty) {
   track.add_source_observations()->set_value("sonar_1");
   track.set_status(uw::domain::TARGET_TRACK_STATUS_CONFIRMED);
 
+  EXPECT_TRUE(track.has_range_m());
   EXPECT_EQ(track.track_id().value(), "track_9");
   EXPECT_EQ(track.sources_size(), 2);
   EXPECT_EQ(track.source_observations_size(), 2);
   EXPECT_EQ(track.covariance_2x2_row_major_size(), 4);
   EXPECT_EQ(track.status(), uw::domain::TARGET_TRACK_STATUS_CONFIRMED);
+}
+
+TEST(DomainContract, TargetTrackRangePresenceKeepsLegacyTagFiveWireCompatibility) {
+  // Legacy proto3 scalar encoding for field 5 (fixed64 double 4.0). Changing
+  // that field to `optional double` must retain the same tag and wire type.
+  const std::string legacy_range_only(
+      "\x29\x00\x00\x00\x00\x00\x00\x10\x40", 9);
+  uw::domain::TargetTrack parsed_legacy;
+  ASSERT_TRUE(parsed_legacy.ParseFromString(legacy_range_only));
+  EXPECT_TRUE(parsed_legacy.has_range_m());
+  EXPECT_DOUBLE_EQ(parsed_legacy.range_m(), 4.0);
+
+  uw::domain::TargetTrack bearing_only;
+  std::string new_bytes;
+  ASSERT_TRUE(bearing_only.SerializeToString(&new_bytes));
+  uw::domain::TargetTrack parsed_bearing_only;
+  ASSERT_TRUE(parsed_bearing_only.ParseFromString(new_bytes));
+  EXPECT_FALSE(parsed_bearing_only.has_range_m());
+
+  const auto* range_field =
+      parsed_legacy.GetDescriptor()->FindFieldByName("range_m");
+  ASSERT_NE(range_field, nullptr);
+  EXPECT_EQ(range_field->number(), 5);
+  EXPECT_TRUE(range_field->has_presence());
+}
+
+TEST(DomainContract, SonarHealthMetricsRoundTripWithTypedSemantics) {
+  uw::domain::HealthReport report;
+  report.set_background_noise_mean(12.5);
+  report.set_false_alarm_density(0.125);
+  report.set_valid_measurement_count(3);
+  report.set_config_hash_consistent(false);
+  report.set_latency_p95_ms(7.5);
+
+  std::string bytes;
+  ASSERT_TRUE(report.SerializeToString(&bytes));
+  uw::domain::HealthReport parsed;
+  ASSERT_TRUE(parsed.ParseFromString(bytes));
+  EXPECT_DOUBLE_EQ(parsed.background_noise_mean(), 12.5);
+  EXPECT_DOUBLE_EQ(parsed.false_alarm_density(), 0.125);
+  EXPECT_EQ(parsed.valid_measurement_count(), 3u);
+  EXPECT_FALSE(parsed.config_hash_consistent());
+  EXPECT_DOUBLE_EQ(parsed.latency_p95_ms(), 7.5);
 }
 
 TEST(DomainContract, SonarFrameAscendingAzimuthAccepted) {

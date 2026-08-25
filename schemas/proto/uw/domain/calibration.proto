@@ -78,4 +78,13 @@ message RigCalibrationSnapshot {
   map<string, double> time_offset_seconds = 7;
 
   string notes = 8;
+
+  // Audit trail for every calibrated clock offset. An explicit entry is
+  // required even when the measured offset is exactly zero.
+  map<string, string> time_offset_provenance = 9;
+
+  // Canonical online source(s) of fused vehicle attitude/depth/health.
+  // Runtime fusion v1 requires exactly one so interpolation never crosses
+  // independent state streams.
+  repeated SensorId vehicle_state_sensors = 10;
 }

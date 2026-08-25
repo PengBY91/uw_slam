@@ -23,6 +23,9 @@ uw_register_gtest(core_tests "unit.core" "unit;core")
 add_executable(frontends_tests
   tests/frontends/cfar_detector_test.cpp
   tests/frontends/sonar_cfar_frontend_test.cpp
+  tests/frontends/sonar_target_extractor_test.cpp
+  tests/frontends/target_associator_test.cpp
+  tests/frontends/target_tracker_test.cpp
   tests/frontends/block_matcher_test.cpp
   tests/frontends/stereo_optical_depth_frontend_test.cpp
   tests/frontends/harris_corner_detector_test.cpp
@@ -77,6 +80,7 @@ add_executable(runtime_tests
   tests/runtime/mcap_io_test.cpp
   tests/runtime/config_test.cpp
   tests/runtime/acoustic_optic_synchronizer_test.cpp
+  tests/runtime/acoustic_optic_buffer_test.cpp
   tests/runtime/bag_audit_checks_test.cpp
   tests/runtime/synthetic_sonar_test.cpp
   tests/runtime/canonical_event_test.cpp
@@ -104,6 +108,7 @@ add_executable(adapters_tests
   tests/adapters/svin_bridge_test.cpp
   tests/adapters/holoocean_ros_bridge_sonar_frame_provider_test.cpp
   tests/adapters/opencv_stereo_rectifier_test.cpp
+  tests/adapters/opencv_visual_assist_frontend_test.cpp
 )
 target_link_libraries(adapters_tests PRIVATE
   uw::adapters uw::opencv_adapters GTest::gtest GTest::gtest_main Threads::Threads
@@ -120,9 +125,11 @@ uw_register_gtest(spatial_index_adapters_tests "unit.spatial_index_adapters" "un
 
 add_executable(application_tests
   tests/application/replay_pipeline_test.cpp
+  tests/application/target_fusion_binding_test.cpp
   tests/application/event_pump_test.cpp
   tests/application/replay_input_accumulator_test.cpp
 )
+target_compile_definitions(application_tests PRIVATE UW_REPO_ROOT="${PROJECT_SOURCE_DIR}")
 target_link_libraries(application_tests PRIVATE
   uw::application uw::domain uw::core uw::runtime GTest::gtest GTest::gtest_main
 )
@@ -165,6 +172,15 @@ add_test(
           ${PROJECT_SOURCE_DIR}/configs/experiment/synthetic_smoke.yaml
 )
 set_tests_properties(integration.acoustic_optic_scenario_matrix_determinism
+  PROPERTIES LABELS "integration;replay")
+
+add_test(
+  NAME integration.acoustic_optic_scenario_matrix_config
+  COMMAND bash ${PROJECT_SOURCE_DIR}/tests/integration/acoustic_optic_scenario_matrix_config_test.sh
+          $<TARGET_FILE:acoustic_optic_scenario_matrix>
+          ${PROJECT_SOURCE_DIR}
+)
+set_tests_properties(integration.acoustic_optic_scenario_matrix_config
   PROPERTIES LABELS "integration;replay")
 
 add_test(

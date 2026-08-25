@@ -6,6 +6,7 @@
 #include "domain/domain.hpp"
 #include "estimation/gauss_newton_solver.hpp"
 #include "evaluation/trajectory_metrics.hpp"
+#include "frontends/sonar_cfar_frontend.hpp"
 #include "runtime/config.hpp"
 #include "sensor_models/geometry.hpp"
 
@@ -21,6 +22,11 @@ struct ReplayOptions {
 
 int RunReplayPipeline(const ReplayOptions& options,
                       const std::string& git_commit);
+
+// Application-layer conversion keeps runtime and frontends as peer layers
+// while ensuring every typed sonar default actually configures the frontend.
+uw::frontends::SonarCfarFrontendParams BuildSonarCfarFrontendParams(
+    const uw::runtime::SonarFrontendConfig& config);
 
 // Pure decision extracted for unit testing (no IO): what a keyframe's
 // snapshot should report as tracking_status, given the batch solver's

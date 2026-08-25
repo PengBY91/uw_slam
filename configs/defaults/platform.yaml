@@ -26,6 +26,35 @@ reliability:
     sonar_range: 15.0
     depth: 20.0
 
+frontends:
+  sonar_cfar:
+    training_cells: 16
+    guard_cells: 4
+    probability_false_alarm: 0.01
+    detector_threshold: 50
+    dbscan_eps_m: 0.20
+    dbscan_min_samples: 2
+    default_range_sigma_m: 0.05
+    default_bearing_sigma_rad: 0.01
+  target_association:
+    max_corrected_time_delta_s: 0.05
+    max_bearing_mahalanobis_sq: 9.0
+    max_range_mahalanobis_sq: 9.0
+    max_motion_bearing_delta_rad: 0.25
+    max_motion_rate_rad_s: 1.5
+    max_bearing_variance_rad2: 0.25
+    max_range_variance_m2: 4.0
+  target_tracker:
+    association_mahalanobis_sq: 16.0
+    confirm_hits: 2
+    degraded_misses: 3
+    stale_after_s: 0.5
+    max_prediction_dt_s: 0.5
+    bearing_acceleration_noise: 0.05
+    range_acceleration_noise: 0.5
+    merge_bearing_threshold_rad: 0.03
+    merge_range_threshold_m: 0.30
+
 runtime:
   lanes:
     localization: { priority: highest, queue_capacity: 64, overflow_policy: reject }

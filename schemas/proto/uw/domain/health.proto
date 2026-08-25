@@ -41,4 +41,8 @@ message HealthReport {
   uint64 synchronization_rejected_count = 23;
   uint64 sequence_gap_count = 24;
   uint64 stale_result_count = 25;
+  double background_noise_mean = 26;
+  double false_alarm_density = 27;
+  uint64 valid_measurement_count = 28;
+  bool config_hash_consistent = 29;
 }

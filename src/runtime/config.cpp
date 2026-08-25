@@ -4,6 +4,7 @@
 #include <cmath>
 #include <limits>
 #include <filesystem>
+#include <set>
 #include <stdexcept>
 #include <vector>
 
@@ -88,6 +89,152 @@ PlatformDefaultsConfig LoadPlatformDefaultsConfig(const std::string& path) {
     }
     if (config.stereo_rectification.frame_suffix.empty()) {
       throw std::runtime_error("frontends.stereo_rectification.frame_suffix must not be empty");
+    }
+  }
+
+  if (root["frontends"] && root["frontends"]["sonar_cfar"]) {
+    const auto sonar = root["frontends"]["sonar_cfar"];
+    RejectUnknownKeys(sonar,
+                      {"training_cells", "guard_cells", "probability_false_alarm",
+                       "detector_threshold", "dbscan_eps_m", "dbscan_min_samples",
+                       "default_range_sigma_m", "default_bearing_sigma_rad"},
+                      "frontends.sonar_cfar");
+    config.sonar_frontend.training_cells =
+        GetOr<int>(sonar, "training_cells", config.sonar_frontend.training_cells);
+    config.sonar_frontend.guard_cells =
+        GetOr<int>(sonar, "guard_cells", config.sonar_frontend.guard_cells);
+    config.sonar_frontend.probability_false_alarm = GetOr<double>(
+        sonar, "probability_false_alarm", config.sonar_frontend.probability_false_alarm);
+    config.sonar_frontend.detector_threshold =
+        GetOr<int>(sonar, "detector_threshold", config.sonar_frontend.detector_threshold);
+    config.sonar_frontend.dbscan_eps_m =
+        GetOr<double>(sonar, "dbscan_eps_m", config.sonar_frontend.dbscan_eps_m);
+    config.sonar_frontend.dbscan_min_samples =
+        GetOr<int>(sonar, "dbscan_min_samples", config.sonar_frontend.dbscan_min_samples);
+    config.sonar_frontend.default_range_sigma_m = GetOr<double>(
+        sonar, "default_range_sigma_m", config.sonar_frontend.default_range_sigma_m);
+    config.sonar_frontend.default_bearing_sigma_rad = GetOr<double>(
+        sonar, "default_bearing_sigma_rad", config.sonar_frontend.default_bearing_sigma_rad);
+
+    if (config.sonar_frontend.training_cells <= 0 ||
+        config.sonar_frontend.training_cells % 2 != 0) {
+      throw std::runtime_error("frontends.sonar_cfar.training_cells must be positive and even");
+    }
+    if (config.sonar_frontend.guard_cells < 0 || config.sonar_frontend.guard_cells % 2 != 0) {
+      throw std::runtime_error("frontends.sonar_cfar.guard_cells must be non-negative and even");
+    }
+    if (!std::isfinite(config.sonar_frontend.probability_false_alarm) ||
+        config.sonar_frontend.probability_false_alarm <= 0.0 ||
+        config.sonar_frontend.probability_false_alarm >= 1.0) {
+      throw std::runtime_error(
+          "frontends.sonar_cfar.probability_false_alarm must be finite and in (0, 1)");
+    }
+    if (config.sonar_frontend.detector_threshold < 0 ||
+        config.sonar_frontend.detector_threshold > 255) {
+      throw std::runtime_error("frontends.sonar_cfar.detector_threshold must be in [0, 255]");
+    }
+    if (!std::isfinite(config.sonar_frontend.dbscan_eps_m) ||
+        config.sonar_frontend.dbscan_eps_m <= 0.0) {
+      throw std::runtime_error("frontends.sonar_cfar.dbscan_eps_m must be finite and positive");
+    }
+    if (config.sonar_frontend.dbscan_min_samples <= 0) {
+      throw std::runtime_error("frontends.sonar_cfar.dbscan_min_samples must be positive");
+    }
+    if (!std::isfinite(config.sonar_frontend.default_range_sigma_m) ||
+        config.sonar_frontend.default_range_sigma_m <= 0.0) {
+      throw std::runtime_error(
+          "frontends.sonar_cfar.default_range_sigma_m must be finite and positive");
+    }
+    if (!std::isfinite(config.sonar_frontend.default_bearing_sigma_rad) ||
+        config.sonar_frontend.default_bearing_sigma_rad <= 0.0) {
+      throw std::runtime_error(
+          "frontends.sonar_cfar.default_bearing_sigma_rad must be finite and positive");
+    }
+  }
+
+  if (root["frontends"] && root["frontends"]["target_association"]) {
+    const auto association = root["frontends"]["target_association"];
+    RejectUnknownKeys(association,
+                      {"max_corrected_time_delta_s", "max_bearing_mahalanobis_sq",
+                       "max_range_mahalanobis_sq", "max_motion_bearing_delta_rad",
+                       "max_motion_rate_rad_s", "max_bearing_variance_rad2",
+                       "max_range_variance_m2"},
+                      "frontends.target_association");
+    auto& out = config.target_association;
+    out.max_corrected_time_delta_s = GetOr<double>(
+        association, "max_corrected_time_delta_s", out.max_corrected_time_delta_s);
+    out.max_bearing_mahalanobis_sq = GetOr<double>(
+        association, "max_bearing_mahalanobis_sq", out.max_bearing_mahalanobis_sq);
+    out.max_range_mahalanobis_sq = GetOr<double>(
+        association, "max_range_mahalanobis_sq", out.max_range_mahalanobis_sq);
+    out.max_motion_bearing_delta_rad = GetOr<double>(
+        association, "max_motion_bearing_delta_rad", out.max_motion_bearing_delta_rad);
+    out.max_motion_rate_rad_s =
+        GetOr<double>(association, "max_motion_rate_rad_s", out.max_motion_rate_rad_s);
+    out.max_bearing_variance_rad2 = GetOr<double>(
+        association, "max_bearing_variance_rad2", out.max_bearing_variance_rad2);
+    out.max_range_variance_m2 = GetOr<double>(
+        association, "max_range_variance_m2", out.max_range_variance_m2);
+    const std::vector<std::pair<const char*, double>> positive = {
+        {"max_corrected_time_delta_s", out.max_corrected_time_delta_s},
+        {"max_bearing_mahalanobis_sq", out.max_bearing_mahalanobis_sq},
+        {"max_range_mahalanobis_sq", out.max_range_mahalanobis_sq},
+        {"max_motion_bearing_delta_rad", out.max_motion_bearing_delta_rad},
+        {"max_bearing_variance_rad2", out.max_bearing_variance_rad2},
+        {"max_range_variance_m2", out.max_range_variance_m2}};
+    for (const auto& [name, value] : positive) {
+      if (!std::isfinite(value) || value <= 0.0) {
+        throw std::runtime_error(std::string("frontends.target_association.") + name +
+                                 " must be finite and positive");
+      }
+    }
+    if (!std::isfinite(out.max_motion_rate_rad_s) || out.max_motion_rate_rad_s < 0.0) {
+      throw std::runtime_error(
+          "frontends.target_association.max_motion_rate_rad_s must be finite and non-negative");
+    }
+  }
+
+  if (root["frontends"] && root["frontends"]["target_tracker"]) {
+    const auto tracker = root["frontends"]["target_tracker"];
+    RejectUnknownKeys(tracker,
+                      {"association_mahalanobis_sq", "confirm_hits", "degraded_misses",
+                       "stale_after_s", "max_prediction_dt_s",
+                       "bearing_acceleration_noise", "range_acceleration_noise",
+                       "merge_bearing_threshold_rad", "merge_range_threshold_m"},
+                      "frontends.target_tracker");
+    auto& out = config.target_tracker;
+    out.association_mahalanobis_sq = GetOr<double>(
+        tracker, "association_mahalanobis_sq", out.association_mahalanobis_sq);
+    out.confirm_hits = GetOr<int>(tracker, "confirm_hits", out.confirm_hits);
+    out.degraded_misses = GetOr<int>(tracker, "degraded_misses", out.degraded_misses);
+    out.stale_after_s = GetOr<double>(tracker, "stale_after_s", out.stale_after_s);
+    out.max_prediction_dt_s =
+        GetOr<double>(tracker, "max_prediction_dt_s", out.max_prediction_dt_s);
+    out.bearing_acceleration_noise = GetOr<double>(
+        tracker, "bearing_acceleration_noise", out.bearing_acceleration_noise);
+    out.range_acceleration_noise = GetOr<double>(
+        tracker, "range_acceleration_noise", out.range_acceleration_noise);
+    out.merge_bearing_threshold_rad = GetOr<double>(
+        tracker, "merge_bearing_threshold_rad", out.merge_bearing_threshold_rad);
+    out.merge_range_threshold_m = GetOr<double>(
+        tracker, "merge_range_threshold_m", out.merge_range_threshold_m);
+    if (out.confirm_hits < 1 || out.degraded_misses < 1) {
+      throw std::runtime_error(
+          "frontends.target_tracker confirm_hits/degraded_misses must be positive");
+    }
+    const std::vector<std::pair<const char*, double>> positive = {
+        {"association_mahalanobis_sq", out.association_mahalanobis_sq},
+        {"stale_after_s", out.stale_after_s},
+        {"max_prediction_dt_s", out.max_prediction_dt_s},
+        {"bearing_acceleration_noise", out.bearing_acceleration_noise},
+        {"range_acceleration_noise", out.range_acceleration_noise},
+        {"merge_bearing_threshold_rad", out.merge_bearing_threshold_rad},
+        {"merge_range_threshold_m", out.merge_range_threshold_m}};
+    for (const auto& [name, value] : positive) {
+      if (!std::isfinite(value) || value <= 0.0) {
+        throw std::runtime_error(std::string("frontends.target_tracker.") + name +
+                                 " must be finite and positive");
+      }
     }
   }
 
@@ -250,6 +397,27 @@ uw::domain::RigCalibrationSnapshot LoadRigConfig(const std::string& path) {
     }
   }
 
+  if (root["time_offset_provenance"]) {
+    for (const auto& entry : root["time_offset_provenance"]) {
+      (*snapshot.mutable_time_offset_provenance())[entry.first.as<std::string>()] =
+          entry.second.as<std::string>();
+    }
+  }
+
+  if (root["vehicle_state_sensors"]) {
+    if (!root["vehicle_state_sensors"].IsSequence()) {
+      throw std::runtime_error("vehicle_state_sensors must be a sequence: " + path);
+    }
+    std::set<std::string> state_sensor_ids;
+    for (const auto& sensor_node : root["vehicle_state_sensors"]) {
+      const std::string sensor_id = sensor_node.as<std::string>();
+      if (sensor_id.empty() || !state_sensor_ids.insert(sensor_id).second) {
+        throw std::runtime_error("vehicle_state_sensors entries must be non-empty and unique: " + path);
+      }
+      snapshot.add_vehicle_state_sensors()->set_value(sensor_id);
+    }
+  }
+
   if (root["sonar_beam_models"]) {
     for (const auto& sonar_node : root["sonar_beam_models"]) {
       auto* model = snapshot.add_sonar_beam_models();
@@ -269,6 +437,66 @@ uw::domain::RigCalibrationSnapshot LoadRigConfig(const std::string& path) {
       model->mutable_sensor_id()->set_value(depth_node["sensor_id"].as<std::string>());
       model->set_noise_sigma_m(GetOr<double>(depth_node, "noise_sigma_m", 0.05));
       model->set_depth_enabled(GetOr<bool>(depth_node, "depth_enabled", true));
+    }
+  }
+  std::set<std::string> online_sensor_ids;
+  for (const auto& camera : snapshot.cameras()) {
+    if (camera.sensor_id().value().empty() ||
+        !online_sensor_ids.insert(camera.sensor_id().value()).second) {
+      throw std::runtime_error("camera sensor ids must be non-empty and unique: " + path);
+    }
+  }
+  std::size_t enabled_sonar_count = 0;
+  for (const auto& sonar : snapshot.sonar_beam_models()) {
+    if (!sonar.sonar_enabled()) continue;
+    ++enabled_sonar_count;
+    if (sonar.sensor_id().value().empty() ||
+        !online_sensor_ids.insert(sonar.sensor_id().value()).second) {
+      throw std::runtime_error("enabled sonar sensor ids must be non-empty and unique: " + path);
+    }
+  }
+  for (const auto& sensor : snapshot.vehicle_state_sensors()) {
+    if (!online_sensor_ids.insert(sensor.value()).second) {
+      throw std::runtime_error("online sensor roles must use unique sensor ids: " + path);
+    }
+  }
+  if (enabled_sonar_count > 0 && enabled_sonar_count != 1) {
+    throw std::runtime_error(
+        "online v1 rigs require exactly one enabled sonar: " + path);
+  }
+  if (enabled_sonar_count > 0 && snapshot.vehicle_state_sensors_size() != 1) {
+    throw std::runtime_error(
+        "rigs with an enabled sonar require exactly one vehicle_state_sensor: " + path);
+  }
+  for (const std::string& sensor_id : online_sensor_ids) {
+    const auto offset = snapshot.time_offset_seconds().find(sensor_id);
+    const auto provenance = snapshot.time_offset_provenance().find(sensor_id);
+    if (offset == snapshot.time_offset_seconds().end() || !std::isfinite(offset->second) ||
+        std::abs(offset->second) > kMaxAbsoluteSensorTimeOffsetSeconds ||
+        provenance == snapshot.time_offset_provenance().end() || provenance->second.empty()) {
+      throw std::runtime_error(
+          "online sensor requires a bounded finite time offset and non-empty provenance: " +
+          sensor_id + " in " + path);
+    }
+  }
+  for (const auto& entry : snapshot.time_offset_seconds()) {
+    if (!std::isfinite(entry.second) ||
+        std::abs(entry.second) > kMaxAbsoluteSensorTimeOffsetSeconds) {
+      throw std::runtime_error(
+          "absolute time offset must be finite and no greater than " +
+          std::to_string(kMaxAbsoluteSensorTimeOffsetSeconds) + " seconds: " +
+          entry.first + " in " + path);
+    }
+    const auto provenance = snapshot.time_offset_provenance().find(entry.first);
+    if (provenance == snapshot.time_offset_provenance().end() || provenance->second.empty()) {
+      throw std::runtime_error("every time offset requires non-empty provenance: " + entry.first +
+                               " in " + path);
+    }
+  }
+  for (const auto& entry : snapshot.time_offset_provenance()) {
+    if (entry.second.empty() || snapshot.time_offset_seconds().count(entry.first) == 0) {
+      throw std::runtime_error("time offset provenance requires a matching offset: " + entry.first +
+                               " in " + path);
     }
   }
 

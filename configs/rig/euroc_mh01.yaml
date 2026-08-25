@@ -78,3 +78,7 @@ cameras:
 time_offset_seconds:
   camera_left: 0.0
   camera_right: 0.0
+
+time_offset_provenance:
+  camera_left: measured:dataset-clock
+  camera_right: measured:dataset-clock

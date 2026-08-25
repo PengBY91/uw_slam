@@ -5,9 +5,8 @@
 // capture_time, not receive_time. Rejects the bundle rather than
 // extrapolating when any pairwise corrected-time delta exceeds
 // max_time_delta_s — no motion model exists yet to interpolate across.
-// A sensor_id missing from time_offset_seconds defaults to a zero offset
-// (documented v1 simplification; full audit trail via RunManifest/health
-// is a later integration concern, not this pure function's job).
+// A sensor_id missing from time_offset_seconds is invalid. A measured zero
+// must be represented explicitly; absence is never calibration evidence.
 //
 // Returns an explicit SynchronizationDecision rather than a bare
 // std::optional<bundle> so a caller can distinguish "no sonar this frame"

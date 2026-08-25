@@ -7,6 +7,7 @@
 // rig calibration looks like).
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -18,6 +19,23 @@
 #include "domain/domain.hpp"
 
 namespace uw::runtime {
+
+// Clock calibration is expected to correct sensor-scale skew, not bridge
+// unrelated epochs. Bounding it also guarantees safe nanosecond
+// quantization in corrected-time buffering.
+inline constexpr double kMaxAbsoluteSensorTimeOffsetSeconds = 10.0;
+
+// Bounded corrected-time queues used by AcousticOpticBuffer. Time windows
+// are inclusive; capacities are hard limits and must be positive.
+struct AcousticOpticBufferConfig {
+  double max_stereo_delta_s = 0.002;
+  double max_sonar_camera_delta_s = 0.050;
+  double max_state_bracket_s = 0.100;
+  double max_residence_s = 0.500;
+  std::size_t max_images_per_camera = 32;
+  std::size_t max_sonar_frames = 16;
+  std::size_t max_vehicle_states = 128;
+};
 
 // Translation and rotation get INDEPENDENT sqrt-information caps (rather
 // than one scalar for both) since RelativePoseFactorBuilder now whitens
@@ -56,6 +74,44 @@ struct StereoMatchingConfig {
   double left_right_max_diff_px = 1.0;
 };
 
+struct SonarFrontendConfig {
+  int training_cells = 16;
+  int guard_cells = 4;
+  double probability_false_alarm = 0.01;
+  int detector_threshold = 50;
+  double dbscan_eps_m = 0.20;
+  int dbscan_min_samples = 2;
+  double default_range_sigma_m = 0.05;
+  double default_bearing_sigma_rad = 0.01;
+};
+
+// Multi-sensor target association gates. These values are parsed from the
+// platform defaults and intentionally mirror TargetAssociatorParams by name,
+// allowing a caller that owns both layers to pass this object directly to the
+// associator's constrained config constructor without a second source of
+// defaults.
+struct TargetAssociationConfig {
+  double max_corrected_time_delta_s = 0.05;
+  double max_bearing_mahalanobis_sq = 9.0;
+  double max_range_mahalanobis_sq = 9.0;
+  double max_motion_bearing_delta_rad = 0.25;
+  double max_motion_rate_rad_s = 1.5;
+  double max_bearing_variance_rad2 = 0.25;
+  double max_range_variance_m2 = 4.0;
+};
+
+struct TargetTrackerConfig {
+  double association_mahalanobis_sq = 16.0;
+  int confirm_hits = 2;
+  int degraded_misses = 3;
+  double stale_after_s = 0.5;
+  double max_prediction_dt_s = 0.5;
+  double bearing_acceleration_noise = 0.05;
+  double range_acceleration_noise = 0.5;
+  double merge_bearing_threshold_rad = 0.03;
+  double merge_range_threshold_m = 0.30;
+};
+
 struct VisualOdometryConfig {
   int max_consecutive_failures = 3;
   // See frontends::CovarianceEstimationParams (rigid_transform_fit.hpp)
@@ -83,6 +139,9 @@ struct PlatformDefaultsConfig {
   StereoRectificationConfig stereo_rectification;
   VisualOdometryConfig visual_odometry;
   StereoMatchingConfig stereo_matching;
+  SonarFrontendConfig sonar_frontend;
+  TargetAssociationConfig target_association;
+  TargetTrackerConfig target_tracker;
 
   // Discard evidence from the first N seconds of a run before fusing it
   // (0 = disabled). Motivated by a specific deployment lesson from a

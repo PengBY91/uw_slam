@@ -11,6 +11,7 @@
 #include <gtest/gtest.h>
 
 #include "domain/domain.hpp"
+#include "frontends/sonar_cfar_frontend.hpp"
 #include "runtime/mcap_io.hpp"
 #include "sensor_models/geometry.hpp"
 
@@ -73,6 +74,29 @@ uw::domain::ImageFrame MakeCameraImage(const std::string& frame, double capture_
 TEST(ReplayPipeline, RejectsEmptyBagPath) {
   uw::application::ReplayOptions options;
   EXPECT_EQ(uw::application::RunReplayPipeline(options, "test-commit"), 1);
+}
+
+TEST(ReplayPipeline, ConvertsEveryTypedSonarFrontendConfigFieldToRuntimeParameters) {
+  uw::runtime::SonarFrontendConfig config;
+  config.training_cells = 24;
+  config.guard_cells = 8;
+  config.probability_false_alarm = 0.004;
+  config.detector_threshold = 72;
+  config.dbscan_eps_m = 0.31;
+  config.dbscan_min_samples = 5;
+  config.default_range_sigma_m = 0.07;
+  config.default_bearing_sigma_rad = 0.015;
+
+  const auto params = uw::application::BuildSonarCfarFrontendParams(config);
+
+  EXPECT_EQ(params.cfar.num_training_cells, 24);
+  EXPECT_EQ(params.cfar.num_guard_cells, 8);
+  EXPECT_DOUBLE_EQ(params.cfar.probability_false_alarm, 0.004);
+  EXPECT_EQ(params.detector_threshold, 72);
+  EXPECT_DOUBLE_EQ(params.dbscan_eps_m, 0.31);
+  EXPECT_EQ(params.dbscan_min_samples, 5);
+  EXPECT_DOUBLE_EQ(params.default_range_sigma_m, 0.07);
+  EXPECT_DOUBLE_EQ(params.default_bearing_sigma_rad, 0.015);
 }
 
 TEST(DecideTrackingStatus, ConvergedAndHealthyIsTracking) {
@@ -270,7 +294,10 @@ TEST(ReplayPipeline, RectifiesNonParallelRigBeforeStereoFrontendsAndPopulatesBot
             "    distortion_model: plumb_bob\n"
             "time_offset_seconds:\n"
             "  camera_left: 0.0\n"
-            "  camera_right: 0.0\n");
+            "  camera_right: 0.0\n"
+            "time_offset_provenance:\n"
+            "  camera_left: measured:test-clock\n"
+            "  camera_right: measured:test-clock\n");
 
   WriteFile(root / "scenario" / "test_scenario.yaml", "seed: 1\nnum_keyframes: 2\n");
 
