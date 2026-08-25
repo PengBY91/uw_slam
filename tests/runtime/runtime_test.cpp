@@ -1,3 +1,5 @@
+#include <atomic>
+#include <stdexcept>
 #include <thread>
 
 #include <gtest/gtest.h>
@@ -23,23 +25,115 @@ TEST(RunManifest, DerivedCalibrationHashDefaultsToEmpty) {
   EXPECT_NE(manifest.ToJson().find("\"derived_calibration_hash\": \"\""), std::string::npos);
 }
 
-TEST(BoundedQueue, DropOldestKeepsMostRecent) {
+TEST(BoundedQueue, DropOldestReportsOverflowAndKeepsMostRecent) {
   BoundedQueue<int> queue(2, OverflowPolicy::kDropOldest);
-  EXPECT_TRUE(queue.Push(1));
-  EXPECT_TRUE(queue.Push(2));
-  EXPECT_TRUE(queue.Push(3));  // evicts 1
-  EXPECT_EQ(queue.DroppedCount(), 1u);
-  EXPECT_EQ(queue.Size(), 2u);
+
+  EXPECT_EQ(queue.Push(1), PushResult::kEnqueued);
+  EXPECT_EQ(queue.Push(2), PushResult::kEnqueued);
+  EXPECT_EQ(queue.Push(3), PushResult::kDroppedOldestAndEnqueued);
+
+  const QueueStats stats = queue.Stats();
+  EXPECT_EQ(stats.enqueued_count, 3u);
+  EXPECT_EQ(stats.dropped_oldest_count, 1u);
+  EXPECT_EQ(stats.dropped_newest_count, 0u);
+  EXPECT_EQ(stats.rejected_count, 0u);
+  EXPECT_EQ(stats.current_depth, 2u);
+  EXPECT_EQ(stats.high_watermark, 2u);
   EXPECT_EQ(queue.TryPop().value(), 2);
   EXPECT_EQ(queue.TryPop().value(), 3);
   EXPECT_FALSE(queue.TryPop().has_value());
 }
 
-TEST(BoundedQueue, RejectPolicyReturnsFalseOnOverflow) {
+TEST(BoundedQueue, RejectPolicyReportsRejectedItem) {
   BoundedQueue<int> queue(1, OverflowPolicy::kReject);
-  EXPECT_TRUE(queue.Push(1));
-  EXPECT_FALSE(queue.Push(2));
-  EXPECT_EQ(queue.Size(), 1u);
+
+  EXPECT_EQ(queue.Push(1), PushResult::kEnqueued);
+  EXPECT_EQ(queue.Push(2), PushResult::kRejected);
+
+  const QueueStats stats = queue.Stats();
+  EXPECT_EQ(stats.enqueued_count, 1u);
+  EXPECT_EQ(stats.rejected_count, 1u);
+  EXPECT_EQ(stats.current_depth, 1u);
+  EXPECT_EQ(stats.high_watermark, 1u);
+  EXPECT_EQ(queue.TryPop().value(), 1);
+}
+
+TEST(BoundedQueue, DropNewestReportsDropWithoutCountingEnqueue) {
+  BoundedQueue<int> queue(1, OverflowPolicy::kDropNewest);
+
+  EXPECT_EQ(queue.Push(1), PushResult::kEnqueued);
+  EXPECT_EQ(queue.Push(2), PushResult::kDroppedNewest);
+
+  const QueueStats stats = queue.Stats();
+  EXPECT_EQ(stats.enqueued_count, 1u);
+  EXPECT_EQ(stats.dropped_newest_count, 1u);
+  EXPECT_EQ(stats.current_depth, 1u);
+  EXPECT_EQ(stats.high_watermark, 1u);
+  EXPECT_EQ(queue.TryPop().value(), 1);
+}
+
+TEST(BoundedQueue, TryPopUpdatesDequeuedCountAndCurrentDepth) {
+  BoundedQueue<int> queue(2, OverflowPolicy::kReject);
+  ASSERT_EQ(queue.Push(1), PushResult::kEnqueued);
+  ASSERT_EQ(queue.Push(2), PushResult::kEnqueued);
+
+  EXPECT_EQ(queue.TryPop().value(), 1);
+  QueueStats stats = queue.Stats();
+  EXPECT_EQ(stats.dequeued_count, 1u);
+  EXPECT_EQ(stats.current_depth, 1u);
+  EXPECT_EQ(stats.high_watermark, 2u);
+
+  EXPECT_EQ(queue.TryPop().value(), 2);
+  EXPECT_FALSE(queue.TryPop().has_value());
+  stats = queue.Stats();
+  EXPECT_EQ(stats.dequeued_count, 2u);
+  EXPECT_EQ(stats.current_depth, 0u);
+  EXPECT_EQ(stats.high_watermark, 2u);
+}
+
+TEST(BoundedQueue, RejectsZeroCapacity) {
+  EXPECT_THROW((BoundedQueue<int>(0, OverflowPolicy::kReject)), std::runtime_error);
+}
+
+TEST(BoundedQueue, StatsSnapshotRemainsConsistentDuringConcurrentPushes) {
+  constexpr int kItemsPerProducer = 1000;
+  BoundedQueue<int> queue(2 * kItemsPerProducer, OverflowPolicy::kReject);
+  std::atomic<bool> start{false};
+  std::atomic<bool> producers_done{false};
+  std::atomic<bool> snapshots_consistent{true};
+
+  auto producer = [&](int offset) {
+    while (!start.load()) std::this_thread::yield();
+    for (int i = 0; i < kItemsPerProducer; ++i) {
+      if (queue.Push(offset + i) != PushResult::kEnqueued) snapshots_consistent.store(false);
+    }
+  };
+
+  std::thread first_producer(producer, 0);
+  std::thread second_producer(producer, kItemsPerProducer);
+  std::thread observer([&] {
+    while (!start.load()) std::this_thread::yield();
+    while (!producers_done.load()) {
+      const QueueStats stats = queue.Stats();
+      if (stats.enqueued_count != stats.current_depth ||
+          stats.high_watermark < stats.current_depth) {
+        snapshots_consistent.store(false);
+      }
+    }
+  });
+
+  start.store(true);
+  first_producer.join();
+  second_producer.join();
+  producers_done.store(true);
+  observer.join();
+
+  EXPECT_TRUE(snapshots_consistent.load());
+  const QueueStats stats = queue.Stats();
+  EXPECT_EQ(stats.enqueued_count, 2u * kItemsPerProducer);
+  EXPECT_EQ(stats.dequeued_count, 0u);
+  EXPECT_EQ(stats.current_depth, 2u * kItemsPerProducer);
+  EXPECT_EQ(stats.high_watermark, 2u * kItemsPerProducer);
 }
 
 TEST(SystemStateMachine, RespectsMinimumHoldTime) {
