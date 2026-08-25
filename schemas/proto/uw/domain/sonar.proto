@@ -63,4 +63,5 @@ message SonarFrame {
     bool is_measured = 3;   // false => nominal/assumed value, carries higher uncertainty
   }
   SoundSpeedAssumption sound_speed_assumption = 14;
+  double operating_frequency_hz = 15;
 }

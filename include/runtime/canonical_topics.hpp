@@ -20,6 +20,7 @@ enum class CanonicalEventKind {
   kSonarFrame,
   kImuSample,
   kDvlSample,
+  kVehicleState,
   kMeasurementEvidence,
   kStateSnapshot,
   kHealthReport,
@@ -45,6 +46,7 @@ inline constexpr char kTopicCameraRight[] = "/raw/camera/right";
 inline constexpr char kTopicSonarFrame[] = "/raw/sonar_frame";
 inline constexpr char kTopicImu[] = "/raw/imu";
 inline constexpr char kTopicDvl[] = "/raw/dvl";
+inline constexpr char kTopicVehicleState[] = "/raw/vehicle_state";
 inline constexpr char kTopicEvidenceDepth[] = "/evidence/depth";
 inline constexpr char kTopicEvidenceRelativePose[] = "/evidence/relative_pose";
 inline constexpr char kTopicHealth[] = "/health";
@@ -70,6 +72,9 @@ inline const std::unordered_map<std::string, CanonicalTopicInfo>& CanonicalTopic
                       CanonicalEventKind::kImuSample, CanonicalTopicRole::kAlgorithmInput)},
       {kTopicDvl, MakeCanonicalTopicInfo<uw::domain::DvlSample>(
                       CanonicalEventKind::kDvlSample, CanonicalTopicRole::kAlgorithmInput)},
+      {kTopicVehicleState, MakeCanonicalTopicInfo<uw::domain::VehicleState>(
+                               CanonicalEventKind::kVehicleState,
+                               CanonicalTopicRole::kAlgorithmInput)},
       {kTopicEvidenceDepth, MakeCanonicalTopicInfo<uw::domain::MeasurementEvidence>(
                                 CanonicalEventKind::kMeasurementEvidence, CanonicalTopicRole::kAlgorithmInput)},
       {kTopicEvidenceRelativePose,

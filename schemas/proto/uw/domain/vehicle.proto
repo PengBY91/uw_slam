@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package uw.domain;
+
+import "uw/domain/observation.proto";
+
+message VehicleState {
+  ObservationHeader header = 1;
+  repeated double orientation_xyzw = 2;       // exactly 4, body in reference frame
+  repeated double angular_velocity_radps = 3; // exactly 3, body frame
+  double depth_m = 4;                         // positive down
+  repeated double covariance_7x7_row_major = 5;
+  bool attitude_valid = 6;
+  bool depth_valid = 7;
+  bool leak_detected = 8;
+  double supply_voltage_v = 9;
+  double supply_current_a = 10;
+  double link_quality = 11;                   // normalized [0, 1]
+  bool device_health_valid = 12;
+}

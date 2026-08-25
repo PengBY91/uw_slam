@@ -59,6 +59,8 @@ struct CallRecord {
 class SpyInputPort final : public PipelineInputPort {
  public:
   std::vector<CallRecord> calls;
+  int vehicle_state_count = 0;
+  int reference_state_count = 0;
   int flush_count = 0;
   std::function<bool(const std::string&)> should_accept = [](const std::string&) { return true; };
 
@@ -66,10 +68,17 @@ class SpyInputPort final : public PipelineInputPort {
   bool OnSonarFrame(const CanonicalEvent& event) override { return Record("OnSonarFrame", event); }
   bool OnImuSample(const CanonicalEvent& event) override { return Record("OnImuSample", event); }
   bool OnDvlSample(const CanonicalEvent& event) override { return Record("OnDvlSample", event); }
+  bool OnVehicleState(const CanonicalEvent& event) override {
+    ++vehicle_state_count;
+    return Record("OnVehicleState", event);
+  }
   bool OnMeasurementEvidence(const CanonicalEvent& event) override {
     return Record("OnMeasurementEvidence", event);
   }
-  bool OnReferenceState(const CanonicalEvent& event) override { return Record("OnReferenceState", event); }
+  bool OnReferenceState(const CanonicalEvent& event) override {
+    ++reference_state_count;
+    return Record("OnReferenceState", event);
+  }
   bool OnHealthReport(const CanonicalEvent& event) override { return Record("OnHealthReport", event); }
   bool OnMapEvidence(const CanonicalEvent& event) override { return Record("OnMapEvidence", event); }
   bool Flush() override {
@@ -103,21 +112,25 @@ std::vector<CanonicalEvent> MakeOneOfEachEvent() {
   dvl.mutable_header()->mutable_observation_id()->set_value("dvl0");
   events.push_back({uw::runtime::kTopicDvl, 4000, 3, dvl});
 
+  uw::domain::VehicleState vehicle_state;
+  vehicle_state.mutable_header()->mutable_observation_id()->set_value("vehicle0");
+  events.push_back({uw::runtime::kTopicVehicleState, 4500, 4, vehicle_state});
+
   uw::domain::MeasurementEvidence evidence;
   evidence.mutable_evidence_id()->set_value("ev0");
-  events.push_back({uw::runtime::kTopicEvidenceDepth, 5000, 4, evidence});
+  events.push_back({uw::runtime::kTopicEvidenceDepth, 5000, 5, evidence});
 
   uw::domain::StateSnapshot state;
   state.mutable_state_id()->set_value("gt0");
-  events.push_back({uw::runtime::kTopicGtState, 6000, 5, state});
+  events.push_back({uw::runtime::kTopicGtState, 6000, 6, state});
 
   uw::domain::HealthReport health;
   health.set_component_id("comp0");
-  events.push_back({uw::runtime::kTopicHealth, 7000, 6, health});
+  events.push_back({uw::runtime::kTopicHealth, 7000, 7, health});
 
   uw::domain::MapEvidence map_evidence;
   map_evidence.mutable_evidence_id()->set_value("map0");
-  events.push_back({uw::runtime::kTopicEvidenceMap, 8000, 7, map_evidence});
+  events.push_back({uw::runtime::kTopicEvidenceMap, 8000, 8, map_evidence});
 
   return events;
 }
@@ -129,31 +142,40 @@ TEST(EventPump, DispatchesEachPayloadKindToItsOwnMethod) {
   const auto report = PumpEvents(source, spy);
 
   EXPECT_EQ(report.status, EventSourceStatus::kCompleted);
-  ASSERT_EQ(spy.calls.size(), 8u);
+  ASSERT_EQ(spy.calls.size(), 9u);
   EXPECT_EQ(spy.calls[0].method, "OnImageFrame");
   EXPECT_EQ(spy.calls[1].method, "OnSonarFrame");
   EXPECT_EQ(spy.calls[2].method, "OnImuSample");
   EXPECT_EQ(spy.calls[3].method, "OnDvlSample");
-  EXPECT_EQ(spy.calls[4].method, "OnMeasurementEvidence");
-  EXPECT_EQ(spy.calls[5].method, "OnReferenceState");
-  EXPECT_EQ(spy.calls[6].method, "OnHealthReport");
-  EXPECT_EQ(spy.calls[7].method, "OnMapEvidence");
+  EXPECT_EQ(spy.calls[4].method, "OnVehicleState");
+  EXPECT_EQ(spy.calls[5].method, "OnMeasurementEvidence");
+  EXPECT_EQ(spy.calls[6].method, "OnReferenceState");
+  EXPECT_EQ(spy.calls[7].method, "OnHealthReport");
+  EXPECT_EQ(spy.calls[8].method, "OnMapEvidence");
   EXPECT_EQ(spy.flush_count, 1);
 }
 
-TEST(EventPump, ReferenceStateOnlyEverCallsOnReferenceState) {
+TEST(EventPump, VehicleStateAndReferenceStateUseSeparateCallbacks) {
   std::vector<CanonicalEvent> events;
+  uw::domain::VehicleState vehicle_state;
+  vehicle_state.mutable_header()->mutable_observation_id()->set_value("vehicle0");
+  events.push_back({uw::runtime::kTopicVehicleState, 500, 0, vehicle_state});
+
   uw::domain::StateSnapshot state;
   state.mutable_state_id()->set_value("gt0");
-  events.push_back({uw::runtime::kTopicGtState, 1000, 0, state});
+  events.push_back({uw::runtime::kTopicGtState, 1000, 1, state});
 
   InMemoryEventSource source(events);
   SpyInputPort spy;
   PumpEvents(source, spy);
 
-  ASSERT_EQ(spy.calls.size(), 1u);
-  EXPECT_EQ(spy.calls[0].method, "OnReferenceState");
-  EXPECT_EQ(spy.calls[0].topic, uw::runtime::kTopicGtState);
+  ASSERT_EQ(spy.calls.size(), 2u);
+  EXPECT_EQ(spy.vehicle_state_count, 1);
+  EXPECT_EQ(spy.reference_state_count, 1);
+  EXPECT_EQ(spy.calls[0].method, "OnVehicleState");
+  EXPECT_EQ(spy.calls[0].topic, uw::runtime::kTopicVehicleState);
+  EXPECT_EQ(spy.calls[1].method, "OnReferenceState");
+  EXPECT_EQ(spy.calls[1].topic, uw::runtime::kTopicGtState);
 }
 
 TEST(EventPump, PortReturningFalseStopsSourceAndPreservesProcessedCount) {

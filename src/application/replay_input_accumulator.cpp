@@ -62,6 +62,16 @@ bool ReplayInputAccumulator::OnDvlSample(const uw::runtime::CanonicalEvent& even
   return true;
 }
 
+bool ReplayInputAccumulator::OnVehicleState(const uw::runtime::CanonicalEvent& event) {
+  const auto& state = std::get<uw::domain::VehicleState>(event.payload);
+  if (ValidateRawIdentity(state.header().sensor_id().value(),
+                          state.header().observation_id().value(), "VehicleState",
+                          /*allow_duplicate_identity=*/false)) {
+    data_.vehicle_states.push_back(state);
+  }
+  return true;
+}
+
 bool ReplayInputAccumulator::OnMeasurementEvidence(const uw::runtime::CanonicalEvent& event) {
   data_.evidence.push_back(std::get<uw::domain::MeasurementEvidence>(event.payload));
   evidence_log_time_ns_.push_back(event.log_time_ns);

@@ -28,6 +28,7 @@
 #include "uw/domain/sonar.pb.h"
 #include "uw/domain/state.pb.h"
 #include "uw/domain/time.pb.h"
+#include "uw/domain/vehicle.pb.h"
 
 namespace uw::domain {
 
