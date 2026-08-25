@@ -97,6 +97,11 @@ struct DegradationDecision {
   bool guidance_valid = true;
 };
 
+struct ExternalHealthEntry {
+  uw::domain::HealthReport report;
+  double received_wall_s = 0.0;
+};
+
 class OnlineAssistPipeline::Impl {
  public:
   explicit Impl(OnlineAssistPipelineDependencies deps)
@@ -150,7 +155,11 @@ class OnlineAssistPipeline::Impl {
 
   bool OnHealthReport(const uw::runtime::CanonicalEvent& event) {
     const auto& report = std::get<uw::domain::HealthReport>(event.payload);
-    external_health_[report.component_id()] = report;
+    // Keyed by our own receipt time (now_()), not the reporter's own
+    // capture_time -- consistent with how visual/sonar/vehicle-state
+    // liveness is judged elsewhere in this class ("how long since we last
+    // heard from it"), and robust to a reporter with a skewed clock.
+    external_health_[report.component_id()] = {report, uw::domain::ToSeconds(now_())};
     PublishNow();
     return true;
   }
@@ -309,21 +318,34 @@ class OnlineAssistPipeline::Impl {
   // Dense depth counts as currently contributing only while enabled and a
   // successful result is still within its freshness window -- reusing the
   // exact check RunVisualDetection applies before using it as a depth
-  // prior, so "is dense healthy" and "would dense actually be used right
-  // now" can never disagree.
+  // prior. The two calls use different "now" values on purpose (this one's
+  // caller, ComputeDegradation, is reporting overall state at publish
+  // time; RunVisualDetection's caller is deciding whether to use the depth
+  // prior for one specific, earlier frame) -- wall_s here is always >= that
+  // frame's capture_s, so this health check is never more optimistic than
+  // the usage check, only possibly a step more conservative in the narrow
+  // window between the two, which is the safe direction to be wrong in.
   bool DenseCurrentlyFresh(double wall_s) const {
     return pipeline_config_.dense.enabled && pending_dense_depth_.has_value() &&
           pending_dense_depth_capture_s_.has_value() &&
           (wall_s - *pending_dense_depth_capture_s_) <= pipeline_config_.modality_stale_after_s;
   }
 
+  bool VisualLive(double wall_s) const {
+    return last_visual_capture_s_.has_value() &&
+          (wall_s - *last_visual_capture_s_) <= pipeline_config_.modality_stale_after_s;
+  }
+
+  bool SonarLive(double wall_s) const {
+    return last_sonar_capture_s_.has_value() &&
+          (wall_s - *last_sonar_capture_s_) <= pipeline_config_.modality_stale_after_s;
+  }
+
   DegradationDecision ComputeDegradation(double wall_s) const {
     if (recovering_) return {uw::domain::HealthReport::STATUS_RECOVERING, "recovering", false};
 
-    const bool visual_live = last_visual_capture_s_.has_value() &&
-                             (wall_s - *last_visual_capture_s_) <= pipeline_config_.modality_stale_after_s;
-    const bool sonar_live = last_sonar_capture_s_.has_value() &&
-                            (wall_s - *last_sonar_capture_s_) <= pipeline_config_.modality_stale_after_s;
+    const bool visual_live = VisualLive(wall_s);
+    const bool sonar_live = SonarLive(wall_s);
     const bool vehicle_state_ok =
         last_vehicle_state_capture_s_.has_value() &&
         (wall_s - *last_vehicle_state_capture_s_) <= pipeline_config_.vehicle_state_stale_after_s;
@@ -340,14 +362,18 @@ class OnlineAssistPipeline::Impl {
     if (!visual_live) {
       return {uw::domain::HealthReport::STATUS_SUSPECT, "visual_unavailable", true};
     }
+    // Visual is checked ahead of sonar below (both live, both frontend-
+    // reported): an intentional fixed priority, not a coincidence of
+    // order, matching the fixed priority chain above it. If both a visual
+    // and a sonar frontend report degraded at once, the operator-facing
+    // top-line reason is the visual one; the sonar report is still visible
+    // in full in sensor_health(), just not promoted to system_health().
     if (last_visual_health_.has_value() &&
-        last_visual_health_->status() != uw::domain::HealthReport::STATUS_HEALTHY &&
-        !last_visual_health_->reason_code().empty()) {
+        last_visual_health_->status() != uw::domain::HealthReport::STATUS_HEALTHY) {
       return {uw::domain::HealthReport::STATUS_SUSPECT, last_visual_health_->reason_code(), true};
     }
     if (last_sonar_health_.has_value() &&
-        last_sonar_health_->status() != uw::domain::HealthReport::STATUS_HEALTHY &&
-        !last_sonar_health_->reason_code().empty()) {
+        last_sonar_health_->status() != uw::domain::HealthReport::STATUS_HEALTHY) {
       return {uw::domain::HealthReport::STATUS_SUSPECT, last_sonar_health_->reason_code(), true};
     }
     if (pipeline_config_.dense.enabled && !DenseCurrentlyFresh(wall_s)) {
@@ -364,7 +390,12 @@ class OnlineAssistPipeline::Impl {
     const auto track_set = fusion_->tracker().ToProtoSet(wall_s);
     if (track_set.has_value()) *state.mutable_target_tracks() = *track_set;
 
-    if (latest_path_lateral_offset_m_.has_value()) {
+    // Gated on current visual liveness, not just has_value(): without this,
+    // a path offset computed from the last frame before a camera dropout
+    // would keep republishing forever with no staleness signal of its own
+    // (guidance_valid stays true off of the track/vehicle-state checks
+    // alone, which say nothing about this specific field's age).
+    if (latest_path_lateral_offset_m_.has_value() && VisualLive(wall_s)) {
       state.set_has_path_lateral_offset(true);
       state.set_path_lateral_offset_m(*latest_path_lateral_offset_m_);
       if (latest_path_offset_sigma_m_.has_value()) {
@@ -390,9 +421,15 @@ class OnlineAssistPipeline::Impl {
 
     if (last_visual_health_.has_value()) *state.add_sensor_health() = *last_visual_health_;
     if (last_sonar_health_.has_value()) *state.add_sensor_health() = *last_sonar_health_;
-    for (const auto& [component_id, report] : external_health_) {
+    // Expired externally-reported health is dropped rather than republished
+    // forever -- unlike this pipeline's own visual/sonar liveness, an
+    // external reporter that stops sending has no other signal marking its
+    // last report stale.
+    for (const auto& [component_id, entry] : external_health_) {
       (void)component_id;
-      *state.add_sensor_health() = report;
+      if ((wall_s - entry.received_wall_s) <= pipeline_config_.modality_stale_after_s) {
+        *state.add_sensor_health() = entry.report;
+      }
     }
 
     sink_->Publish(state);
@@ -423,7 +460,7 @@ class OnlineAssistPipeline::Impl {
 
   std::optional<uw::domain::HealthReport> last_visual_health_;
   std::optional<uw::domain::HealthReport> last_sonar_health_;
-  std::map<std::string, uw::domain::HealthReport> external_health_;
+  std::map<std::string, ExternalHealthEntry> external_health_;
 
   std::optional<double> latest_path_lateral_offset_m_;
   std::optional<double> latest_path_offset_sigma_m_;
