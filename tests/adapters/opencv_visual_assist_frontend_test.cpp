@@ -326,6 +326,21 @@ TEST(OpenCvVisualAssistFrontend, CopiesCanonicalMetadataAndUsesBearingRangeCovar
   }
 }
 
+TEST(OpenCvVisualAssistFrontend, ComputesAngularExtentFromOffAxisBoundingBoxEdges) {
+  OpenCvVisualAssistFrontend frontend(TestVisualAssistParams());
+  const auto image =
+      MakeRgbImageWithRectangle(320, 240, 240, 80, 60, 50, {20, 220, 20});
+  const auto result = frontend.Process(image, std::nullopt, TestCameraIntrinsics());
+
+  ASSERT_EQ(result.targets.size(), 1u);
+  const auto& target = result.targets[0];
+  const double expected_extent =
+      std::atan2(300.0 - 160.0, 240.0) - std::atan2(240.0 - 160.0, 240.0);
+  EXPECT_NEAR(target.angular_extent_rad(), expected_extent, 1e-12);
+  EXPECT_TRUE(std::isfinite(target.angular_extent_rad()));
+  EXPECT_GE(target.angular_extent_rad(), 0.0);
+}
+
 TEST(OpenCvVisualAssistFrontend, UsesCentralHalfRowMajorDepthMedianAndMad) {
   OpenCvVisualAssistFrontend frontend(TestVisualAssistParams());
   const auto image = MakeRgbImageWithRectangle(320, 240, 130, 80, 60, 50, {20, 220, 20});
@@ -480,6 +495,36 @@ TEST(OpenCvVisualAssistFrontend, EmitsStructureOffsetOnlyWithAdequateLineSupport
   EXPECT_GT(*result.path_lateral_offset_m, 0.2);
   EXPECT_LT(*result.path_lateral_offset_m, 0.7);
   EXPECT_GT(*result.path_offset_sigma_m, 0.0);
+}
+
+TEST(OpenCvVisualAssistFrontend, EmitsNoPathPairWhenFinitePathArithmeticOverflows) {
+  auto params = TestVisualAssistParams();
+  params.structure_reference_range_m = std::numeric_limits<double>::max();
+  OpenCvVisualAssistFrontend frontend(params);
+  auto intrinsics = TestCameraIntrinsics();
+  intrinsics.set_k_matrix_row_major(0, std::numeric_limits<double>::min());
+  auto depth = MakeEmptyMetricDepth();
+  SetDepthPixel(&depth, 0, 0, 4.0f);
+
+  const auto result =
+      frontend.Process(MakeSupportedStructureImage(), depth, intrinsics);
+
+  EXPECT_FALSE(result.path_lateral_offset_m.has_value());
+  EXPECT_FALSE(result.path_offset_sigma_m.has_value());
+  EXPECT_EQ(result.health.status(), uw::domain::HealthReport::STATUS_HEALTHY);
+  EXPECT_TRUE(result.health.reason_code().empty());
+}
+
+TEST(OpenCvVisualAssistFrontend, ReportsUnavailableDepthWithoutTargetsWhenFrameHasNoUsableSamples) {
+  OpenCvVisualAssistFrontend frontend(TestVisualAssistParams());
+  const auto result = frontend.Process(MakeSupportedStructureImage(),
+                                       MakeEmptyMetricDepth(), TestCameraIntrinsics());
+
+  EXPECT_TRUE(result.targets.empty());
+  EXPECT_TRUE(result.path_lateral_offset_m.has_value());
+  EXPECT_TRUE(result.path_offset_sigma_m.has_value());
+  EXPECT_EQ(result.health.status(), uw::domain::HealthReport::STATUS_SUSPECT);
+  EXPECT_EQ(result.health.reason_code(), "stereo_depth_unavailable");
 }
 
 TEST(OpenCvVisualAssistFrontend, RecoversDeterministicallyAfterVisualQualityFailure) {

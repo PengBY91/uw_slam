@@ -103,6 +103,21 @@ bool DepthGridCompatible(const uw::domain::OpticalDepthPriorMeasurement& depth,
          depth.reference_camera_frame().value() == image.header().sensor_frame().value();
 }
 
+bool IsUsableDepthSample(const uw::domain::OpticalDepthPriorMeasurement& depth,
+                         std::size_t index) {
+  if (static_cast<unsigned char>(depth.valid_mask()[index]) == 0) return false;
+  const double sample = depth.depth_m(static_cast<int>(index));
+  const double variance = depth.variance_m2(static_cast<int>(index));
+  return std::isfinite(sample) && sample > 0.0 && std::isfinite(variance) && variance > 0.0;
+}
+
+bool HasUsableFrameDepth(const uw::domain::OpticalDepthPriorMeasurement& depth) {
+  for (std::size_t index = 0; index < depth.valid_mask().size(); ++index) {
+    if (IsUsableDepthSample(depth, index)) return true;
+  }
+  return false;
+}
+
 double Median(std::vector<double>* values) {
   std::sort(values->begin(), values->end());
   const std::size_t middle = values->size() / 2;
@@ -118,24 +133,23 @@ struct TargetDepthStatistics {
 TargetDepthStatistics CollectTargetDepth(
     const uw::domain::OpticalDepthPriorMeasurement& depth,
     const uw::domain::TargetDetection& target) {
-  const uint32_t x_begin = target.bbox_x() + target.bbox_width() / 4;
-  const uint32_t x_end = target.bbox_x() + (3 * target.bbox_width()) / 4;
-  const uint32_t y_begin = target.bbox_y() + target.bbox_height() / 4;
-  const uint32_t y_end = target.bbox_y() + (3 * target.bbox_height()) / 4;
+  const std::size_t bbox_x = target.bbox_x();
+  const std::size_t bbox_y = target.bbox_y();
+  const std::size_t bbox_width = target.bbox_width();
+  const std::size_t bbox_height = target.bbox_height();
+  const std::size_t x_begin = bbox_x + bbox_width / 4;
+  const std::size_t x_end = bbox_x + (std::size_t{3} * bbox_width) / 4;
+  const std::size_t y_begin = bbox_y + bbox_height / 4;
+  const std::size_t y_end = bbox_y + (std::size_t{3} * bbox_height) / 4;
 
   TargetDepthStatistics statistics;
-  statistics.central_pixel_count =
-      static_cast<std::size_t>(x_end - x_begin) * static_cast<std::size_t>(y_end - y_begin);
+  statistics.central_pixel_count = (x_end - x_begin) * (y_end - y_begin);
   statistics.samples.reserve(statistics.central_pixel_count);
-  for (uint32_t y = y_begin; y < y_end; ++y) {
-    for (uint32_t x = x_begin; x < x_end; ++x) {
-      const std::size_t index = static_cast<std::size_t>(y) * depth.width() + x;
-      if (static_cast<unsigned char>(depth.valid_mask()[index]) == 0) continue;
-      const double sample = depth.depth_m(static_cast<int>(index));
-      const double variance = depth.variance_m2(static_cast<int>(index));
-      if (std::isfinite(sample) && sample > 0.0 && std::isfinite(variance) && variance > 0.0) {
-        statistics.samples.push_back(sample);
-      }
+  for (std::size_t y = y_begin; y < y_end; ++y) {
+    for (std::size_t x = x_begin; x < x_end; ++x) {
+      const std::size_t index = y * static_cast<std::size_t>(depth.width()) + x;
+      if (!IsUsableDepthSample(depth, index)) continue;
+      statistics.samples.push_back(depth.depth_m(static_cast<int>(index)));
     }
   }
   return statistics;
@@ -157,18 +171,22 @@ void PopulatePathOffset(const cv::Mat& edges, const VisualAssistParams& params,
   };
   std::vector<StructureLine> structure_lines;
   for (const cv::Vec4i& line : lines) {
-    const double dx = static_cast<double>(line[2] - line[0]);
-    const double dy = static_cast<double>(line[3] - line[1]);
+    const double x0 = static_cast<double>(line[0]);
+    const double y0 = static_cast<double>(line[1]);
+    const double x1 = static_cast<double>(line[2]);
+    const double y1 = static_cast<double>(line[3]);
+    const double dx = x1 - x0;
+    const double dy = y1 - y0;
     if (std::abs(dy) < params.minimum_structure_vertical_span_px) continue;
     const double length = std::hypot(dx, dy);
     if (!FinitePositive(length)) continue;
     double angle = std::atan2(dy, dx);
     if (angle < 0.0) angle += kPi;
     if (angle >= kPi) angle -= kPi;
+    const double midpoint_x = 0.5 * (x0 + x1);
+    const double midpoint_y = 0.5 * (y0 + y1);
     structure_lines.push_back(
-        StructureLine{angle, 0.5 * static_cast<double>(line[0] + line[2]),
-                      0.5 * static_cast<double>(line[1] + line[3]),
-                      0.5 * static_cast<double>(line[0] + line[2]), length});
+        StructureLine{angle, midpoint_x, midpoint_y, midpoint_x, length});
   }
 
   std::sort(structure_lines.begin(), structure_lines.end(),
@@ -222,8 +240,13 @@ void PopulatePathOffset(const cv::Mat& edges, const VisualAssistParams& params,
   const double structure_center_u = structure_center_sum / static_cast<double>(supports.size());
   const double fx = intrinsics.k_matrix_row_major(0);
   const double cx = intrinsics.k_matrix_row_major(2);
-  result->path_lateral_offset_m =
-      (structure_center_u - cx) * params.structure_reference_range_m / fx;
+  const double normalized_lateral_offset = (structure_center_u - cx) / fx;
+  const double lateral_offset = normalized_lateral_offset * params.structure_reference_range_m;
+  if (!std::isfinite(structure_center_u) || !std::isfinite(normalized_lateral_offset) ||
+      !std::isfinite(lateral_offset) || !FinitePositive(params.path_offset_sigma_m)) {
+    return;
+  }
+  result->path_lateral_offset_m = lateral_offset;
   result->path_offset_sigma_m = params.path_offset_sigma_m;
 }
 
@@ -282,9 +305,10 @@ uw::measurement_api::VisualAssistResult OpenCvVisualAssistFrontend::Process(
 
   cv::Mat edges;
   cv::Canny(gray, edges, params_.canny_low_threshold, params_.canny_high_threshold);
-  const double texture_support = static_cast<double>(cv::countNonZero(edges)) /
-                                 static_cast<double>(left_rectified.width()) /
-                                 static_cast<double>(left_rectified.height());
+  const double image_pixel_count = static_cast<double>(left_rectified.width()) *
+                                   static_cast<double>(left_rectified.height());
+  const double texture_support =
+      static_cast<double>(cv::countNonZero(edges)) / image_pixel_count;
 
   if (brightness < params_.minimum_brightness) {
     result.health.set_status(uw::domain::HealthReport::STATUS_SUSPECT);
@@ -335,8 +359,9 @@ uw::measurement_api::VisualAssistResult OpenCvVisualAssistFrontend::Process(
     *target.mutable_source_observation() = left_rectified.header().observation_id();
     *target.mutable_capture_time() = left_rectified.header().capture_time();
     target.set_class_label(params_.class_label);
-    target.set_confidence(std::clamp(static_cast<double>(area) /
-                                         static_cast<double>(width * height),
+    const double component_pixel_count =
+        static_cast<double>(width) * static_cast<double>(height);
+    target.set_confidence(std::clamp(static_cast<double>(area) / component_pixel_count,
                                      0.0, 1.0));
     target.set_bearing_rad(std::atan2(center_u - cx, fx));
     target.set_has_range(false);
@@ -349,7 +374,16 @@ uw::measurement_api::VisualAssistResult OpenCvVisualAssistFrontend::Process(
     target.set_bbox_width(static_cast<uint32_t>(width));
     target.set_bbox_height(static_cast<uint32_t>(height));
     target.set_source(uw::domain::ASSIST_SOURCE_VISUAL);
-    target.set_angular_extent_rad(2.0 * std::atan2(0.5 * width, fx));
+    // TargetDetection boxes use the half-open pixel interval [x, x + width).
+    // Clamp both continuous edges before converting them to bearing angles.
+    const double image_width = static_cast<double>(left_rectified.width());
+    const double left_box_edge = std::clamp(static_cast<double>(x), 0.0, image_width);
+    const double right_box_edge =
+        std::clamp(static_cast<double>(x) + static_cast<double>(width), 0.0, image_width);
+    const double left_edge_bearing = std::atan2(left_box_edge - cx, fx);
+    const double right_edge_bearing = std::atan2(right_box_edge - cx, fx);
+    const double angular_extent = std::abs(right_edge_bearing - left_edge_bearing);
+    if (std::isfinite(angular_extent)) target.set_angular_extent_rad(angular_extent);
     target.set_intensity_score(target.confidence());
     (*target.mutable_quality_metrics())["brightness"] = brightness;
     (*target.mutable_quality_metrics())["contrast"] = contrast;
@@ -359,8 +393,10 @@ uw::measurement_api::VisualAssistResult OpenCvVisualAssistFrontend::Process(
     result.targets.push_back(std::move(target));
   }
 
-  bool depth_degraded =
-      !depth.has_value() || !DepthGridCompatible(*depth, left_rectified);
+  const bool depth_compatible =
+      depth.has_value() && DepthGridCompatible(*depth, left_rectified);
+  bool depth_degraded = !depth_compatible;
+  if (depth_compatible && !HasUsableFrameDepth(*depth)) depth_degraded = true;
   if (!depth_degraded) {
     for (auto& target : result.targets) {
       TargetDepthStatistics statistics = CollectTargetDepth(*depth, target);
