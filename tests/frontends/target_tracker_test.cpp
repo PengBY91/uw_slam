@@ -172,41 +172,33 @@ TEST(TargetTracker, FirstCorrelatedRangeUsesFullTwoDimensionalJosephUpdate) {
   fused.covariance << 0.04, 0.018,
                       0.018, 0.09;
 
-  Eigen::Vector4d expected_state;
-  expected_state << visual.bearing_rad, *fused.range_m, 0.0, 0.0;
-  Eigen::Matrix4d prior_covariance = Eigen::Matrix4d::Zero();
+  Eigen::Vector2d prior_state(visual.bearing_rad, *fused.range_m);
+  Eigen::Matrix2d prior_covariance = Eigen::Matrix2d::Zero();
   prior_covariance(0, 0) = visual.covariance(0, 0);
   prior_covariance(1, 1) = 1.0e6;
-  prior_covariance(2, 2) = 1.0;
-  prior_covariance(3, 3) = 1.0e6;
-  Eigen::Matrix<double, 2, 4> observation =
-      Eigen::Matrix<double, 2, 4>::Zero();
-  observation(0, 0) = 1.0;
-  observation(1, 1) = 1.0;
-  const Eigen::Vector2d innovation(fused.bearing_rad - expected_state[0], 0.0);
-  const Eigen::Matrix2d innovation_covariance =
-      observation * prior_covariance * observation.transpose() +
-      fused.covariance;
-  const Eigen::Matrix<double, 4, 2> gain =
-      prior_covariance * observation.transpose() *
-      innovation_covariance.ldlt().solve(Eigen::Matrix2d::Identity());
-  expected_state += gain * innovation;
-  const Eigen::Matrix4d residual = Eigen::Matrix4d::Identity() -
-                                   gain * observation;
-  Eigen::Matrix4d expected_covariance =
-      residual * prior_covariance * residual.transpose() +
-      gain * fused.covariance * gain.transpose();
-  expected_covariance =
-      0.5 * (expected_covariance + expected_covariance.transpose());
+  const Eigen::Matrix2d prior_information =
+      prior_covariance.ldlt().solve(Eigen::Matrix2d::Identity());
+  const Eigen::Matrix2d measurement_information =
+      fused.covariance.ldlt().solve(Eigen::Matrix2d::Identity());
+  const Eigen::Matrix2d expected_position_covariance =
+      (prior_information + measurement_information)
+          .ldlt()
+          .solve(Eigen::Matrix2d::Identity());
+  const Eigen::Vector2d expected_position = expected_position_covariance *
+      (prior_information * prior_state +
+       measurement_information *
+           Eigen::Vector2d(fused.bearing_rad, *fused.range_m));
 
   ASSERT_TRUE(tracker.Update({fused}, 2.0));
   const auto tracks = tracker.Tracks(2.0);
   ASSERT_EQ(tracks.size(), 1u);
   const auto& track = tracks[0];
   EXPECT_TRUE(track.range_observable);
-  EXPECT_TRUE(track.state.isApprox(expected_state, 1e-10));
-  EXPECT_TRUE(track.covariance.isApprox(expected_covariance, 1e-10));
-  EXPECT_NEAR(track.covariance(0, 1), expected_covariance(0, 1), 1e-12);
+  EXPECT_TRUE(track.state.head<2>().isApprox(expected_position, 1e-10));
+  EXPECT_TRUE((track.covariance.topLeftCorner<2, 2>().isApprox(
+      expected_position_covariance, 1e-10)));
+  EXPECT_NEAR(track.covariance(0, 1),
+              expected_position_covariance(0, 1), 1e-12);
   EXPECT_GT(std::abs(track.covariance(0, 1)), 1e-8);
   EXPECT_TRUE(track.covariance.isApprox(track.covariance.transpose(), 1e-12));
   EXPECT_GE(Eigen::SelfAdjointEigenSolver<Eigen::Matrix4d>(track.covariance)
@@ -258,7 +250,9 @@ TEST(TargetTracker, EmptyBatchCommitsPredictionAndCovarianceWithoutDoublePredict
   const auto single_step_view = uncommitted.Tracks(3.4);
   ASSERT_EQ(committed_view.size(), 1u);
   ASSERT_EQ(single_step_view.size(), 1u);
-  EXPECT_FALSE(committed_view[0].covariance.isApprox(
+  EXPECT_TRUE(committed_view[0].state.isApprox(
+      single_step_view[0].state, 1e-12));
+  EXPECT_TRUE(committed_view[0].covariance.isApprox(
       single_step_view[0].covariance, 1e-12));
 
   const auto at_commit = committed.Tracks(3.2)[0];
@@ -373,6 +367,91 @@ TEST(TargetTracker, SplitCreatesNewTentativeIdAndMergeKeepsOlderId) {
   EXPECT_NE(std::find_if(tracks[0].observation_ids.begin(), tracks[0].observation_ids.end(),
                          [](const auto& id) { return id.value() == "split"; }),
             tracks[0].observation_ids.end());
+}
+
+TEST(TargetTracker, MixedObservabilityMergePromotesOlderVisualTrackRangeSafely) {
+  uw::frontends::TargetTracker tracker(Params());
+  ASSERT_TRUE(tracker.Update(
+      {Measurement("visual-old", 7.0, -0.01, std::nullopt,
+                   uw::domain::ASSIST_SOURCE_VISUAL),
+       Measurement("sonar-new", 7.0, 0.01, 5.0,
+                   uw::domain::ASSIST_SOURCE_SONAR)},
+      7.0));
+  auto tracks = tracker.Tracks(7.0);
+  ASSERT_EQ(tracks.size(), 2u);
+  EXPECT_EQ(tracks[0].track_id, "track_1");
+  EXPECT_FALSE(tracks[0].range_observable);
+  EXPECT_EQ(tracks[1].track_id, "track_2");
+  EXPECT_TRUE(tracks[1].range_observable);
+
+  ASSERT_TRUE(tracker.Update(
+      {Measurement("bearing-merge", 7.1, 0.0, std::nullopt,
+                   uw::domain::ASSIST_SOURCE_VISUAL)},
+      7.1));
+  tracks = tracker.Tracks(7.1);
+  ASSERT_EQ(tracks.size(), 1u);
+  const auto& merged = tracks[0];
+  EXPECT_EQ(merged.track_id, "track_1");
+  EXPECT_TRUE(merged.range_observable);
+  EXPECT_NEAR(merged.state[1], 5.0, 0.2);
+  EXPECT_TRUE(merged.state.allFinite());
+  EXPECT_TRUE(merged.covariance.allFinite());
+  EXPECT_TRUE(merged.covariance.isApprox(
+      merged.covariance.transpose(), 1e-12));
+  EXPECT_GE(Eigen::SelfAdjointEigenSolver<Eigen::Matrix4d>(merged.covariance)
+                .eigenvalues().minCoeff(),
+            -1e-10);
+  EXPECT_EQ(merged.sources,
+            (std::vector<uw::domain::AssistSource>{
+                uw::domain::ASSIST_SOURCE_VISUAL,
+                uw::domain::ASSIST_SOURCE_SONAR}));
+  EXPECT_TRUE(merged.ToProto(7.1).has_value());
+  const auto set = tracker.ToProtoSet(7.1);
+  ASSERT_TRUE(set.has_value());
+  ASSERT_EQ(set->tracks_size(), 1);
+  EXPECT_TRUE(set->tracks(0).has_range_m());
+}
+
+TEST(TargetTracker, LongPredictionUsesWholeElapsedTimeIndependentOfEmptyFrequency) {
+  auto params = Params();
+  params.max_prediction_dt_s = 0.5;
+  params.degraded_misses = 100;
+  params.stale_after_s = 10.0;
+  uw::frontends::TargetTracker direct(params);
+  uw::frontends::TargetTracker stepped(params);
+  for (auto* tracker : {&direct, &stepped}) {
+    ASSERT_TRUE(tracker->Update(
+        {Measurement("motion-1", 0.0, 0.0, 5.0)}, 0.0));
+    ASSERT_TRUE(tracker->Update(
+        {Measurement("motion-2", 0.1, 0.02, 5.05)}, 0.1));
+  }
+  const auto start = direct.Tracks(0.1)[0];
+
+  ASSERT_TRUE(direct.Update({}, 5.1));
+  for (int step = 1; step <= 10; ++step) {
+    ASSERT_TRUE(stepped.Update({}, 0.1 + 0.5 * step));
+  }
+  const auto direct_track = direct.Tracks(5.1)[0];
+  const auto stepped_track = stepped.Tracks(5.1)[0];
+  const double pi = std::acos(-1.0);
+  double expected_bearing =
+      std::remainder(start.state[0] + 5.0 * start.state[2], 2.0 * pi);
+  if (expected_bearing <= -pi) expected_bearing += 2.0 * pi;
+  EXPECT_NEAR(direct_track.state[0], expected_bearing, 1e-10);
+  EXPECT_NEAR(direct_track.state[1],
+              start.state[1] + 5.0 * start.state[3], 1e-10);
+  EXPECT_TRUE(direct_track.state.isApprox(stepped_track.state, 1e-10));
+  EXPECT_TRUE(direct_track.covariance.isApprox(
+      stepped_track.covariance, 1e-10));
+
+  EXPECT_FALSE(direct.Update(
+      {Measurement("behind-horizon", 2.5, direct_track.state[0],
+                   direct_track.state[1])},
+      5.2));
+  EXPECT_TRUE(direct.Update(
+      {Measurement("at-horizon", 5.1, direct_track.state[0],
+                   direct_track.state[1])},
+      5.1));
 }
 
 TEST(TargetTracker, TwoCloseTracksWithSeparateDetectionsDoNotFalseMerge) {

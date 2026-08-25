@@ -39,9 +39,8 @@ struct TrackedTarget {
   std::vector<uw::domain::AssistSource> sources;
   std::vector<uw::domain::ObservationId> observation_ids;
 
-  // The current wire schema cannot represent absent range (proto3 scalar
-  // presence is disabled), so bearing-only tracks fail closed instead of
-  // exporting a fabricated zero-metre range.
+  // TargetTrack.range_m has explicit proto3 presence. Bearing-only tracks
+  // omit it; ranged tracks populate it without fabricating a default value.
   std::optional<uw::domain::TargetTrack> ToProto(double publish_time_s) const;
 };
 

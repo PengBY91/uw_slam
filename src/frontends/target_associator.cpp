@@ -94,94 +94,96 @@ std::optional<Eigen::Matrix4d> EdgeMatrix(const uw::domain::FrameEdge& edge) {
   return matrix;
 }
 
-struct Neighbor {
-  std::string frame;
-  Eigen::Matrix4d from_current;
+struct RigFrameContext {
+  std::map<std::string, uw::sensor_models::Pose3> base_from_frame;
+  std::map<std::string, std::string> parent_by_child;
+  std::set<std::string> camera_roots;
 };
 
-std::optional<uw::sensor_models::Pose3> BaseFromFrame(
-    const uw::domain::RigCalibrationSnapshot& rig, const std::string& target_frame) {
-  if (target_frame.empty()) return std::nullopt;
-  if (target_frame == "base_link") return uw::sensor_models::Pose3::Identity();
-
-  std::map<std::string, std::vector<Neighbor>> graph;
+std::optional<RigFrameContext> ResolveRigFrames(
+    const uw::domain::RigCalibrationSnapshot& rig) {
+  struct Child {
+    std::string frame;
+    uw::sensor_models::Pose3 parent_from_child;
+  };
+  RigFrameContext context;
+  for (const auto& camera : rig.cameras()) {
+    const std::string sensor_id = camera.sensor_id().value();
+    if (!sensor_id.empty()) context.camera_roots.insert(sensor_id + "_link");
+  }
+  std::map<std::string, std::vector<Child>> children_by_parent;
   for (const auto& edge : rig.frame_tree()) {
-    const auto parent_from_child = EdgeMatrix(edge);
-    if (!parent_from_child) return std::nullopt;
+    const auto matrix = EdgeMatrix(edge);
+    if (!matrix) return std::nullopt;
     const std::string parent = edge.parent_frame().value();
     const std::string child = edge.child_frame().value();
-    // `from_current` maps the neighbor into the current frame.
-    graph[parent].push_back({child, *parent_from_child});
-    graph[child].push_back({parent, parent_from_child->inverse()});
+    if (child == "base_link" ||
+        !context.parent_by_child.emplace(child, parent).second) {
+      return std::nullopt;
+    }
+    uw::sensor_models::Pose3 parent_from_child;
+    parent_from_child.translation = matrix->topRightCorner<3, 1>();
+    parent_from_child.rotation =
+        Eigen::Quaterniond(matrix->topLeftCorner<3, 3>()).normalized();
+    children_by_parent[parent].push_back({child, parent_from_child});
   }
-  for (auto& [frame, neighbors] : graph) {
+  for (auto& [frame, children] : children_by_parent) {
     (void)frame;
-    std::sort(neighbors.begin(), neighbors.end(),
-              [](const auto& lhs, const auto& rhs) { return lhs.frame < rhs.frame; });
+    std::sort(children.begin(), children.end(),
+              [](const auto& lhs, const auto& rhs) {
+                return lhs.frame < rhs.frame;
+              });
   }
 
-  std::queue<std::pair<std::string, Eigen::Matrix4d>> pending;
-  std::set<std::string> visited{"base_link"};
-  pending.push({"base_link", Eigen::Matrix4d::Identity()});
+  context.base_from_frame.emplace("base_link",
+                                  uw::sensor_models::Pose3::Identity());
+  std::queue<std::string> pending;
+  pending.push("base_link");
   while (!pending.empty()) {
-    auto [current, base_from_current] = pending.front();
+    const std::string current = pending.front();
     pending.pop();
-    const auto it = graph.find(current);
-    if (it == graph.end()) continue;
-    for (const auto& neighbor : it->second) {
-      if (!visited.insert(neighbor.frame).second) continue;
-      const Eigen::Matrix4d base_from_neighbor =
-          base_from_current * neighbor.from_current;
-      if (neighbor.frame == target_frame) {
-        return uw::sensor_models::Pose3::FromProto([&] {
-          uw::domain::Transform3D proto;
-          for (int row = 0; row < 4; ++row) {
-            for (int col = 0; col < 4; ++col) {
-              proto.add_matrix_row_major(base_from_neighbor(row, col));
-            }
-          }
-          return proto;
-        }());
+    const auto children = children_by_parent.find(current);
+    if (children == children_by_parent.end()) continue;
+    const auto& base_from_parent = context.base_from_frame.at(current);
+    for (const auto& child : children->second) {
+      if (!context.base_from_frame
+               .emplace(child.frame,
+                        base_from_parent * child.parent_from_child)
+               .second) {
+        return std::nullopt;
       }
-      pending.push({neighbor.frame, base_from_neighbor});
+      pending.push(child.frame);
     }
   }
-  return std::nullopt;
-}
-
-bool ValidRigTree(const uw::domain::RigCalibrationSnapshot& rig) {
-  std::map<std::string, std::string> parent_by_child;
-  for (const auto& edge : rig.frame_tree()) {
-    if (!EdgeMatrix(edge)) return false;
-    const std::string parent = edge.parent_frame().value();
-    const std::string child = edge.child_frame().value();
-    if (child == "base_link" || !parent_by_child.emplace(child, parent).second) {
-      return false;
-    }
+  if (context.base_from_frame.size() != context.parent_by_child.size() + 1) {
+    return std::nullopt;
   }
-  for (const auto& [frame, parent] : parent_by_child) {
-    (void)parent;
-    std::set<std::string> path;
-    std::string current = frame;
-    while (current != "base_link") {
-      if (!path.insert(current).second) return false;
-      const auto it = parent_by_child.find(current);
-      if (it == parent_by_child.end()) return false;
-      current = it->second;
-    }
-  }
-  return true;
+  return context;
 }
 
 bool FrameMatchesSensor(const std::string& sensor_id, const std::string& frame,
-                        bool visual) {
-  // Calibration v1 has no explicit SensorId -> FrameId field. Enforce its
-  // exact canonical naming contract instead of accepting prefixes. The
-  // singleton sonar is the one legacy exception used by every checked-in
-  // rig (sonar0 -> sonar_link).
+                        bool visual, const RigFrameContext& frames) {
+  // Calibration v1 has no explicit SensorId -> FrameId field. Anchor each
+  // sensor at its exact canonical root; visual inputs may additionally use a
+  // unique directed descendant declared by the validated rig tree. The
+  // singleton sonar is the legacy canonical-name exception (sonar0 ->
+  // sonar_link).
   const std::string expected =
       !visual && sensor_id == "sonar0" ? "sonar_link" : sensor_id + "_link";
-  return frame == expected;
+  if (frame == expected) return true;
+  if (!visual) return false;
+  std::string current = frame;
+  while (current != "base_link") {
+    if (current != expected &&
+        frames.camera_roots.find(current) != frames.camera_roots.end()) {
+      return false;
+    }
+    const auto parent = frames.parent_by_child.find(current);
+    if (parent == frames.parent_by_child.end()) return false;
+    current = parent->second;
+    if (current == expected) return true;
+  }
+  return false;
 }
 
 bool SensorHasExclusiveRole(const uw::domain::RigCalibrationSnapshot& rig,
@@ -253,7 +255,8 @@ std::optional<std::pair<Eigen::Vector2d, Eigen::Matrix2d>> ProjectWithJacobian(
 }
 
 ProjectResult ProjectOne(const SensorTargetDetection& input, bool visual,
-                         const uw::domain::RigCalibrationSnapshot& rig) {
+                         const uw::domain::RigCalibrationSnapshot& rig,
+                         const RigFrameContext* frames) {
   const auto& detection = input.detection;
   const auto expected_source = visual ? uw::domain::ASSIST_SOURCE_VISUAL
                                       : uw::domain::ASSIST_SOURCE_SONAR;
@@ -271,7 +274,7 @@ ProjectResult ProjectOne(const SensorTargetDetection& input, bool visual,
        (!FinitePositive(detection.range_m()) || detection.range_m() > kMaxTargetRangeM))) {
     return {};
   }
-  if (!ValidRigTree(rig) || !SensorHasExclusiveRole(rig, input, visual)) return {};
+  if (frames == nullptr || !SensorHasExclusiveRole(rig, input, visual)) return {};
   for (const auto& [name, value] : detection.quality_metrics()) {
     (void)name;
     if (!std::isfinite(value)) return {};
@@ -293,11 +296,11 @@ ProjectResult ProjectOne(const SensorTargetDetection& input, bool visual,
       !std::isfinite(offset->second)) {
     return {};
   }
-  const auto base_from_sensor = BaseFromFrame(rig, input.sensor_frame);
-  if (!base_from_sensor) {
+  const auto base_from_sensor = frames->base_from_frame.find(input.sensor_frame);
+  if (base_from_sensor == frames->base_from_frame.end() ||
+      !FrameMatchesSensor(input.sensor_id, input.sensor_frame, visual, *frames)) {
     return {std::nullopt, AssociationReason::kFrameUnresolved};
   }
-  if (!FrameMatchesSensor(input.sensor_id, input.sensor_frame, visual)) return {};
 
   TargetMeasurement measurement;
   const long double corrected_time =
@@ -317,7 +320,7 @@ ProjectResult ProjectOne(const SensorTargetDetection& input, bool visual,
       const Eigen::Vector3d optical_ray(std::sin(bearing), 0.0, std::cos(bearing));
       const Eigen::Vector3d body_ray =
           uw::sensor_models::OpticalFromBodyRotation().transpose() * optical_ray;
-      return base_from_sensor->rotation * body_ray;
+      return base_from_sensor->second.rotation * body_ray;
     };
     const Eigen::Vector3d ray = base_ray(detection.bearing_rad());
     if (!ray.allFinite() || ray.head<2>().norm() <= 1e-12) return {};
@@ -337,15 +340,16 @@ ProjectResult ProjectOne(const SensorTargetDetection& input, bool visual,
     const auto projection = [&](double bearing, double range) {
       Eigen::Vector3d point_sensor;
       if (visual) {
-        const Eigen::Vector3d point_optical(range * std::sin(bearing), 0.0,
-                                            range * std::cos(bearing));
+        const Eigen::Vector3d point_optical(range * std::tan(bearing), 0.0,
+                                            range);
         point_sensor = uw::sensor_models::OpticalFromBodyRotation().transpose() *
                        point_optical;
       } else {
         point_sensor = Eigen::Vector3d(range * std::cos(bearing),
                                        range * std::sin(bearing), 0.0);
       }
-      const Eigen::Vector3d point_base = base_from_sensor->Apply(point_sensor);
+      const Eigen::Vector3d point_base =
+          base_from_sensor->second.Apply(point_sensor);
       return Eigen::Vector2d(WrapBearing(std::atan2(point_base.y(), point_base.x())),
                              point_base.norm());
     };
@@ -515,6 +519,7 @@ TargetAssociationResult TargetAssociator::Associate(
     const std::vector<SensorTargetDetection>& sonar,
     const uw::domain::RigCalibrationSnapshot& rig) const {
   TargetAssociationResult result;
+  const auto resolved_frames = ResolveRigFrames(rig);
 
   std::map<std::string, std::size_t> observation_id_counts;
   const auto count_ids = [&](const auto& inputs) {
@@ -555,7 +560,9 @@ TargetAssociationResult TargetAssociator::Associate(
 
   const auto project_inputs = [&](const auto& inputs, bool is_visual, auto* output) {
     for (const auto& input : inputs) {
-      const ProjectResult projected = ProjectOne(input, is_visual, rig);
+      const ProjectResult projected = ProjectOne(
+          input, is_visual, rig,
+          resolved_frames ? &*resolved_frames : nullptr);
       if (projected.projected) {
         output->push_back(*projected.projected);
       } else {
@@ -641,39 +648,71 @@ TargetAssociationResult TargetAssociator::Associate(
         } else {
           bool statistical_gate_passed = false;
           if (v.range_m && s.range_m) {
+            const double range_delta = *v.range_m - *s.range_m;
+            const double bearing_mahalanobis =
+                bearing_delta * bearing_delta /
+                std::max(kMinVariance, bearing_variance);
+            const double range_mahalanobis =
+                range_delta * range_delta /
+                std::max(kMinVariance,
+                         v.covariance(1, 1) + s.covariance(1, 1));
             const Eigen::Vector2d residual(
-                bearing_delta, *v.range_m - *s.range_m);
+                bearing_delta, range_delta);
             const Eigen::Matrix2d innovation_covariance =
                 v.covariance + s.covariance;
-            Eigen::LDLT<Eigen::Matrix2d> ldlt(innovation_covariance);
-            if (ldlt.info() != Eigen::Success || !ldlt.isPositive()) {
+            if (!std::isfinite(bearing_mahalanobis) ||
+                !std::isfinite(range_mahalanobis) ||
+                bearing_mahalanobis < 0.0 || range_mahalanobis < 0.0) {
               pair.diagnostic.reason = AssociationReason::kUncertainty;
               pair.diagnostic.metric = AssociationMetric::kInputValidity;
               pair.diagnostic.value = 0.0;
               pair.diagnostic.threshold = 1.0;
+            } else if (bearing_mahalanobis >
+                       params_.max_bearing_mahalanobis_sq) {
+              pair.diagnostic.reason = AssociationReason::kBearingMahalanobis;
+              pair.diagnostic.metric =
+                  AssociationMetric::kBearingMahalanobisSquared;
+              pair.diagnostic.value = bearing_mahalanobis;
+              pair.diagnostic.threshold =
+                  params_.max_bearing_mahalanobis_sq;
+            } else if (range_mahalanobis >
+                       params_.max_range_mahalanobis_sq) {
+              pair.diagnostic.reason = AssociationReason::kRangeMahalanobis;
+              pair.diagnostic.metric =
+                  AssociationMetric::kRangeMahalanobisSquared;
+              pair.diagnostic.value = range_mahalanobis;
+              pair.diagnostic.threshold = params_.max_range_mahalanobis_sq;
             } else {
-              const Eigen::Vector2d whitened = ldlt.solve(residual);
-              const double joint_mahalanobis = residual.dot(whitened);
-              const double joint_threshold =
-                  params_.max_bearing_mahalanobis_sq +
-                  params_.max_range_mahalanobis_sq;
-              if (ldlt.info() != Eigen::Success || !whitened.allFinite() ||
-                  !std::isfinite(joint_mahalanobis) ||
-                  joint_mahalanobis < 0.0) {
+              Eigen::LDLT<Eigen::Matrix2d> ldlt(innovation_covariance);
+              if (ldlt.info() != Eigen::Success || !ldlt.isPositive()) {
                 pair.diagnostic.reason = AssociationReason::kUncertainty;
                 pair.diagnostic.metric = AssociationMetric::kInputValidity;
                 pair.diagnostic.value = 0.0;
                 pair.diagnostic.threshold = 1.0;
-              } else if (joint_mahalanobis > joint_threshold) {
-                pair.diagnostic.reason = AssociationReason::kJointMahalanobis;
-                pair.diagnostic.metric =
-                    AssociationMetric::kJointMahalanobisSquared;
-                pair.diagnostic.value = joint_mahalanobis;
-                pair.diagnostic.threshold = joint_threshold;
               } else {
-                pair.cost = joint_mahalanobis;
-                pair.max_cost = joint_threshold + 1.0;
-                statistical_gate_passed = true;
+                const Eigen::Vector2d whitened = ldlt.solve(residual);
+                const double joint_mahalanobis = residual.dot(whitened);
+                const double joint_threshold =
+                    params_.max_bearing_mahalanobis_sq +
+                    params_.max_range_mahalanobis_sq;
+                if (ldlt.info() != Eigen::Success || !whitened.allFinite() ||
+                    !std::isfinite(joint_mahalanobis) ||
+                    joint_mahalanobis < 0.0) {
+                  pair.diagnostic.reason = AssociationReason::kUncertainty;
+                  pair.diagnostic.metric = AssociationMetric::kInputValidity;
+                  pair.diagnostic.value = 0.0;
+                  pair.diagnostic.threshold = 1.0;
+                } else if (joint_mahalanobis > joint_threshold) {
+                  pair.diagnostic.reason = AssociationReason::kJointMahalanobis;
+                  pair.diagnostic.metric =
+                      AssociationMetric::kJointMahalanobisSquared;
+                  pair.diagnostic.value = joint_mahalanobis;
+                  pair.diagnostic.threshold = joint_threshold;
+                } else {
+                  pair.cost = joint_mahalanobis;
+                  pair.max_cost = joint_threshold + 1.0;
+                  statistical_gate_passed = true;
+                }
               }
             }
           } else {

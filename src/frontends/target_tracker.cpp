@@ -222,28 +222,39 @@ template <typename TrackT>
 void Predict(TrackT* track, double now_s, const TargetTrackerParams& params) {
   const double elapsed = now_s - track->state_time_s;
   if (elapsed <= 0.0) return;
-  const double dt = std::min(elapsed, params.max_prediction_dt_s);
-  Eigen::Matrix4d transition = Eigen::Matrix4d::Identity();
-  transition(0, 2) = dt;
-  transition(1, 3) = dt;
-  track->target.state = transition * track->target.state;
-  track->target.state[0] = WrapBearing(track->target.state[0]);
-  if (track->target.range_observable && track->target.state[1] <= 0.0) {
-    track->target.state[1] = 1e-6;
-    track->target.state[3] = 0.0;
+  double remaining = elapsed;
+  while (remaining > 0.0) {
+    const double dt = std::min(remaining, params.max_prediction_dt_s);
+    Eigen::Matrix4d transition = Eigen::Matrix4d::Identity();
+    transition(0, 2) = dt;
+    transition(1, 3) = dt;
+    track->target.state = transition * track->target.state;
+    track->target.state[0] = WrapBearing(track->target.state[0]);
+    if (track->target.range_observable && track->target.state[1] <= 0.0) {
+      track->target.state[1] = 1e-6;
+      track->target.state[3] = 0.0;
+    }
+    Eigen::Matrix4d process_noise = Eigen::Matrix4d::Zero();
+    const auto add_cv_noise = [&](int position, int velocity, double sigma) {
+      const double variance = sigma * sigma;
+      process_noise(position, position) =
+          dt * dt * dt * variance / 3.0;
+      process_noise(position, velocity) = 0.5 * dt * dt * variance;
+      process_noise(velocity, position) =
+          process_noise(position, velocity);
+      process_noise(velocity, velocity) = dt * variance;
+    };
+    add_cv_noise(0, 2, params.bearing_acceleration_noise);
+    add_cv_noise(1, 3, params.range_acceleration_noise);
+    track->target.covariance = SanitizeCovariance(
+        transition * track->target.covariance * transition.transpose() +
+        process_noise);
+    remaining -= dt;
+    if (remaining <=
+        std::numeric_limits<double>::epsilon() * std::max(1.0, elapsed)) {
+      remaining = 0.0;
+    }
   }
-  Eigen::Matrix4d process_noise = Eigen::Matrix4d::Zero();
-  const auto add_cv_noise = [&](int position, int velocity, double sigma) {
-    const double variance = sigma * sigma;
-    process_noise(position, position) = 0.25 * dt * dt * dt * dt * variance;
-    process_noise(position, velocity) = 0.5 * dt * dt * dt * variance;
-    process_noise(velocity, position) = process_noise(position, velocity);
-    process_noise(velocity, velocity) = dt * dt * variance;
-  };
-  add_cv_noise(0, 2, params.bearing_acceleration_noise);
-  add_cv_noise(1, 3, params.range_acceleration_noise);
-  track->target.covariance = SanitizeCovariance(
-      transition * track->target.covariance * transition.transpose() + process_noise);
   track->state_time_s = now_s;
 }
 
@@ -366,6 +377,36 @@ bool MergeClose(const TrackT& lhs, const TrackT& rhs,
     return false;
   }
   return ClassesCompatible(lhs.target.class_label, rhs.target.class_label);
+}
+
+template <typename TrackT>
+void PromoteRangeFrom(TrackT* destination, const TrackT& ranged_source) {
+  if (destination->target.range_observable ||
+      !ranged_source.target.range_observable) {
+    return;
+  }
+  destination->target.state[1] = ranged_source.target.state[1];
+  destination->target.state[3] = ranged_source.target.state[3];
+
+  // Preserve the older track's bearing subsystem and the ranged track's
+  // range subsystem. Zeroing unknown cross-subsystem correlation produces a
+  // conservative block-diagonal covariance whose two principal blocks were
+  // already PSD, then SanitizeCovariance guards round-off.
+  constexpr int kBearingIndices[] = {0, 2};
+  constexpr int kRangeIndices[] = {1, 3};
+  Eigen::Matrix4d promoted = Eigen::Matrix4d::Zero();
+  for (int row : kBearingIndices) {
+    for (int col : kBearingIndices) {
+      promoted(row, col) = destination->target.covariance(row, col);
+    }
+  }
+  for (int row : kRangeIndices) {
+    for (int col : kRangeIndices) {
+      promoted(row, col) = ranged_source.target.covariance(row, col);
+    }
+  }
+  destination->target.covariance = SanitizeCovariance(promoted);
+  destination->target.range_observable = true;
 }
 
 }  // namespace
@@ -498,6 +539,7 @@ bool TargetTracker::Update(const std::vector<TargetMeasurement>& detections,
       detection_for_track[index].reset();
       if (index == oldest) continue;
       merged[index] = true;
+      PromoteRangeFrom(&tracks_[oldest], tracks_[index]);
       AddSortedUnique(&tracks_[oldest].target.sources, tracks_[index].target.sources,
                       [](auto lhs, auto rhs) { return lhs < rhs; });
       AddSortedUnique(&tracks_[oldest].target.observation_ids,

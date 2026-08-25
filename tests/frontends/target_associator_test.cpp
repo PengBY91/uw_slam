@@ -9,6 +9,7 @@
 #include <vector>
 
 #include <gtest/gtest.h>
+#include <Eigen/Cholesky>
 #include <Eigen/Eigenvalues>
 
 #include "sensor_models/geometry.hpp"
@@ -284,9 +285,10 @@ TEST(TargetAssociator, RejectsSensorRoleOrFrameImpersonationWithinOtherwiseValid
 
   EXPECT_TRUE(result.measurements.empty());
   ASSERT_EQ(result.diagnostics.size(), 2u);
-  for (const auto& diagnostic : result.diagnostics) {
-    EXPECT_EQ(diagnostic.reason, uw::frontends::AssociationReason::kInvalidInput);
-  }
+  EXPECT_EQ(result.diagnostics[0].reason,
+            uw::frontends::AssociationReason::kFrameUnresolved);
+  EXPECT_EQ(result.diagnostics[1].reason,
+            uw::frontends::AssociationReason::kInvalidInput);
 }
 
 TEST(TargetAssociator, AcceptsExactNumberedCameraFrameButRejectsDerivedNameSpoof) {
@@ -306,14 +308,118 @@ TEST(TargetAssociator, AcceptsExactNumberedCameraFrameButRejectsDerivedNameSpoof
   ASSERT_EQ(accepted.measurements.size(), 1u);
 
   auto spoof_rig = Rig();
-  AddEdge(&spoof_rig, "camera_left_link", "camera_left_link_spoof",
-          uw::sensor_models::Pose3::Identity());
   auto spoof = Detection("spoof", uw::domain::ASSIST_SOURCE_VISUAL, 1.0, 0.0,
                          std::nullopt);
   spoof.sensor_frame = "camera_left_link_spoof";
   const auto rejected = uw::frontends::TargetAssociator(Params()).Associate(
       {spoof}, {}, spoof_rig);
   EXPECT_TRUE(rejected.measurements.empty());
+}
+
+TEST(TargetAssociator, AcceptsOnlyRigDerivedDescendantsOfCanonicalCameraFrame) {
+  auto rectified_rig = Rig();
+  AddEdge(&rectified_rig, "camera_left_link", "camera_left_link_rectified",
+          uw::sensor_models::Pose3::Identity());
+  auto rectified = Detection("rectified", uw::domain::ASSIST_SOURCE_VISUAL,
+                             1.0, 0.0, std::nullopt);
+  rectified.sensor_frame = "camera_left_link_rectified";
+  const auto accepted = uw::frontends::TargetAssociator(Params()).Associate(
+      {rectified}, {}, rectified_rig);
+  ASSERT_EQ(accepted.measurements.size(), 1u);
+
+  auto spoof = rectified;
+  spoof.detection.mutable_source_observation()->set_value("prefix-spoof");
+  spoof.sensor_frame = "camera_left_link_rectified_spoof";
+  const auto spoofed = uw::frontends::TargetAssociator(Params()).Associate(
+      {spoof}, {}, rectified_rig);
+  EXPECT_TRUE(spoofed.measurements.empty());
+  ASSERT_EQ(spoofed.diagnostics.size(), 1u);
+  EXPECT_EQ(spoofed.diagnostics[0].reason,
+            uw::frontends::AssociationReason::kFrameUnresolved);
+
+  auto cross_rig = rectified_rig;
+  AddEdge(&cross_rig, "payload_mount", "camera_right_link",
+          uw::sensor_models::Pose3::Identity());
+  AddEdge(&cross_rig, "camera_right_link", "camera_right_link_rectified",
+          uw::sensor_models::Pose3::Identity());
+  auto* right_camera = cross_rig.add_cameras();
+  right_camera->mutable_sensor_id()->set_value("camera_right");
+  right_camera->set_width(640);
+  right_camera->set_height(480);
+  auto cross_camera = rectified;
+  cross_camera.detection.mutable_source_observation()->set_value("cross-camera");
+  cross_camera.sensor_frame = "camera_right_link_rectified";
+  const auto crossed = uw::frontends::TargetAssociator(Params()).Associate(
+      {cross_camera}, {}, cross_rig);
+  EXPECT_TRUE(crossed.measurements.empty());
+  ASSERT_EQ(crossed.diagnostics.size(), 1u);
+  EXPECT_EQ(crossed.diagnostics[0].reason,
+            uw::frontends::AssociationReason::kFrameUnresolved);
+}
+
+TEST(TargetAssociator, RejectsNestedForeignCameraRootForClaimedCamera) {
+  auto rig = Rig();
+  AddEdge(&rig, "camera_left_link", "camera_right_link",
+          uw::sensor_models::Pose3::Identity());
+  AddEdge(&rig, "camera_right_link", "camera_right_link_rectified",
+          uw::sensor_models::Pose3::Identity());
+  auto* right_camera = rig.add_cameras();
+  right_camera->mutable_sensor_id()->set_value("camera_right");
+  right_camera->set_width(640);
+  right_camera->set_height(480);
+
+  auto cross_camera = Detection("nested-cross-camera",
+                                uw::domain::ASSIST_SOURCE_VISUAL, 1.0, 0.0,
+                                std::nullopt);
+  cross_camera.sensor_frame = "camera_right_link_rectified";
+  const auto result = uw::frontends::TargetAssociator(Params()).Associate(
+      {cross_camera}, {}, rig);
+
+  EXPECT_TRUE(result.measurements.empty());
+  ASSERT_EQ(result.diagnostics.size(), 1u);
+  EXPECT_EQ(result.diagnostics[0].reason,
+            uw::frontends::AssociationReason::kFrameUnresolved);
+}
+
+TEST(TargetAssociator, TreatsVisualProducerRangeAsOpticalZDepth) {
+  constexpr double bearing = 0.4;
+  constexpr double optical_z_m = 5.0;
+  const double secant = 1.0 / std::cos(bearing);
+  const double expected_base_bearing = -bearing;
+  const double expected_slant_range = optical_z_m * secant;
+
+  auto visual = Detection("visual-z", uw::domain::ASSIST_SOURCE_VISUAL,
+                          2.0, bearing, optical_z_m);
+  auto sonar = Detection("sonar-slant", uw::domain::ASSIST_SOURCE_SONAR,
+                         2.0, expected_base_bearing, expected_slant_range);
+  const auto result = uw::frontends::TargetAssociator(Params()).Associate(
+      {visual}, {sonar}, Rig());
+
+  ASSERT_EQ(result.measurements.size(), 1u);
+  const auto& fused = result.measurements[0];
+  ASSERT_TRUE(fused.range_m.has_value());
+  EXPECT_NEAR(fused.bearing_rad, expected_base_bearing, 1e-9);
+  EXPECT_NEAR(*fused.range_m, expected_slant_range, 1e-9);
+
+  Eigen::Matrix2d input_covariance = Eigen::Matrix2d::Zero();
+  input_covariance(0, 0) = 0.01 * 0.01;
+  input_covariance(1, 1) = 0.04;
+  Eigen::Matrix2d z_depth_jacobian;
+  z_depth_jacobian << -1.0, 0.0,
+      optical_z_m * secant * std::tan(bearing), secant;
+  const Eigen::Matrix2d expected_visual_covariance =
+      z_depth_jacobian * input_covariance * z_depth_jacobian.transpose();
+  Eigen::Matrix2d sonar_covariance = Eigen::Matrix2d::Zero();
+  sonar_covariance(0, 0) = 0.01 * 0.01;
+  sonar_covariance(1, 1) = 0.04;
+  const Eigen::Matrix2d gain =
+      expected_visual_covariance *
+      (expected_visual_covariance + sonar_covariance)
+          .ldlt()
+          .solve(Eigen::Matrix2d::Identity());
+  const Eigen::Matrix2d expected_fused_covariance =
+      expected_visual_covariance - gain * expected_visual_covariance;
+  EXPECT_TRUE(fused.covariance.isApprox(expected_fused_covariance, 1e-8));
 }
 
 TEST(TargetAssociator, RejectsAmbiguousSensorRoleAndDuplicateObservationIdsAtomically) {
@@ -444,6 +550,62 @@ TEST(TargetAssociator, FullCorrelatedCovarianceRejectsJointlyInconsistentPair) {
             uw::frontends::AssociationMetric::kJointMahalanobisSquared);
   EXPECT_GT(joint->value, joint->threshold);
   EXPECT_DOUBLE_EQ(joint->threshold, 8.0);
+}
+
+TEST(TargetAssociator, FullRangePairMustPassIndependentRangeMahalanobisGate) {
+  auto params = Params();
+  params.max_bearing_mahalanobis_sq = 9.0;
+  params.max_range_mahalanobis_sq = 9.0;
+  const double range_delta = std::sqrt(10.0 * 0.08);
+  const auto result = uw::frontends::TargetAssociator(params).Associate(
+      {Detection("v-range-gate", uw::domain::ASSIST_SOURCE_VISUAL,
+                 3.0, 0.0, 5.0)},
+      {Detection("s-range-gate", uw::domain::ASSIST_SOURCE_SONAR,
+                 3.0, 0.0, 5.0 + range_delta)},
+      Rig());
+
+  const auto pair = std::find_if(
+      result.diagnostics.begin(), result.diagnostics.end(),
+      [](const auto& diagnostic) {
+        return !diagnostic.visual_observation_id.empty() &&
+               !diagnostic.sonar_observation_id.empty();
+      });
+  ASSERT_NE(pair, result.diagnostics.end());
+  EXPECT_FALSE(pair->accepted);
+  EXPECT_EQ(pair->reason,
+            uw::frontends::AssociationReason::kRangeMahalanobis);
+  EXPECT_EQ(pair->metric,
+            uw::frontends::AssociationMetric::kRangeMahalanobisSquared);
+  EXPECT_NEAR(pair->value, 10.0, 1e-9);
+  EXPECT_DOUBLE_EQ(pair->threshold, 9.0);
+}
+
+TEST(TargetAssociator, FullRangePairMustPassIndependentBearingMahalanobisGate) {
+  auto params = Params();
+  params.max_bearing_mahalanobis_sq = 9.0;
+  params.max_range_mahalanobis_sq = 9.0;
+  const double bearing_delta = std::sqrt(10.0 * 0.0002);
+  const auto result = uw::frontends::TargetAssociator(params).Associate(
+      {Detection("v-bearing-gate", uw::domain::ASSIST_SOURCE_VISUAL,
+                 3.0, 0.0, 5.0)},
+      {Detection("s-bearing-gate", uw::domain::ASSIST_SOURCE_SONAR,
+                 3.0, bearing_delta, 5.0)},
+      Rig());
+
+  const auto pair = std::find_if(
+      result.diagnostics.begin(), result.diagnostics.end(),
+      [](const auto& diagnostic) {
+        return !diagnostic.visual_observation_id.empty() &&
+               !diagnostic.sonar_observation_id.empty();
+      });
+  ASSERT_NE(pair, result.diagnostics.end());
+  EXPECT_FALSE(pair->accepted);
+  EXPECT_EQ(pair->reason,
+            uw::frontends::AssociationReason::kBearingMahalanobis);
+  EXPECT_EQ(pair->metric,
+            uw::frontends::AssociationMetric::kBearingMahalanobisSquared);
+  EXPECT_NEAR(pair->value, 10.0, 1e-9);
+  EXPECT_DOUBLE_EQ(pair->threshold, 9.0);
 }
 
 TEST(TargetAssociator, FusedMeasurementPropagatesCorrelatedCovariance) {
