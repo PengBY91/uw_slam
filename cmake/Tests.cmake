@@ -105,6 +105,7 @@ add_executable(adapters_tests
   tests/adapters/svin_bridge_test.cpp
   tests/adapters/holoocean_ros_bridge_sonar_frame_provider_test.cpp
   tests/adapters/opencv_stereo_rectifier_test.cpp
+  tests/adapters/opencv_visual_assist_frontend_test.cpp
 )
 target_link_libraries(adapters_tests PRIVATE
   uw::adapters uw::opencv_adapters GTest::gtest GTest::gtest_main Threads::Threads

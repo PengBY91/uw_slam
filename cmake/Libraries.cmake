@@ -28,10 +28,12 @@ target_link_libraries(measurement_api INTERFACE uw::core)
 
 add_library(opencv_adapters STATIC
   adapters/opencv/src/stereo_rectifier.cpp
+  adapters/opencv/src/opencv_visual_assist_frontend.cpp
 )
 add_library(uw::opencv_adapters ALIAS opencv_adapters)
 target_include_directories(opencv_adapters PUBLIC
   "${PROJECT_SOURCE_DIR}/adapters/opencv/include"
+  PRIVATE "${PROJECT_SOURCE_DIR}/adapters/opencv/include/adapters"
 )
 target_link_libraries(opencv_adapters
   PUBLIC uw::measurement_api
