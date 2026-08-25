@@ -100,6 +100,7 @@ add_library(runtime STATIC
   src/runtime/bag_audit_checks.cpp
   src/runtime/synthetic_sonar.cpp
   src/runtime/mcap_event_source.cpp
+  src/runtime/canonical_event_validation.cpp
 )
 add_library(uw::runtime ALIAS runtime)
 target_include_directories(runtime PUBLIC "${PROJECT_SOURCE_DIR}/include")

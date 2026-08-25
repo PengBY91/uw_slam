@@ -80,6 +80,7 @@ add_executable(runtime_tests
   tests/runtime/bag_audit_checks_test.cpp
   tests/runtime/synthetic_sonar_test.cpp
   tests/runtime/canonical_event_test.cpp
+  tests/runtime/canonical_event_validation_test.cpp
   tests/runtime/mcap_event_source_test.cpp
 )
 target_compile_definitions(runtime_tests PRIVATE UW_REPO_ROOT="${PROJECT_SOURCE_DIR}")

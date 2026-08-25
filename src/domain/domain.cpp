@@ -105,6 +105,33 @@ ValidationResult ValidateImageFrame(const ImageFrame& frame) {
   return {};
 }
 
+ValidationResult ValidateObservationHeader(const ObservationHeader& header) {
+  if (header.observation_id().value().empty() || header.sensor_id().value().empty() ||
+      header.sensor_frame().value().empty() || header.calibration_version().value().empty()) {
+    return Invalid(ValidationCode::kInvalidObservationHeader,
+                   "observation, sensor, frame, and calibration identifiers must be non-empty");
+  }
+  if (header.clock_domain() == CLOCK_DOMAIN_UNSPECIFIED ||
+      header.receive_clock_domain() == CLOCK_DOMAIN_UNSPECIFIED) {
+    return Invalid(ValidationCode::kInvalidObservationHeader,
+                   "capture and receive clock domains must be explicit");
+  }
+  constexpr int32_t kNanosPerSecond = 1000000000;
+  if (header.capture_time().nanos() < 0 ||
+      header.capture_time().nanos() >= kNanosPerSecond ||
+      header.receive_time().nanos() < 0 ||
+      header.receive_time().nanos() >= kNanosPerSecond) {
+    return Invalid(ValidationCode::kInvalidObservationHeader,
+                   "capture and receive timestamp nanos must be normalized");
+  }
+  if (header.validity() != ObservationHeader::VALIDITY_OK &&
+      header.validity() != ObservationHeader::VALIDITY_DEGRADED) {
+    return Invalid(ValidationCode::kInvalidObservationHeader,
+                   "observation validity must be OK or DEGRADED");
+  }
+  return {};
+}
+
 std::optional<ImageFrame> ConvertToMono8(const ImageFrame& frame) {
   if (!ValidateImageFrame(frame).ok()) return std::nullopt;
   if (frame.encoding() == ImageFrame::IMAGE_ENCODING_MONO8) return frame;

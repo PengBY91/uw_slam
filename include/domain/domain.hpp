@@ -51,6 +51,7 @@ enum class ValidationCode {
   kInvalidScaleStatus,
   kInvalidDepthValue,
   kInvalidVarianceValue,
+  kInvalidObservationHeader,
 };
 
 struct ValidationResult {
@@ -60,6 +61,7 @@ struct ValidationResult {
 };
 
 ValidationResult ValidateImageFrame(const ImageFrame& frame);
+ValidationResult ValidateObservationHeader(const ObservationHeader& header);
 ValidationResult ValidateOpticalDepthPrior(const OpticalDepthPriorMeasurement& prior);
 ValidationResult ValidateFusedDepth(const FusedDepthMeasurement& fused);
 
