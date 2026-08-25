@@ -10,7 +10,7 @@ readable by `replay_demo` without translation.
 
 This machine has no HoloOcean/Unreal install, so `holoocean_driver.py`'s `HoloOceanSession` (the part
 that actually calls into HoloOcean) is written but not exercised. Everything else IS tested (`pytest`,
-54/54 passing as of this writing):
+71/71 passing as of this writing):
 
 - `coordinates.py` — UE↔body coordinate transforms, quaternion-based (fixes the Euler gimbal-lock
   branch found in `ocean_t`'s `CoordTransformer._SE3_to_pose`).
@@ -26,6 +26,16 @@ that actually calls into HoloOcean) is written but not exercised. Everything els
   real hardware running each sensor at its own rate. Each of those independently-written sensors'
   `observation_id` is keyed on its own raw simulation-tick index, never on the (much lower-rate) camera
   keyframe counter — see `tests/test_record_session.py`.
+- `scenario_manifest.py` — loads/validates the versioned realtime scenario+task manifests under
+  `scenarios/` (`blue_rov_aid_sv1213_base.json` for the BlueROV2/AI-D/SV1213 sensor rig,
+  `aquaculture_search.yaml`/`structure_inspection.yaml` for the two task truth definitions) into a typed
+  `RealtimeScenarioManifest`. Fails fast on duplicate/misrated sensors, missing sonar calibration fields,
+  unknown prop types/materials, a task target missing either visual or acoustic properties, and — the
+  check most worth calling out — any `algorithm_topics` entry equal to the ground-truth topic
+  (`/uw/sim/ground_truth` must never reach the algorithm/pipeline side, only the scorer). Repo-only keys
+  (`uw_metadata`, `algorithm_topics`) live alongside HoloOcean's own scenario fields in the same JSON file
+  and are stripped by `RealtimeScenarioManifest.holoocean_scenario_cfg()` before the dict is safe to pass
+  to `holoocean.make(scenario_cfg=...)`.
 
 ## Setup
 

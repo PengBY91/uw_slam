@@ -1,0 +1,53 @@
+task_id: structure_inspection_v1
+version: 1
+max_duration_s: 300.0
+arena_dimensions_m: [50.0, 20.0, 10.0]
+start_pose:
+  translation_m: [0.0, -6.0, -3.0]
+  quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]
+
+props:
+  - tag: pier_piling_01
+    prop_type: cylinder
+    dimensions_m: [0.5, 0.5, 6.0]
+    location_m: [10.0, 0.0, -5.0]
+    visual_material: biofouled_steel
+    acoustic_reflectivity_class: strong
+  - tag: pier_piling_02
+    prop_type: cylinder
+    dimensions_m: [0.5, 0.5, 6.0]
+    location_m: [20.0, 0.0, -5.0]
+    visual_material: biofouled_steel
+    acoustic_reflectivity_class: strong
+  - tag: pier_piling_03
+    prop_type: cylinder
+    dimensions_m: [0.5, 0.5, 6.0]
+    location_m: [30.0, 0.0, -5.0]
+    visual_material: biofouled_steel
+    acoustic_reflectivity_class: strong
+  - tag: pier_crossbeam
+    prop_type: box
+    dimensions_m: [22.0, 0.4, 0.4]
+    location_m: [20.0, 0.0, -1.2]
+    visual_material: concrete_pile
+    acoustic_reflectivity_class: moderate
+
+target:
+  kind: path
+  tag: pier_inspection_path
+  waypoints_m:
+    - [10.0, 0.0, -5.0]
+    - [20.0, 0.0, -5.0]
+    - [30.0, 0.0, -5.0]
+  lateral_tolerance_m: 1.5
+  visual_properties:
+    material: biofouled_steel
+    min_detectable_range_m: 6.0
+  acoustic_properties:
+    reflectivity_class: strong
+    min_detectable_range_m: 12.0
+
+success_conditions:
+  path_coverage_fraction: 0.9
+  max_lateral_offset_p95_m: 1.5
+  min_track_confidence: 0.6

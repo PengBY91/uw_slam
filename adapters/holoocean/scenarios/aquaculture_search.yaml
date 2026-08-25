@@ -1,0 +1,43 @@
+task_id: aquaculture_search_v1
+version: 1
+max_duration_s: 240.0
+arena_dimensions_m: [40.0, 40.0, 8.0]
+start_pose:
+  translation_m: [0.0, 0.0, -3.0]
+  quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]
+
+props:
+  - tag: net_pen_marker_buoy
+    prop_type: cylinder
+    dimensions_m: [1.2, 1.2, 2.0]
+    location_m: [15.0, 6.0, -4.0]
+    visual_material: orange_buoy_marker
+    acoustic_reflectivity_class: strong
+  - tag: mooring_anchor_block
+    prop_type: box
+    dimensions_m: [0.8, 0.8, 0.6]
+    location_m: [15.0, 6.5, -4.3]
+    visual_material: dark_metal
+    acoustic_reflectivity_class: moderate
+  - tag: distractor_float
+    prop_type: sphere
+    dimensions_m: [0.6, 0.6, 0.6]
+    location_m: [-8.0, -10.0, -1.5]
+    visual_material: yellow_hazard_panel
+    acoustic_reflectivity_class: weak
+
+target:
+  kind: point
+  tag: net_pen_marker_buoy
+  location_m: [15.0, 6.0, -4.0]
+  visual_properties:
+    material: orange_buoy_marker
+    min_detectable_range_m: 8.0
+  acoustic_properties:
+    reflectivity_class: strong
+    min_detectable_range_m: 15.0
+
+success_conditions:
+  detection_confirmed_within_s: 180.0
+  min_track_confidence: 0.6
+  min_confirmed_hold_s: 3.0
