@@ -30,4 +30,15 @@ message HealthReport {
   double valid_domain_rate = 12;
   double out_of_distribution_rate = 13;
   Stamp last_recovery_time = 14;
+  uint64 rejected_frame_count = 15;
+  uint64 expired_frame_count = 16;
+  uint32 queue_high_watermark = 17;
+  double oldest_message_age_ms = 18;
+  uint64 deadline_miss_count = 19;
+  Stamp last_valid_capture_time = 20;
+  Stamp last_valid_receive_time = 21;
+  Stamp last_processed_time = 22;
+  uint64 synchronization_rejected_count = 23;
+  uint64 sequence_gap_count = 24;
+  uint64 stale_result_count = 25;
 }

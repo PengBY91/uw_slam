@@ -102,6 +102,7 @@ add_library(runtime STATIC
   src/runtime/mcap_event_source.cpp
   src/runtime/canonical_event_validation.cpp
   src/runtime/live_event_source.cpp
+  src/runtime/rolling_latency.cpp
 )
 add_library(uw::runtime ALIAS runtime)
 target_include_directories(runtime PUBLIC "${PROJECT_SOURCE_DIR}/include")

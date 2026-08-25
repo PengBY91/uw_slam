@@ -83,6 +83,7 @@ add_executable(runtime_tests
   tests/runtime/canonical_event_validation_test.cpp
   tests/runtime/mcap_event_source_test.cpp
   tests/runtime/live_event_source_test.cpp
+  tests/runtime/rolling_latency_test.cpp
 )
 target_compile_definitions(runtime_tests PRIVATE UW_REPO_ROOT="${PROJECT_SOURCE_DIR}")
 target_link_libraries(runtime_tests PRIVATE

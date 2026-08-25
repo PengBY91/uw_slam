@@ -105,6 +105,22 @@ CanonicalEvent MakeGroundTruthEvent() {
   return {uw::runtime::kTopicGtState, 1, 1, std::move(snapshot)};
 }
 
+struct FakeClocks {
+  std::chrono::steady_clock::time_point monotonic{};
+  std::chrono::system_clock::time_point wall{std::chrono::seconds(100)};
+
+  LiveSourceConfig Config() {
+    auto config = LiveSourceConfig::ForTest();
+    config.monotonic_now = [this] { return monotonic; };
+    config.wall_now = [this] { return wall; };
+    return config;
+  }
+
+  void AdvanceMs(int64_t milliseconds) {
+    monotonic += std::chrono::milliseconds(milliseconds);
+  }
+};
+
 TEST(LiveEventSource, UsesTheFullWeightedScheduleWhileEveryLaneHasBacklog) {
   auto config = LiveSourceConfig::ForTest();
   config.localization = {32, OverflowPolicy::kReject};
@@ -406,6 +422,138 @@ TEST(LiveEventSource, ZeroCapacityIsRejectedAtConstruction) {
   auto config = LiveSourceConfig::ForTest();
   config.evidence.capacity = 0;
   EXPECT_THROW(LiveEventSource source(config), std::runtime_error);
+}
+
+TEST(LiveEventSourceHealth, ReportsOneStableHealthReportPerLaneAndZeroAgeWhenEmpty) {
+  FakeClocks clocks;
+  LiveEventSource source(clocks.Config());
+
+  const auto reports = source.HealthReports();
+  ASSERT_EQ(reports.size(), 4u);
+  EXPECT_EQ(reports[0].component_id(), "live_source.localization");
+  EXPECT_EQ(reports[1].component_id(), "live_source.correction");
+  EXPECT_EQ(reports[2].component_id(), "live_source.mapping");
+  EXPECT_EQ(reports[3].component_id(), "live_source.evidence");
+  for (const auto& report : reports) {
+    EXPECT_EQ(report.status(), uw::domain::HealthReport::STATUS_HEALTHY);
+    EXPECT_EQ(report.queue_depth(), 0u);
+    EXPECT_EQ(report.queue_high_watermark(), 0u);
+    EXPECT_DOUBLE_EQ(report.oldest_message_age_ms(), 0.0);
+    EXPECT_DOUBLE_EQ(report.latency_p50_ms(), 0.0);
+    EXPECT_DOUBLE_EQ(report.latency_p95_ms(), 0.0);
+    EXPECT_DOUBLE_EQ(report.latency_p99_ms(), 0.0);
+  }
+  source.Close();
+}
+
+TEST(LiveEventSourceHealth, TracksOldestIngressAcrossDropOldestAndQueueHighWatermark) {
+  FakeClocks clocks;
+  auto config = clocks.Config();
+  config.mapping = {2, OverflowPolicy::kDropOldest};
+  LiveEventSource source(config);
+
+  ASSERT_EQ(source.Submit(MakeImageEvent(1, 1)), LiveSubmitStatus::kAccepted);
+  clocks.AdvanceMs(10);
+  ASSERT_EQ(source.Submit(MakeImageEvent(2, 2)), LiveSubmitStatus::kAccepted);
+  clocks.AdvanceMs(30);
+
+  auto mapping = source.HealthReports()[2];
+  EXPECT_EQ(mapping.queue_depth(), 2u);
+  EXPECT_EQ(mapping.queue_high_watermark(), 2u);
+  EXPECT_DOUBLE_EQ(mapping.oldest_message_age_ms(), 40.0);
+
+  ASSERT_EQ(source.Submit(MakeImageEvent(3, 3)),
+            LiveSubmitStatus::kAcceptedAfterDroppingOldest);
+  mapping = source.HealthReports()[2];
+  EXPECT_EQ(mapping.queue_depth(), 2u);
+  EXPECT_EQ(mapping.queue_high_watermark(), 2u);
+  EXPECT_EQ(mapping.dropped_frame_count(), 1u);
+  EXPECT_DOUBLE_EQ(mapping.oldest_message_age_ms(), 30.0);
+  EXPECT_EQ(source.Stats().accepted_count, 3u);
+  EXPECT_EQ(source.Stats().accepted_after_dropping_oldest_count, 1u);
+  source.Close();
+}
+
+TEST(LiveEventSourceHealth, UsesSteadyIngressResidenceForLatencyAndWallClockForProcessedTime) {
+  FakeClocks clocks;
+  auto config = clocks.Config();
+  config.mapping = {3, OverflowPolicy::kReject};
+  LiveEventSource source(config);
+
+  ASSERT_EQ(source.Submit(MakeImageEvent(1, 1)), LiveSubmitStatus::kAccepted);
+  clocks.AdvanceMs(10);
+  ASSERT_EQ(source.Submit(MakeImageEvent(2, 2)), LiveSubmitStatus::kAccepted);
+  clocks.AdvanceMs(10);
+  ASSERT_EQ(source.Submit(MakeImageEvent(3, 3)), LiveSubmitStatus::kAccepted);
+  clocks.AdvanceMs(30);
+  clocks.wall = std::chrono::system_clock::time_point{std::chrono::seconds(321)};
+  source.Close();
+
+  ASSERT_EQ(source.Run([](const CanonicalEvent&) { return true; }).status,
+            EventSourceStatus::kCompleted);
+  const auto mapping = source.HealthReports()[2];
+  EXPECT_EQ(mapping.queue_depth(), 0u);
+  EXPECT_DOUBLE_EQ(mapping.oldest_message_age_ms(), 0.0);
+  EXPECT_DOUBLE_EQ(mapping.latency_p50_ms(), 40.0);
+  EXPECT_DOUBLE_EQ(mapping.latency_p95_ms(), 50.0);
+  EXPECT_DOUBLE_EQ(mapping.latency_p99_ms(), 50.0);
+  EXPECT_DOUBLE_EQ(uw::domain::ToSeconds(mapping.last_processed_time()), 321.0);
+}
+
+TEST(LiveEventSourceHealth, AttributesRejectsGapsAndLastValidRawStampsToTheirLane) {
+  FakeClocks clocks;
+  auto config = clocks.Config();
+  config.localization = {1, OverflowPolicy::kReject};
+  LiveEventSource source(config);
+
+  ASSERT_EQ(source.Submit(MakeVehicleEvent(1, 1, "vehicle-a")),
+            LiveSubmitStatus::kAccepted);
+  EXPECT_EQ(source.Submit(MakeVehicleEvent(2, 1, "vehicle-b")),
+            LiveSubmitStatus::kOverflowRejected);
+
+  auto image = MakeImageEvent(3, 1, "camera");
+  auto* image_header =
+      std::get<uw::domain::ImageFrame>(image.payload).mutable_header();
+  *image_header->mutable_capture_time() = uw::domain::FromSeconds(42.25);
+  *image_header->mutable_receive_time() = uw::domain::FromSeconds(84.5);
+  ASSERT_EQ(source.Submit(std::move(image)), LiveSubmitStatus::kAccepted);
+  EXPECT_EQ(source.Submit(MakeImageEvent(4, 1, "camera")),
+            LiveSubmitStatus::kDuplicateOrOutOfOrderRejected);
+
+  auto invalid = MakeImageEvent(5, 2, "camera");
+  std::get<uw::domain::ImageFrame>(invalid.payload)
+      .mutable_header()->mutable_sensor_id()->clear_value();
+  EXPECT_EQ(source.Submit(std::move(invalid)), LiveSubmitStatus::kSemanticRejected);
+
+  auto gap = MakeImageEvent(6, 4, "camera");
+  auto* gap_header = std::get<uw::domain::ImageFrame>(gap.payload).mutable_header();
+  *gap_header->mutable_capture_time() = uw::domain::FromSeconds(43.25);
+  *gap_header->mutable_receive_time() = uw::domain::FromSeconds(85.5);
+  ASSERT_EQ(source.Submit(std::move(gap)), LiveSubmitStatus::kAccepted);
+
+  ASSERT_EQ(source.Submit(MakeHealthEvent(7)), LiveSubmitStatus::kAccepted);
+  uw::domain::HealthReport unknown;
+  EXPECT_EQ(source.Submit({"/unknown", 8, 8, std::move(unknown)}),
+            LiveSubmitStatus::kSemanticRejected);
+  EXPECT_EQ(source.Submit(MakeGroundTruthEvent()), LiveSubmitStatus::kReferenceRejected);
+
+  const auto reports = source.HealthReports();
+  EXPECT_EQ(reports[0].rejected_frame_count(), 1u);
+  EXPECT_EQ(reports[0].sequence_gap_count(), 0u);
+  EXPECT_EQ(reports[2].rejected_frame_count(), 2u);
+  EXPECT_EQ(reports[2].sequence_gap_count(), 2u);
+  EXPECT_DOUBLE_EQ(uw::domain::ToSeconds(reports[2].last_valid_capture_time()),
+                   43.25);
+  EXPECT_DOUBLE_EQ(uw::domain::ToSeconds(reports[2].last_valid_receive_time()),
+                   85.5);
+  EXPECT_EQ(reports[1].rejected_frame_count(), 0u);
+  EXPECT_EQ(reports[3].rejected_frame_count(), 0u);
+  EXPECT_EQ(source.Stats().semantic_rejected_count, 2u);
+  EXPECT_EQ(source.Stats().sequence_gap_count, 2u);
+
+  source.Close();
+  EXPECT_EQ(source.Submit(MakeHealthEvent(9)), LiveSubmitStatus::kClosed);
+  EXPECT_EQ(source.HealthReports()[3].rejected_frame_count(), 0u);
 }
 
 }  // namespace
