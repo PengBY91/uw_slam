@@ -90,6 +90,46 @@ queue_capacity_violations=0 flush_count=1`；同时必须看到 `reference_rejec
 脚本用 `--inject-stall-ms`（默认 0，仅用于自测）注入短暂停顿，并要求该负例输出正的
 `deadline_misses` / `rate_count_violations` 后失败。
 
+### 在线声光辅助 gate（真实前端，非计数桩）
+
+跟上面 live ingress gate 的区别：这一个把 `LiveEventSource → PumpEvents` 接的换成
+真正的 `OnlineAssistPipeline`（`docs/superpowers/plans/2026-08-24-acoustic-optic-
+online-tracking.md` Task 8），消费端也换成真实的 `OpenCvVisualAssistFrontend` +
+`SonarCfarFrontend`，不是只数包的 `CountingPort`——验证的是"在线闭环真的能把
+合成双目+声呐证据融合成一条 track"，而不只是"消息按速率送达"。
+
+```bash
+ctest --test-dir build -R integration.online_assist_smoke --output-on-failure
+```
+
+`build/bin/online_assist_smoke --duration-s <N> --camera-hz 20 --sonar-hz 10
+--state-hz 50 [--drop-visual-at-s <s>] [--drop-sonar-at-s <s>]` 退出码必须为 0，
+最后一行必须包含 `fused_tracks=` 后跟正整数（至少一条同时含 VISUAL+SONAR 来源、
+状态 CONFIRMED 的 track，在整个运行期间出现过——不是只看最后一次快照）、
+`truth_delivered=0`（`/gt/state` 从不喂给这个 port，即使从没提交过参考态事件，
+也用一层计数装饰器实测验证，不是"没提交所以肯定是 0"的假设）、
+`stale_normal_tracks=0`（在没有触发任何 `--drop-*-at-s` 的窗口内，没有 track 因为
+缺更新掉进 STALE）、`queue_capacity_violations=0`、`result_age_p95_ms=` 后跟
+一个 < 250 的数（发布时刻减去这次发布贡献时间最新的一路 capture_time，取 P95）。
+
+合成 fixture 的目标固定在正前方（bearing≈0）：视觉侧图像里一个绿色矩形正好画在
+`CameraIntrinsics.cx` 上，声呐侧同样把目标渲染在 `target_bearing_rad=0.0`——相机和
+声呐各自的 bearing 轴约定只有在正前方这一点上保证一致（除非真的联合标定 intrinsics/
+extrinsics），偏轴角度在两侧不代表同一个物理方向，这个坑在
+`tests/application/online_assist_pipeline_test.cpp` 里也踩过一次，两处注释互相
+呼应。声呐 fixture 刻意只放一个目标簇，不是两个：`SonarTargetExtractor` 给同一帧
+里提取出的每个簇都盖同一个 `source_observation`（继承自那一帧本身的 observation_id
+——`tests/frontends/sonar_target_extractor_test.cpp` 那层已经验证过"保留所有簇"这个
+行为），两个簇因此在同一次 `Associate()` 调用里 id 重复，会被 `TargetAssociator`
+当整批拒绝（这是有意的 provenance 唯一性检查，不是 bug）——早期一版塞了两个簇进去，
+实测每一次 flush 都被拒，包括本该独立成立的单一视觉探测。
+
+`--drop-visual-at-s`/`--drop-sonar-at-s` 之后 CTest 脚本只做基本健全性检查
+（`truth_delivered=0`、`queue_capacity_violations=0` 仍然成立），不逐字段判定退化
+时序；`modality_stale_after_s`/`vehicle_state_stale_after_s` 这个 app 自己配成 0.3s
+（比 `configs/defaults/platform.yaml` 生产默认的 1.0s/0.5s 更紧），只是为了让演示/gate
+在较短的 `--duration-s` 内就能看到明显的降级转换，不代表生产该用这个值。
+
 ### 手动跑端到端 Demo
 
 ```bash

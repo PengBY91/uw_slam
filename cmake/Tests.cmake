@@ -109,6 +109,7 @@ add_executable(adapters_tests
   tests/adapters/holoocean_ros_bridge_sonar_frame_provider_test.cpp
   tests/adapters/opencv_stereo_rectifier_test.cpp
   tests/adapters/opencv_visual_assist_frontend_test.cpp
+  tests/adapters/operator_overlay_renderer_test.cpp
 )
 target_link_libraries(adapters_tests PRIVATE
   uw::adapters uw::opencv_adapters GTest::gtest GTest::gtest_main Threads::Threads
@@ -192,6 +193,16 @@ add_test(
 set_tests_properties(integration.live_ingress_smoke PROPERTIES
   LABELS "integration;runtime;live"
   TIMEOUT 15
+)
+
+add_test(
+  NAME integration.online_assist_smoke
+  COMMAND bash ${PROJECT_SOURCE_DIR}/tests/integration/online_assist_smoke_test.sh
+          ${CMAKE_BINARY_DIR}/bin/online_assist_smoke
+)
+set_tests_properties(integration.online_assist_smoke PROPERTIES
+  LABELS "integration;application;live"
+  TIMEOUT 60
 )
 
 add_test(
