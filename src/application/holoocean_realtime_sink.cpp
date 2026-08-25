@@ -12,6 +12,7 @@
 #include <chrono>
 #include <future>
 #include <iomanip>
+#include <iostream>
 #include <mutex>
 #include <optional>
 #include <sstream>
@@ -206,11 +207,24 @@ class OnlineAssistRealtimeSink final : public HoloOceanRealtimeSink {
     pump_thread_ = std::thread([this] {
       try {
         report_promise_.set_value(uw::application::PumpEvents(source_, *port_));
-      } catch (...) {
-        const auto error = std::current_exception();
+      } catch (const std::exception& error) {
+        // Nothing currently calls report_promise_.get_future(), so a lost
+        // exception here would otherwise be a silent pump-thread death with
+        // no signal anywhere the node's assist output stopped updating --
+        // log it so it is at least visible in the node's own stderr/log
+        // output, matching this class's own ROS-free design (no rclcpp
+        // logger available here).
+        std::cerr << "holoocean_realtime_sink: PumpEvents thread terminated: " << error.what() << '\n';
         source_.Close();
         try {
-          report_promise_.set_exception(error);
+          report_promise_.set_exception(std::current_exception());
+        } catch (...) {
+        }
+      } catch (...) {
+        std::cerr << "holoocean_realtime_sink: PumpEvents thread terminated: unknown exception\n";
+        source_.Close();
+        try {
+          report_promise_.set_exception(std::current_exception());
         } catch (...) {
         }
       }
