@@ -100,6 +100,28 @@ TEST(Config, LoadsExperimentConfigWithAllThreeLayers) {
   EXPECT_TRUE(config.write_run_manifest);
 }
 
+TEST(Config, LoadsEveryCheckedInRigUnderOnlineV1CardinalityContract) {
+  for (const std::string name : {"euroc_mh01.yaml", "example_auv.yaml",
+                                 "example_auv_real_camera.yaml",
+                                 "example_auv_sonar_only.yaml"}) {
+    EXPECT_NO_THROW(uw::runtime::LoadRigConfig(
+        std::string(UW_REPO_ROOT) + "/configs/rig/" + name))
+        << "rig file: " << name;
+  }
+
+  const auto euroc = uw::runtime::LoadRigConfig(
+      std::string(UW_REPO_ROOT) + "/configs/rig/euroc_mh01.yaml");
+  EXPECT_EQ(euroc.sonar_beam_models_size(), 0);
+  EXPECT_EQ(euroc.vehicle_state_sensors_size(), 0);
+
+  const auto sonar_only = uw::runtime::LoadRigConfig(
+      std::string(UW_REPO_ROOT) + "/configs/rig/example_auv_sonar_only.yaml");
+  EXPECT_EQ(sonar_only.cameras_size(), 0);
+  ASSERT_EQ(sonar_only.sonar_beam_models_size(), 1);
+  EXPECT_TRUE(sonar_only.sonar_beam_models(0).sonar_enabled());
+  EXPECT_EQ(sonar_only.vehicle_state_sensors_size(), 1);
+}
+
 TEST(Config, MissingOptionalFieldsFallBackToDefaults) {
   // ScenarioConfig's built-in defaults should survive a config that only
   // sets a subset of fields.
@@ -533,6 +555,52 @@ TEST(Config, FullAcousticOpticRigRequiresExactlyOneVehicleStateSensor) {
       MinimalOnlineRigYaml(offsets, provenance, "  - rov-state\n  - backup-state\n"));
   EXPECT_THROW(uw::runtime::LoadRigConfig(multiple.string()), std::runtime_error);
   std::remove(multiple.string().c_str());
+}
+
+TEST(Config, SonarRigsRequireExactlyOneEnabledSonarAndVehicleStateSource) {
+  const std::string offsets =
+      "  sonar0: 0.0\n  sonar1: 0.0\n  rov-state: 0.0\n  backup-state: 0.0\n";
+  const std::string provenance =
+      "  sonar0: measured:sonar\n  sonar1: measured:sonar\n"
+      "  rov-state: measured:state\n  backup-state: measured:backup\n";
+  const auto make_sonar_rig = [&](const std::string& name, const std::string& sonars,
+                                  const std::string& states) {
+    return WriteRig(name,
+                    "calibration_version: sonar_v1\nsonar_beam_models:\n" + sonars +
+                        "vehicle_state_sensors:\n" + states +
+                        "time_offset_seconds:\n" + offsets +
+                        "time_offset_provenance:\n" + provenance);
+  };
+
+  const auto no_state = make_sonar_rig(
+      "uw_sonar_rig_no_state.yaml", "  - sensor_id: sonar0\n    sonar_enabled: true\n", "");
+  EXPECT_THROW(uw::runtime::LoadRigConfig(no_state.string()), std::runtime_error);
+  std::remove(no_state.string().c_str());
+
+  const auto multiple_state = make_sonar_rig(
+      "uw_sonar_rig_multiple_state.yaml", "  - sensor_id: sonar0\n    sonar_enabled: true\n",
+      "  - rov-state\n  - backup-state\n");
+  EXPECT_THROW(uw::runtime::LoadRigConfig(multiple_state.string()), std::runtime_error);
+  std::remove(multiple_state.string().c_str());
+
+  const auto multiple_sonar = make_sonar_rig(
+      "uw_sonar_rig_multiple_sonar.yaml",
+      "  - sensor_id: sonar0\n    sonar_enabled: true\n"
+      "  - sensor_id: sonar1\n    sonar_enabled: true\n",
+      "  - rov-state\n");
+  EXPECT_THROW(uw::runtime::LoadRigConfig(multiple_sonar.string()), std::runtime_error);
+  std::remove(multiple_sonar.string().c_str());
+}
+
+TEST(Config, RejectsHugeFiniteTimeOffset) {
+  const auto path = WriteRig(
+      "uw_online_rig_huge_offset.yaml",
+      MinimalOnlineRigYaml(
+          "  camera_left: 10.000001\n  camera_right: 0.0\n  sonar0: 0.0\n  rov-state: 0.0\n",
+          "  camera_left: measured:left\n  camera_right: measured:right\n"
+          "  sonar0: measured:sonar\n  rov-state: measured:state\n"));
+  EXPECT_THROW(uw::runtime::LoadRigConfig(path.string()), std::runtime_error);
+  std::remove(path.string().c_str());
 }
 
 TEST(Config, ValidateExperimentConfigSelectionsAcceptsDefaults) {

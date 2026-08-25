@@ -374,23 +374,32 @@ uw::domain::RigCalibrationSnapshot LoadRigConfig(const std::string& path) {
       throw std::runtime_error("online sensor roles must use unique sensor ids: " + path);
     }
   }
-  if (snapshot.cameras_size() >= 2 && enabled_sonar_count > 0 &&
-      snapshot.vehicle_state_sensors_size() != 1) {
+  if (enabled_sonar_count > 0 && enabled_sonar_count != 1) {
     throw std::runtime_error(
-        "full acoustic-optic rigs require exactly one vehicle_state_sensor: " + path);
+        "online v1 rigs require exactly one enabled sonar: " + path);
+  }
+  if (enabled_sonar_count > 0 && snapshot.vehicle_state_sensors_size() != 1) {
+    throw std::runtime_error(
+        "rigs with an enabled sonar require exactly one vehicle_state_sensor: " + path);
   }
   for (const std::string& sensor_id : online_sensor_ids) {
     const auto offset = snapshot.time_offset_seconds().find(sensor_id);
     const auto provenance = snapshot.time_offset_provenance().find(sensor_id);
     if (offset == snapshot.time_offset_seconds().end() || !std::isfinite(offset->second) ||
+        std::abs(offset->second) > kMaxAbsoluteSensorTimeOffsetSeconds ||
         provenance == snapshot.time_offset_provenance().end() || provenance->second.empty()) {
-      throw std::runtime_error("online sensor requires finite time offset and non-empty provenance: " +
-                               sensor_id + " in " + path);
+      throw std::runtime_error(
+          "online sensor requires a bounded finite time offset and non-empty provenance: " +
+          sensor_id + " in " + path);
     }
   }
   for (const auto& entry : snapshot.time_offset_seconds()) {
-    if (!std::isfinite(entry.second)) {
-      throw std::runtime_error("time offset must be finite: " + entry.first + " in " + path);
+    if (!std::isfinite(entry.second) ||
+        std::abs(entry.second) > kMaxAbsoluteSensorTimeOffsetSeconds) {
+      throw std::runtime_error(
+          "absolute time offset must be finite and no greater than " +
+          std::to_string(kMaxAbsoluteSensorTimeOffsetSeconds) + " seconds: " +
+          entry.first + " in " + path);
     }
     const auto provenance = snapshot.time_offset_provenance().find(entry.first);
     if (provenance == snapshot.time_offset_provenance().end() || provenance->second.empty()) {

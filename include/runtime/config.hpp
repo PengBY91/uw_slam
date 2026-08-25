@@ -20,6 +20,11 @@
 
 namespace uw::runtime {
 
+// Clock calibration is expected to correct sensor-scale skew, not bridge
+// unrelated epochs. Bounding it also guarantees safe nanosecond
+// quantization in corrected-time buffering.
+inline constexpr double kMaxAbsoluteSensorTimeOffsetSeconds = 10.0;
+
 // Bounded corrected-time queues used by AcousticOpticBuffer. Time windows
 // are inclusive; capacities are hard limits and must be positive.
 struct AcousticOpticBufferConfig {

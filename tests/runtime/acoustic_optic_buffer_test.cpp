@@ -462,3 +462,82 @@ TEST(AcousticOpticBuffer, CalibrationChangeResetsVersionScopedDiagnosticsAndDelt
   EXPECT_EQ(after.corrected_delta_max_s, 0.0);
   EXPECT_EQ(after.calibration_reset_count, 1u);
 }
+
+TEST(AcousticOpticBuffer, GlobalScoringConsidersEveryValidStereoEdge) {
+  auto config = TestBufferConfig();
+  config.max_sonar_camera_delta_s = 0.0005;
+  AcousticOpticBuffer buffer(config, TestRig());
+  AddBracket(&buffer, 10.0015);
+  buffer.AddImage(MakeImage("camera_left", "kf", 10.0000, 10));
+  buffer.AddImage(MakeImage("camera_left", "kf", 10.0015, 20));
+  buffer.AddImage(MakeImage("camera_right", "kf", 10.00075, 30));
+  const auto bundle = buffer.AddSonar(MakeSonar("sonar", 10.0015, 40));
+  ASSERT_TRUE(bundle.has_value());
+  EXPECT_EQ(bundle->images.primary.header().sequence_id().value(), 20u);
+  EXPECT_NEAR(bundle->corrected_time_delta_s, 0.000375, 1e-12);
+}
+
+TEST(AcousticOpticBuffer, RejectsMultipleEnabledSonarsAtConstruction) {
+  auto rig = TestRig();
+  auto* second = rig.add_sonar_beam_models();
+  second->mutable_sensor_id()->set_value("sonar1");
+  second->set_sonar_enabled(true);
+  (*rig.mutable_time_offset_seconds())["sonar1"] = 0.0;
+  (*rig.mutable_time_offset_provenance())["sonar1"] = "measured:test";
+  EXPECT_THROW(AcousticOpticBuffer(TestBufferConfig(), rig), std::invalid_argument);
+}
+
+TEST(AcousticOpticBuffer, IntegrityMismatchDiscardsOnlyCamerasAndRetainsSonar) {
+  AcousticOpticBuffer buffer(TestBufferConfig(), TestRig());
+  AddBracket(&buffer, 10.0);
+  buffer.AddImage(MakeImage("camera_left", "left-bad", 10.0, 1));
+  buffer.AddImage(MakeImage("camera_right", "right-bad", 10.0, 2));
+  EXPECT_FALSE(buffer.AddSonar(MakeSonar("retained-sonar", 10.0, 3)).has_value());
+  EXPECT_EQ(buffer.Diagnostics().buffered_sonar_count, 1u);
+  EXPECT_EQ(buffer.Diagnostics().buffered_image_count, 0u);
+
+  buffer.AddImage(MakeImage("camera_left", "valid", 10.001, 4));
+  const auto bundle = buffer.AddImage(MakeImage("camera_right", "valid", 10.001, 5));
+  ASSERT_TRUE(bundle.has_value());
+  EXPECT_EQ(bundle->sonar.header().observation_id().value(), "retained-sonar");
+}
+
+TEST(AcousticOpticBuffer, PreservesNanosecondInterpolationNearInt64MaxSeconds) {
+  AcousticOpticBuffer buffer(TestBufferConfig(), TestRig());
+  const int64_t seconds = std::numeric_limits<int64_t>::max() - 1;
+  auto set_exact_time = [&](uw::domain::ObservationHeader* header, int32_t nanos) {
+    header->mutable_capture_time()->set_seconds(seconds);
+    header->mutable_capture_time()->set_nanos(nanos);
+    header->mutable_receive_time()->set_seconds(seconds);
+    header->mutable_receive_time()->set_nanos(nanos);
+  };
+  auto before = MakeVehicleState(0.0, 0.0, 1);
+  auto after = MakeVehicleState(0.0, 0.2, 2);
+  before.set_depth_m(1.0);
+  after.set_depth_m(2.0);
+  set_exact_time(before.mutable_header(), 100'000'000);
+  set_exact_time(after.mutable_header(), 200'000'000);
+  buffer.AddVehicleState(before);
+  buffer.AddVehicleState(after);
+  auto left = MakeImage("camera_left", "kf", 0.0, 3);
+  auto right = MakeImage("camera_right", "kf", 0.0, 4);
+  auto sonar = MakeSonar("sonar", 0.0, 5);
+  set_exact_time(left.mutable_header(), 150'000'000);
+  set_exact_time(right.mutable_header(), 150'000'000);
+  set_exact_time(sonar.mutable_header(), 150'000'000);
+  buffer.AddImage(left);
+  buffer.AddImage(right);
+  const auto bundle = buffer.AddSonar(sonar);
+  ASSERT_TRUE(bundle.has_value());
+  EXPECT_EQ(bundle->interpolated_vehicle_state.header().capture_time().seconds(), seconds);
+  EXPECT_EQ(bundle->interpolated_vehicle_state.header().capture_time().nanos(), 150'000'000);
+  EXPECT_NEAR(bundle->interpolated_vehicle_state.depth_m(), 1.5, 1e-12);
+  EXPECT_TRUE(uw::domain::ValidateObservationHeader(
+                  bundle->interpolated_vehicle_state.header()).ok());
+}
+
+TEST(AcousticOpticBuffer, RejectsHugeFiniteTimeOffset) {
+  auto rig = TestRig();
+  (*rig.mutable_time_offset_seconds())["camera_left"] = 10.000001;
+  EXPECT_THROW(AcousticOpticBuffer(TestBufferConfig(), rig), std::invalid_argument);
+}

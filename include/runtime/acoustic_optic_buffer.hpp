@@ -21,6 +21,11 @@ struct OnlineAcousticOpticBundle {
 struct AcousticOpticBufferDiagnostics {
   // All counters and corrected-delta statistics describe the active
   // calibration epoch, except calibration_reset_count, which is lifetime.
+  // A synchronization candidate is one TryBundle pass with at least one
+  // sonar and one valid stereo edge. no_pair counts passes lacking a valid
+  // stereo edge or state bracket; over_window counts stereo/sonar timing
+  // misses. invalid_* and capacity/expiry counters count observations;
+  // integrity_rejection_count counts selected mismatched stereo pairs.
   uint64_t synchronization_candidate_count = 0;
   uint64_t accepted_count = 0;
   uint64_t no_pair_count = 0;
@@ -34,6 +39,8 @@ struct AcousticOpticBufferDiagnostics {
   std::size_t buffered_image_count = 0;
   std::size_t buffered_sonar_count = 0;
   std::size_t buffered_vehicle_state_count = 0;
+  // Percentiles and max cover the most recent 256 accepted bundles in the
+  // current calibration epoch.
   double corrected_delta_p50_s = 0.0;
   double corrected_delta_p95_s = 0.0;
   double corrected_delta_p99_s = 0.0;
@@ -45,10 +52,16 @@ struct AcousticOpticBufferDiagnostics {
 // interpolated at the stereo midpoint: orientation uses normalized shortest-
 // path quaternion slerp, angular velocity/depth are linear, and covariance
 // plus device-health fields are copied from the nearest bracketing state.
+// Offsets are bounded by kMaxAbsoluteSensorTimeOffsetSeconds and quantized to
+// canonical nanoseconds. A half-nanosecond stereo midpoint tie rounds toward
+// the earlier representable capture time.
 // Each Add call decides immediately against observations buffered at that
 // moment. Selection is deterministic for that current set; without an
 // explicit watermark/end-of-batch API it cannot account for unknowable
 // observations that may arrive in the future.
+// Online v1 requires exactly two cameras, one enabled sonar, and one vehicle
+// state source. Camera-only rigs may omit state; every rig with an enabled
+// sonar must declare exactly one state source at configuration load.
 class AcousticOpticBuffer {
  public:
   AcousticOpticBuffer(AcousticOpticBufferConfig config,
