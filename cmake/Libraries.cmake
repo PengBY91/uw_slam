@@ -133,6 +133,7 @@ uw_apply_library_defaults(evaluation)
 add_library(adapters STATIC
   src/adapters/svin_bridge_local_odometry_provider.cpp
   src/adapters/holoocean_ros_bridge_sonar_frame_provider.cpp
+  src/adapters/holoocean_live_conversion.cpp
 )
 add_library(uw::adapters ALIAS adapters)
 target_include_directories(adapters PUBLIC "${PROJECT_SOURCE_DIR}/include")
@@ -167,6 +168,7 @@ add_library(application STATIC
   src/application/replay_input_accumulator.cpp
   src/application/online_assist_pipeline.cpp
   src/application/latest_assist_sink.cpp
+  src/application/holoocean_realtime_sink.cpp
 )
 add_library(uw::application ALIAS application)
 target_include_directories(application PUBLIC "${PROJECT_SOURCE_DIR}/include")
@@ -192,6 +194,8 @@ if(UW_BUILD_ROS2)
   add_library(uw::ros2_adapters ALIAS ros2_adapters)
   target_include_directories(ros2_adapters INTERFACE adapters/ros2/include)
   target_link_libraries(ros2_adapters INTERFACE
-    uw::adapters rclcpp::rclcpp ${nav_msgs_TARGETS} ${holoocean_interfaces_TARGETS}
+    uw::adapters rclcpp::rclcpp
+    ${nav_msgs_TARGETS} ${sensor_msgs_TARGETS} ${std_msgs_TARGETS} ${rosgraph_msgs_TARGETS}
+    ${holoocean_interfaces_TARGETS}
   )
 endif()

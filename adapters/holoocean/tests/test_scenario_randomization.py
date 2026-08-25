@@ -4,6 +4,7 @@ from uw_holoocean_adapter.scenario_randomization import (
     PRESET_CLEAR,
     PRESET_CRITICAL_DEGRADED,
     ScenarioRandomization,
+    sample_run_randomization,
     sample_uniform_sweep,
 )
 
@@ -32,3 +33,10 @@ def test_sampled_values_stay_within_bounds():
 
 def test_default_scenario_randomization_is_clear_preset_equivalent():
     assert ScenarioRandomization() == PRESET_CLEAR
+
+
+def test_same_seed_samples_same_layout_noise_and_faults():
+    a = sample_run_randomization(42, PRESET_CLEAR, PRESET_CRITICAL_DEGRADED)
+    b = sample_run_randomization(42, PRESET_CLEAR, PRESET_CRITICAL_DEGRADED)
+    assert a == b
+    assert sample_run_randomization(43, PRESET_CLEAR, PRESET_CRITICAL_DEGRADED) != a

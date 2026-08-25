@@ -1,0 +1,20 @@
+# Overload profile: 1.25x nominal image payload, sonar 20 Hz, state 100 Hz,
+# with faults, for 1800s (30 min). Consumed by
+# `python -m uw_holoocean_adapter.realtime_gate --profile <this file>`
+# (Task 6) -- see rov_realtime_minimum.yaml's header comment for the
+# directory-collision note (this is NOT a C++-side experiment config).
+profile: overload
+duration_s: 1800.0
+camera:
+  hz: 20.0
+  width: 1280
+  height: 720
+  payload_scale: 1.25
+sonar_hz: 20.0
+state_hz: 100.0
+faults_enabled: true
+disturbance_matrix_enabled: false
+fault_profile: overload
+soak: false
+min_output_hz: 10.0
+gate: overload

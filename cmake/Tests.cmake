@@ -107,6 +107,7 @@ uw_register_gtest(evaluation_tests "unit.evaluation" "unit;evaluation")
 add_executable(adapters_tests
   tests/adapters/svin_bridge_test.cpp
   tests/adapters/holoocean_ros_bridge_sonar_frame_provider_test.cpp
+  tests/adapters/holoocean_live_conversion_test.cpp
   tests/adapters/opencv_stereo_rectifier_test.cpp
   tests/adapters/opencv_visual_assist_frontend_test.cpp
   tests/adapters/operator_overlay_renderer_test.cpp
@@ -219,6 +220,25 @@ add_test(
   COMMAND ${Python3_EXECUTABLE} tools/lint/check_layer_dependencies.py .
 )
 set_tests_properties(lint.layer_dependencies PROPERTIES
+  WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+  LABELS "lint"
+)
+
+add_test(
+  NAME lint.realtime_traceability_unit
+  COMMAND ${Python3_EXECUTABLE} tests/tools/test_realtime_traceability.py -v
+)
+set_tests_properties(lint.realtime_traceability_unit PROPERTIES
+  WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+  LABELS "lint"
+)
+
+add_test(
+  NAME lint.realtime_traceability
+  COMMAND ${Python3_EXECUTABLE} tools/lint/check_realtime_traceability.py
+          docs/traceability/rov-realtime-closed-loop.csv .
+)
+set_tests_properties(lint.realtime_traceability PROPERTIES
   WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
   LABELS "lint"
 )

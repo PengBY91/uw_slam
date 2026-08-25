@@ -1,0 +1,93 @@
+{
+  "name": "uw_bluerov_aid_sv1213_v1",
+  "package_name": "Ocean",
+  "world": "PierHarbor",
+  "main_agent": "auv0",
+  "ticks_per_sec": 100,
+  "frames_per_sec": 20,
+  "uw_metadata": {
+    "manifest_version": 1,
+    "vehicle_variant": "BlueROV2 Heavy nominal HoloOcean model",
+    "thruster_count": 8,
+    "dynamics_calibration_status": "nominal_not_pool_calibrated",
+    "pilot_command_model": {"limit": 100.0, "deadzone": 5.0, "time_constant_s": 0.15},
+    "sonar_model": {"operating_frequency_hz": 1200000.0, "calibration_status": "nominal_not_sv1213_calibrated"}
+  },
+  "algorithm_topics": [
+    "/holoocean/auv0/LeftCamera",
+    "/holoocean/auv0/RightCamera",
+    "/holoocean/auv0/ImagingSonar",
+    "/holoocean/auv0/VehicleState"
+  ],
+  "agents": [
+    {
+      "agent_name": "auv0",
+      "agent_type": "BlueROV2",
+      "control_scheme": 0,
+      "location": [0.0, 0.0, -3.0],
+      "rotation": [0.0, 0.0, 0.0],
+      "sensors": [
+        {
+          "sensor_type": "RGBCamera",
+          "sensor_name": "LeftCamera",
+          "socket": "CameraSocket",
+          "location": [0.20, -0.06, 0.0],
+          "Hz": 20,
+          "configuration": {"CaptureWidth": 1280, "CaptureHeight": 720, "FOVAngle": 90}
+        },
+        {
+          "sensor_type": "RGBCamera",
+          "sensor_name": "RightCamera",
+          "socket": "CameraSocket",
+          "location": [0.20, 0.06, 0.0],
+          "Hz": 20,
+          "configuration": {"CaptureWidth": 1280, "CaptureHeight": 720, "FOVAngle": 90}
+        },
+        {
+          "sensor_type": "RGBCamera",
+          "sensor_name": "PilotCamera",
+          "socket": "CameraSocket",
+          "location": [0.18, 0.0, 0.02],
+          "Hz": 20,
+          "configuration": {"CaptureWidth": 1280, "CaptureHeight": 720, "FOVAngle": 100}
+        },
+        {
+          "sensor_type": "ImagingSonar",
+          "sensor_name": "ImagingSonar",
+          "socket": "CameraSocket",
+          "location": [0.25, 0.0, -0.05],
+          "Hz": 10,
+          "configuration": {
+            "Azimuth": 140,
+            "Elevation": 20,
+            "RangeMin": 0.30,
+            "RangeMax": 30.0,
+            "RangeBins": 512,
+            "AzimuthBins": 768,
+            "AddSigma": 0.01,
+            "MultSigma": 0.02,
+            "RangeSigma": 0.02,
+            "MultiPath": false,
+            "WaterSpeedSound": 1480
+          }
+        },
+        {"sensor_type": "OrientationSensor", "sensor_name": "VehicleOrientation", "socket": "COM", "Hz": 50},
+        {
+          "sensor_type": "IMUSensor",
+          "sensor_name": "IMUSensor",
+          "socket": "COM",
+          "Hz": 50,
+          "configuration": {"AccelSigma": [0.01, 0.01, 0.01], "AngVelSigma": [0.01, 0.01, 0.01]}
+        },
+        {
+          "sensor_type": "DepthSensor",
+          "sensor_name": "DepthSensor",
+          "socket": "COM",
+          "Hz": 50,
+          "configuration": {"Sigma": 0.03}
+        },
+        {"sensor_type": "PoseSensor", "sensor_name": "ScoringPose", "socket": "COM", "Hz": 10}
+      ]
+    }
+  ]
+}

@@ -130,6 +130,62 @@ extrinsics），偏轴角度在两侧不代表同一个物理方向，这个坑�
 （比 `configs/defaults/platform.yaml` 生产默认的 1.0s/0.5s 更紧），只是为了让演示/gate
 在较短的 `--duration-s` 内就能看到明显的降级转换，不代表生产该用这个值。
 
+### HoloOcean 实时闭环 gate（版本化 manifest、故障注入、truth-isolated 评分）
+
+跟上面两个 gate 的区别：这一整套（`docs/superpowers/plans/2026-08-24-holoocean-realtime-closed-loop.md`）
+把消费端换成真实的 HoloOcean 仿真器 + 本仓库自己的 C++ ROS2 网关（`holoocean_realtime_node`），而不是
+本机合成生成器——验证的是"版本化 BlueROV2/AI-D/SV1213 场景真的能通过 HoloOcean → ROS2 → 在线算法链跑
+出正确的目标航迹和任务评分"，不只是"消息按速率送达"。这套 gate 分三层，前两层能在本沙箱跑，第三层
+（真正驱动 HoloOcean）不能：
+
+**纯 Python 逻辑（`adapters/holoocean/.venv/bin/python -m pytest adapters/holoocean/tests`，166 个
+case）**：`scenario_manifest.py`（Task 1，版本化 manifest 校验，拒绝 `algorithm_topics` 里出现
+`/uw/sim/ground_truth`）、`holoocean_driver.py`/`scenario_randomization.py`（Task 2，确定性
+session/随机化）、`ros_message_conversion.py`/`pilot_command_model.py`/`scripted_pilot.py`/
+`realtime_ros_session.py`（Task 3，ROS2 发布 + 驾驶命令模型）、`fault_injector.py`/
+`sensor_perturbation.py`/`async_diagnostic_recorder.py`/`task_scorer.py`（Task 5，确定性网络故障 +
+truth-isolated 评分——`TaskScorer` 是全系统唯一允许消费真值的地方）、`run_report.py`（Task 6，
+`evaluate_gate()` + minimum/nominal/disturbed/overload 四档门限，350/150、250/100、500/200 ms 三组
+fusion/state age 边界都单独测过）。
+
+**C++ 部分组件（`ctest --test-dir build -R HoloOceanLiveConversion`）**：
+`include/adapters/holoocean_live_conversion.hpp` 的 `ConvertHoloImage`/`ConvertHoloSonar` 组装
+`ObservationHeader`（`sequence_id`/`calibration_version`/`receive_clock_domain`）不需要真实 ROS2；真正
+订阅话题、驱动 `LiveEventSource → PumpEvents → OnlineAssistPipeline → OperatorOverlayRenderer` 的
+`holoocean_realtime_node`（`adapters/ros2/src/holoocean_realtime_node.cpp` + 依赖反转的
+`include/adapters/holoocean_realtime_sink.hpp`，把 `application`/`runtime` 层的东西挡在
+`adapters/ros2/` 之外，满足 `tools/lint/check_layer_dependencies.py` 的 `ros2` 角色白名单）已经在本机
+真实 ROS2 Jazzy 环境下编译、链接成功（`cmake -S . -B build_ros2 -DUW_BUILD_ROS2=ON && cmake --build
+build_ros2 --target holoocean_realtime_node`），但没有真实 `holoocean_main` 进程喂话题——跟
+`adapters/ros2/README.md` 记录的 `holoocean_sonar_bridge_node` 状态完全一致。
+
+**追溯性（`python3 -m pytest tests/tools/test_realtime_traceability.py` +
+`python3 tools/lint/check_realtime_traceability.py docs/traceability/rov-realtime-closed-loop.csv`）**：
+`docs/traceability/rov-realtime-closed-loop.csv` 覆盖三份规格文档
+（`docs/specifications/{rov-competition-online-system-requirements,rov-acoustic-optic-online-fusion-spec,
+holoocean-realtime-closed-loop-simulation-spec}.md`）里全部 125 条 `SYS-*`/`FUS-*`/`SIM-*` 需求，硬件
+`SYS-PROC-*` 和池测数据 `SIM-S2R-001` 强制标 `gated`（lint 脚本会拒绝把它们标成别的状态）；lint 脚本本身
+也检查真实文件缺行、状态枚举值、`verified` 行的证据文件是否存在。
+
+**只能在原生主机跑（这台机器没有 GPU/Unreal Engine 二进制，跟 Tasks 1-3 的 HoloOcean 现状完全一致）**：
+```bash
+python -m uw_holoocean_adapter.realtime_gate --profile configs/experiment/rov_realtime_minimum.yaml \
+  --task adapters/holoocean/scenarios/aquaculture_search.yaml --seed 42
+python -m uw_holoocean_adapter.realtime_gate --profile configs/experiment/rov_realtime_nominal.yaml \
+  --task adapters/holoocean/scenarios/aquaculture_search.yaml --seeds 40 41 42 43 44 45 46 47 48 49
+python -m uw_holoocean_adapter.realtime_gate --profile configs/experiment/rov_realtime_nominal.yaml \
+  --task adapters/holoocean/scenarios/structure_inspection.yaml --seed 42 --soak-duration-s 7200
+python -m uw_holoocean_adapter.realtime_gate --profile configs/experiment/rov_realtime_disturbed.yaml \
+  --task adapters/holoocean/scenarios/aquaculture_search.yaml --seeds 50 51 52 53 54 55 56 57 58 59
+python -m uw_holoocean_adapter.realtime_gate --profile configs/experiment/rov_realtime_overload.yaml \
+  --task adapters/holoocean/scenarios/structure_inspection.yaml --seed 42
+```
+`realtime_gate.py` 的进程编排/参数校验/fail-closed 路径（缺 manifest、缺 gateway 二进制）已经在本沙箱验证
+过（不需要真实 HoloOcean 就能触发这些失败路径），但四进程真正跑起来（HoloOcean session + C++ 网关 +
+scripted pilot + scorer）需要真实主机——`ScriptedPilot`/`TaskScorer` 目前作为 `multiprocessing.Process`
+跑在 `realtime_gate.py` 自己进程里（没有独立 CLI，见 `adapters/holoocean/README.md`），不是通过 ROS2 话题
+真正驱动，这是本次实现的已知边界，不是没测对。
+
 ### 手动跑端到端 Demo
 
 ```bash
@@ -198,6 +254,12 @@ ATE RMSE `0.5596 m`，求解器 30 次迭代后 `stalled`；因为该 bag 没有
   喂话题，也没有接到 `SonarFrontend::ProcessSonarFrame`，所以"跑起来看到声呐数据被
   处理"这件事目前做不到——这是[架构文档](./acoustic-optic-slam-platform-architecture-2026-08-17.md)
   记录的已知边界，不是没测对。
+- **HoloOcean 实时闭环的 minimum/nominal/disturbed/overload 四档 native gate**（`realtime_gate.py`
+  的 `--profile configs/experiment/rov_realtime_*.yaml` 系列命令，见上面"HoloOcean 实时闭环 gate"一节）：
+  同样受限于本机没有 GPU/Unreal Engine——`realtime_gate.py` 自己的编排/校验/fail-closed 逻辑已验证，
+  但四进程真正跑起来产生 RTF/数据年龄/资源占用等真实数字，以及 10-seed 任务成功率统计，都要留给原生
+  主机；`ScriptedPilot`/`TaskScorer` 目前是 `realtime_gate.py` 内部的 `multiprocessing.Process`，
+  没有独立走 ROS2 话题（`/uw/hmi/status`/`/uw/pilot/thrusters`）驱动，是本次实现的已知边界。
 
 ## 环境速查
 

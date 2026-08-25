@@ -1,0 +1,20 @@
+# Nominal profile: 20/10/50 Hz. Ten-seed task scoring uses each task
+# manifest's own max_duration_s; a separate nominal soak overrides
+# duration_s to 7200s via `realtime_gate --soak-duration-s 7200`. Consumed
+# by `python -m uw_holoocean_adapter.realtime_gate --profile <this file>`
+# (Task 6) -- see rov_realtime_minimum.yaml's header comment for the
+# directory-collision note (this is NOT a C++-side experiment config).
+profile: nominal
+duration_s: null  # defaults to the task manifest's max_duration_s unless --soak-duration-s overrides it
+camera:
+  hz: 20.0
+  width: 1280
+  height: 720
+  payload_scale: 1.0
+sonar_hz: 10.0
+state_hz: 50.0
+faults_enabled: false
+disturbance_matrix_enabled: false
+soak: false
+min_output_hz: 10.0
+gate: nominal
