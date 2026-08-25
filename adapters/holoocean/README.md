@@ -8,9 +8,10 @@ readable by `replay_demo` without translation.
 
 ## What's real vs. not tested here
 
-This machine has no HoloOcean/Unreal install, so `holoocean_driver.py`'s `HoloOceanSession` (the part
-that actually calls into HoloOcean) is written but not exercised. Everything else IS tested (`pytest`,
-71/71 passing as of this writing):
+This machine has no HoloOcean/Unreal install and no rclpy/ROS2 install, so `holoocean_driver.py`'s
+`HoloOceanSession` and `realtime_ros_session.py`'s `RealtimeRosSession`/`main()` (the parts that actually
+call into HoloOcean/rclpy) are written but not exercised — same status, same reason. Everything else IS
+tested (`pytest`, 111/111 passing as of this writing):
 
 - `coordinates.py` — UE↔body coordinate transforms, quaternion-based (fixes the Euler gimbal-lock
   branch found in `ocean_t`'s `CoordTransformer._SE3_to_pose`).
@@ -36,6 +37,22 @@ that actually calls into HoloOcean) is written but not exercised. Everything els
   (`uw_metadata`, `algorithm_topics`) live alongside HoloOcean's own scenario fields in the same JSON file
   and are stripped by `RealtimeScenarioManifest.holoocean_scenario_cfg()` before the dict is safe to pass
   to `holoocean.make(scenario_cfg=...)`.
+- `pilot_command_model.py` — `PilotCommandModel` shapes raw thruster commands (deadzone, saturation to
+  `ActuatorModelSpec.limit`, first-order lag toward the target at `time_constant_s`) for both the realtime
+  ROS gateway's `/uw/pilot/thrusters` handling and `scripted_pilot.py`.
+- `ros_message_conversion.py` — portable (no rclpy import) conversion of raw HoloOcean sensor readings
+  into `sensor_msgs/Image`, `holoocean_interfaces/msg/ImagingSonar`, `nav_msgs/Odometry`
+  (`VehicleState`, built only from `VehicleOrientation`+`IMUSensor`+`DepthSensor` — never the ground-truth
+  `PoseSensor`) and `rosgraph_msgs/Clock` message shapes, plus `build_topic_map()` — the one place that
+  defines every realtime closed-loop topic name and which four are `algorithm_inputs` (never
+  `PilotCamera`, `/clock`, or the truth topic).
+- `scripted_pilot.py` — `ScriptedPilot` is a bounded simulation-test driver (not production autonomy):
+  subscribes only `/uw/hmi/status`, commands all-zero thrust when guidance is invalid or stale (>500ms),
+  and runs a conservative sonar-only search mode when the active track's source is `SONAR` (visual loss).
+- `realtime_ros_session.py` — `build_realtime_messages()` is the portable core (given one already-obtained
+  `RawSensorFrame`, decides which topics need a new message this tick, same independent-per-sensor-rate
+  logic as `record_session.py`); `RealtimeRosSession`/`main()` wrap it with a real `HoloOceanSession` +
+  rclpy node (lazy-imported, untested here — see above).
 
 ## Setup
 
