@@ -31,6 +31,15 @@ class VisualDegradation:
     backscatter_gain: float = 0.0
     illumination_scale: float = 1.0
     exposure_ev: float = 0.0
+    # Task 5 additions (fault_injector.py/sensor_perturbation.py) — kept as
+    # plain floats with numeric (never None) defaults so
+    # sample_uniform_sweep's recursive `sorted((low, high))` field sampler
+    # below keeps working: a None-sentinel field would make that sort raise
+    # (`'<' not supported between instances of 'NoneType' and 'NoneType'`).
+    motion_blur_px: float = 0.0
+    particle_density: float = 0.0  # 0 = none, 1 = maximum modeled particulate matter
+    local_overexposure_probability: float = 0.0
+    stereo_exposure_mismatch_ev: float = 0.0  # extra exposure bias applied to the right camera only
 
 
 @dataclasses.dataclass(frozen=True)
@@ -40,6 +49,11 @@ class SonarDegradation:
     beam_fov_perturbation_rad: float = 0.0
     gain_db: float = 0.0
     sound_speed_scale: float = 1.0  # multiplies the nominal speed of sound
+    # Task 5 additions — see VisualDegradation's comment on why these stay
+    # plain floats/never None.
+    blind_zone_m: float = 0.0  # near-range band forced to zero intensity
+    false_echo_rate: float = 0.0  # probability per beam of a synthetic sidelobe/false echo
+    range_scale_bias: float = 1.0  # multiplicative bias on the reported range axis, 1.0 = none
 
 
 @dataclasses.dataclass(frozen=True)
@@ -50,6 +64,14 @@ class TimingAndCalibrationDegradation:
     packet_loss_probability: float = 0.0
     latency_jitter_s: float = 0.0
     camera_sonar_desync_s: float = 0.0  # additional desync beyond time_offset_s
+    # Task 5 additions (fault_injector.py's per-topic TopicFaultConfig is
+    # the actual runtime mechanism these numbers parameterize) — see
+    # VisualDegradation's comment on why these stay plain floats/never None.
+    duplicate_probability: float = 0.0
+    reorder_probability: float = 0.0
+    reorder_max_distance: float = 3.0
+    outage_probability_per_s: float = 0.0
+    outage_duration_s: float = 0.0
 
 
 @dataclasses.dataclass(frozen=True)

@@ -11,17 +11,34 @@ real ROS2 node class at the bottom is a thin wrapper only reachable through
 `main()`, with `rclpy` imported lazily inside it (same pattern as
 `holoocean_driver.py`'s `_import_holoocean()`), since this machine has
 neither rclpy nor a HoloOcean install.
+
+Task 5 additions: `build_realtime_messages` optionally perturbs camera/sonar
+arrays (`sensor_perturbation.py`) before conversion and/or runs the
+resulting (topic, message) pairs through a `FaultInjector`
+(`fault_injector.py`) — both default to `None`/no-op, so every call site
+that predates Task 5 (including this module's own 33 pre-existing tests)
+keeps its exact original behavior. `RealtimeRosSession` similarly grows
+optional `randomization`/`fault_injector`/`thruster_fault` constructor
+parameters, all defaulted to today's no-fault behavior. Ocean-current fault
+delivery is NOT wired here despite the plan text mentioning
+`set_ocean_currents` under this task — `HoloOceanSession.apply_randomization()`
+(Task 2) is the one sanctioned way to reach it, but `ScenarioRandomization`
+has no current-velocity field to update, and adding one is a Task 2 file
+change out of this task's scope; left as a documented gap rather than
+reaching into `HoloOceanSession`'s private `_env` to bypass it.
 """
 from __future__ import annotations
 
 import argparse
-from typing import Any, List, Tuple
+from typing import Any, List, Optional, Tuple
 
 import numpy as np
 
+from uw_holoocean_adapter.fault_injector import FaultInjector, ThrusterFaultConfig, apply_thruster_fault
 from uw_holoocean_adapter.holoocean_driver import HoloOceanSession, RawSensorFrame
 from uw_holoocean_adapter.pilot_command_model import PilotCommandModel
-from uw_holoocean_adapter.scenario_randomization import ScenarioRandomization
+from uw_holoocean_adapter.scenario_randomization import ScenarioRandomization, SonarDegradation, VisualDegradation
+from uw_holoocean_adapter.sensor_perturbation import perturb_sonar, perturb_stereo_pair
 from uw_holoocean_adapter.ros_message_conversion import (
     RosMessageTypes,
     StateNoise,
@@ -54,6 +71,12 @@ def build_realtime_messages(
     *,
     state_noise: StateNoise = _DEFAULT_STATE_NOISE,
     rng: np.random.Generator,
+    visual_degradation: Optional[VisualDegradation] = None,
+    sonar_degradation: Optional[SonarDegradation] = None,
+    perturbation_rng: Optional[np.random.Generator] = None,
+    sonar_min_range_m: Optional[float] = None,
+    sonar_max_range_m: Optional[float] = None,
+    fault_injector: Optional[FaultInjector] = None,
 ) -> List[Tuple[str, Any]]:
     """Converts one HoloOcean tick's `RawSensorFrame` into the (topic,
     message) pairs that tick should publish. Only builds a message for a
@@ -64,25 +87,48 @@ def build_realtime_messages(
     where only the 50 Hz state sensors fired yields no camera/sonar
     messages, and vice versa. `/clock` is published every tick
     unconditionally (it tracks simulation time itself, not any one
-    sensor)."""
+    sensor).
+
+    `visual_degradation`/`sonar_degradation` (Task 5's `sensor_perturbation.py`)
+    and `fault_injector` (Task 5's `fault_injector.py`) are all optional and
+    default to `None` — omitting them reproduces this function's exact
+    pre-Task-5 behavior. Supplying `visual_degradation`/`sonar_degradation`
+    without a `perturbation_rng` (or supplying `sonar_degradation` without
+    both range bounds) is a caller error, not a silent no-op — raises
+    `ValueError`, since a perturbation config the caller explicitly asked
+    for silently not being applied would be worse than failing loudly."""
+    if visual_degradation is not None and perturbation_rng is None:
+        raise ValueError("visual_degradation requires perturbation_rng")
+    if sonar_degradation is not None and (
+        perturbation_rng is None or sonar_min_range_m is None or sonar_max_range_m is None
+    ):
+        raise ValueError("sonar_degradation requires perturbation_rng and sonar_min_range_m/sonar_max_range_m")
+
     sensors = frame.sensors
     messages: List[Tuple[str, Any]] = []
 
-    if _LEFT_CAMERA_KEY in sensors:
+    left_pixels = np.asarray(sensors[_LEFT_CAMERA_KEY]) if _LEFT_CAMERA_KEY in sensors else None
+    right_pixels = np.asarray(sensors[_RIGHT_CAMERA_KEY]) if _RIGHT_CAMERA_KEY in sensors else None
+    if visual_degradation is not None and left_pixels is not None and right_pixels is not None:
+        left_pixels, right_pixels, _active = perturb_stereo_pair(
+            perturbation_rng, visual_degradation, left_pixels, right_pixels
+        )
+
+    if left_pixels is not None:
         messages.append((
             topics.left_camera,
             holoocean_camera_to_ros_image(
-                np.asarray(sensors[_LEFT_CAMERA_KEY]),
+                left_pixels,
                 capture_time_s=frame.sim_time_s,
                 frame_id="camera_left_link",
                 message_types=message_types,
             ),
         ))
-    if _RIGHT_CAMERA_KEY in sensors:
+    if right_pixels is not None:
         messages.append((
             topics.right_camera,
             holoocean_camera_to_ros_image(
-                np.asarray(sensors[_RIGHT_CAMERA_KEY]),
+                right_pixels,
                 capture_time_s=frame.sim_time_s,
                 frame_id="camera_right_link",
                 message_types=message_types,
@@ -99,10 +145,16 @@ def build_realtime_messages(
             ),
         ))
     if _SONAR_KEY in sensors:
+        sonar_intensity = np.asarray(sensors[_SONAR_KEY])
+        if sonar_degradation is not None:
+            sonar_intensity, _active = perturb_sonar(
+                perturbation_rng, sonar_degradation, sonar_intensity,
+                min_range_m=sonar_min_range_m, max_range_m=sonar_max_range_m,
+            )
         messages.append((
             topics.imaging_sonar,
             holoocean_sonar_to_imaging_sonar_msg(
-                np.asarray(sensors[_SONAR_KEY]),
+                sonar_intensity,
                 capture_time_ns=int(frame.sim_time_s * 1e9),
                 message_types=message_types,
             ),
@@ -124,6 +176,10 @@ def build_realtime_messages(
         ))
 
     messages.append((topics.clock, sim_time_to_clock_msg(frame.sim_time_s, message_types)))
+
+    if fault_injector is not None:
+        messages = fault_injector.apply(frame.sim_time_s, messages)
+
     return messages
 
 
@@ -146,12 +202,23 @@ class RealtimeRosSession:
     command). `build_realtime_messages` above is the tested core this
     class simply drives."""
 
-    def __init__(self, manifest: RealtimeScenarioManifest, seed: int, rng: np.random.Generator):
+    def __init__(
+        self,
+        manifest: RealtimeScenarioManifest,
+        seed: int,
+        rng: np.random.Generator,
+        *,
+        randomization: Optional[ScenarioRandomization] = None,
+        fault_injector: Optional[FaultInjector] = None,
+        thruster_fault: Optional[ThrusterFaultConfig] = None,
+        perturbation_rng: Optional[np.random.Generator] = None,
+    ):
         self._manifest = manifest
         self._topics = build_topic_map(manifest.agent_name)
         self._rng = rng
         self._session = HoloOceanSession(
-            manifest.holoocean_scenario_cfg(), seed, randomization=ScenarioRandomization()
+            manifest.holoocean_scenario_cfg(), seed,
+            randomization=randomization if randomization is not None else ScenarioRandomization(),
         )
         for prop in manifest.task.props:
             self._session.spawn_prop(
@@ -166,6 +233,11 @@ class RealtimeRosSession:
         )
         self._dt_s = 1.0 / manifest.ticks_per_sec
         self._last_thruster_command = [0.0] * _THRUSTER_COUNT
+        self._fault_injector = fault_injector
+        self._thruster_fault = thruster_fault
+        self._perturbation_rng = perturbation_rng
+        self._sonar_min_range_m = manifest.sensor("ImagingSonar").configuration.get("RangeMin")
+        self._sonar_max_range_m = manifest.sensor("ImagingSonar").configuration.get("RangeMax")
 
     def on_thruster_command(self, values) -> None:
         """Callback for the `/uw/pilot/thrusters` subscription. Never
@@ -175,13 +247,44 @@ class RealtimeRosSession:
         if validated is not None:
             self._last_thruster_command = validated
 
-    def tick(self, message_types: RosMessageTypes) -> List[Tuple[str, Any]]:
+    def tick(
+        self,
+        message_types: RosMessageTypes,
+        *,
+        visual_degradation: Optional[VisualDegradation] = None,
+        sonar_degradation: Optional[SonarDegradation] = None,
+    ) -> List[Tuple[str, Any]]:
         shaped_command = self._pilot_command_model.step(self._last_thruster_command, self._dt_s)
+        shaped_command = apply_thruster_fault(shaped_command, self._thruster_fault)
         frame = self._session.step(shaped_command)
-        return build_realtime_messages(frame, self._topics, message_types, rng=self._rng)
+        return build_realtime_messages(
+            frame, self._topics, message_types, rng=self._rng,
+            visual_degradation=visual_degradation,
+            sonar_degradation=sonar_degradation,
+            perturbation_rng=self._perturbation_rng,
+            sonar_min_range_m=self._sonar_min_range_m,
+            sonar_max_range_m=self._sonar_max_range_m,
+            fault_injector=self._fault_injector,
+        )
 
     def close(self) -> None:
         self._session.close()
+
+
+def _build_critical_fault_profile(topics: TopicMap) -> "FaultInjectionProfile":
+    from uw_holoocean_adapter.fault_injector import FaultInjectionProfile, TopicFaultConfig
+
+    return FaultInjectionProfile(
+        per_topic={
+            topic: TopicFaultConfig(
+                clock_offset_s=0.01, jitter_sigma_s=0.005, drop_probability=0.05,
+                duplicate_probability=0.02, reorder_probability=0.03, reorder_max_distance=2,
+                outage_count=1, outage_duration_s=2.0,
+            )
+            for topic in topics.algorithm_inputs
+        },
+        check_interval_s=1.0,
+    )
 
 
 def main() -> None:
@@ -195,6 +298,16 @@ def main() -> None:
     # control script may publish this topic for unattended gates, while a
     # pilot station can publish the same topic for interactive runs." This
     # module has no --pilot flag because it never runs one itself.
+    #
+    # All flags below are additive Task 5 options, every one defaulted to
+    # today's no-fault/no-perturbation behavior.
+    parser.add_argument("--fault-profile", choices=("none", "critical"), default="none")
+    parser.add_argument("--fault-seed", type=int, default=None)
+    parser.add_argument("--fault-duration-s", type=float, default=None)
+    parser.add_argument("--visual-degradation", choices=("clear", "critical"), default="clear")
+    parser.add_argument("--sonar-degradation", choices=("clear", "critical"), default="clear")
+    parser.add_argument("--thruster-fault-index", type=int, default=None)
+    parser.add_argument("--thruster-fault-effectiveness", type=float, default=1.0)
     args = parser.parse_args()
 
     import rclpy  # noqa: E402  (lazy: no rclpy install outside a sourced ROS2 distro)
@@ -206,14 +319,39 @@ def main() -> None:
     from std_msgs.msg import Float32MultiArray  # noqa: E402
     from holoocean_interfaces.msg import ImagingSonar  # noqa: E402
 
+    from uw_holoocean_adapter.fault_injector import build_fault_schedule
+    from uw_holoocean_adapter.scenario_randomization import PRESET_CRITICAL_DEGRADED
+
     manifest = load_realtime_manifest(args.scenario, args.task)
     rng = np.random.default_rng(args.seed)
-    session = RealtimeRosSession(manifest, args.seed, rng)
+    perturbation_rng = np.random.default_rng(args.seed + 1)
+    topics = build_topic_map(manifest.agent_name)
+
+    injector: Optional[FaultInjector] = None
+    if args.fault_profile == "critical":
+        fault_seed = args.fault_seed if args.fault_seed is not None else args.seed
+        duration_s = args.fault_duration_s if args.fault_duration_s is not None else manifest.task.max_duration_s
+        profile = _build_critical_fault_profile(topics)
+        schedule = build_fault_schedule(fault_seed, profile, duration_s)
+        injector = FaultInjector(schedule, profile, np.random.default_rng(fault_seed))
+
+    thruster_fault = None
+    if args.thruster_fault_index is not None:
+        thruster_fault = ThrusterFaultConfig(
+            thruster_index=args.thruster_fault_index,
+            effectiveness_multiplier=args.thruster_fault_effectiveness,
+        )
+
+    session = RealtimeRosSession(
+        manifest, args.seed, rng,
+        fault_injector=injector, thruster_fault=thruster_fault, perturbation_rng=perturbation_rng,
+    )
+    visual_degradation = PRESET_CRITICAL_DEGRADED.visual if args.visual_degradation == "critical" else None
+    sonar_degradation = PRESET_CRITICAL_DEGRADED.sonar if args.sonar_degradation == "critical" else None
     message_types = RosMessageTypes(Image=Image, Odometry=Odometry, ImagingSonar=ImagingSonar, Clock=Clock)
 
     rclpy.init()
     node = Node("uw_holoocean_realtime_gateway")
-    topics = build_topic_map(manifest.agent_name)
     publishers = {
         topic: node.create_publisher(getattr(message_types, attr), topic, qos_profile_sensor_data)
         for topic, attr in (
@@ -233,7 +371,9 @@ def main() -> None:
     try:
         rate = node.create_rate(manifest.ticks_per_sec)
         while rclpy.ok():
-            for topic, message in session.tick(message_types):
+            for topic, message in session.tick(
+                message_types, visual_degradation=visual_degradation, sonar_degradation=sonar_degradation
+            ):
                 publishers[topic].publish(message)
             rclpy.spin_once(node, timeout_sec=0.0)
             rate.sleep()
