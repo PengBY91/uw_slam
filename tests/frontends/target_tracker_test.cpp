@@ -162,6 +162,58 @@ TEST(TargetTracker, SonarOnlyBirthHasObservableRangeAndJosephPsdCovariance) {
             -1e-10);
 }
 
+TEST(TargetTracker, FirstCorrelatedRangeUsesFullTwoDimensionalJosephUpdate) {
+  uw::frontends::TargetTracker tracker(Params());
+  const auto visual = Measurement("visual-birth", 2.0, 0.20, std::nullopt);
+  ASSERT_TRUE(tracker.Update({visual}, 2.0));
+
+  auto fused = FusedMeasurement("visual-range", "sonar-range", 2.0,
+                                0.25, 7.0);
+  fused.covariance << 0.04, 0.018,
+                      0.018, 0.09;
+
+  Eigen::Vector4d expected_state;
+  expected_state << visual.bearing_rad, *fused.range_m, 0.0, 0.0;
+  Eigen::Matrix4d prior_covariance = Eigen::Matrix4d::Zero();
+  prior_covariance(0, 0) = visual.covariance(0, 0);
+  prior_covariance(1, 1) = 1.0e6;
+  prior_covariance(2, 2) = 1.0;
+  prior_covariance(3, 3) = 1.0e6;
+  Eigen::Matrix<double, 2, 4> observation =
+      Eigen::Matrix<double, 2, 4>::Zero();
+  observation(0, 0) = 1.0;
+  observation(1, 1) = 1.0;
+  const Eigen::Vector2d innovation(fused.bearing_rad - expected_state[0], 0.0);
+  const Eigen::Matrix2d innovation_covariance =
+      observation * prior_covariance * observation.transpose() +
+      fused.covariance;
+  const Eigen::Matrix<double, 4, 2> gain =
+      prior_covariance * observation.transpose() *
+      innovation_covariance.ldlt().solve(Eigen::Matrix2d::Identity());
+  expected_state += gain * innovation;
+  const Eigen::Matrix4d residual = Eigen::Matrix4d::Identity() -
+                                   gain * observation;
+  Eigen::Matrix4d expected_covariance =
+      residual * prior_covariance * residual.transpose() +
+      gain * fused.covariance * gain.transpose();
+  expected_covariance =
+      0.5 * (expected_covariance + expected_covariance.transpose());
+
+  ASSERT_TRUE(tracker.Update({fused}, 2.0));
+  const auto tracks = tracker.Tracks(2.0);
+  ASSERT_EQ(tracks.size(), 1u);
+  const auto& track = tracks[0];
+  EXPECT_TRUE(track.range_observable);
+  EXPECT_TRUE(track.state.isApprox(expected_state, 1e-10));
+  EXPECT_TRUE(track.covariance.isApprox(expected_covariance, 1e-10));
+  EXPECT_NEAR(track.covariance(0, 1), expected_covariance(0, 1), 1e-12);
+  EXPECT_GT(std::abs(track.covariance(0, 1)), 1e-8);
+  EXPECT_TRUE(track.covariance.isApprox(track.covariance.transpose(), 1e-12));
+  EXPECT_GE(Eigen::SelfAdjointEigenSolver<Eigen::Matrix4d>(track.covariance)
+                .eigenvalues().minCoeff(),
+            -1e-10);
+}
+
 TEST(TargetTracker, RejectsInvalidSourceRangeAndProvenanceBatchAtomically) {
   uw::frontends::TargetTracker tracker(Params());
   ASSERT_TRUE(tracker.Update(
@@ -239,6 +291,37 @@ TEST(TargetTracker, EmptyBatchPredictionPreservesCorrectedCaptureTimeDomain) {
   EXPECT_TRUE(disappeared[0].state.isApprox(direct[0].state, 1e-10));
   EXPECT_TRUE(
       disappeared[0].covariance.isApprox(direct[0].covariance, 1e-10));
+}
+
+TEST(TargetTracker, RejectsCaptureBehindCommittedStateHorizonAtomicallyAndRecovers) {
+  uw::frontends::TargetTracker tracker(Params());
+  ASSERT_TRUE(tracker.Update(
+      {Measurement("seed", 9.8, 0.0, 5.0)}, 10.0));
+  ASSERT_TRUE(tracker.Update({}, 10.1));
+  const auto before = tracker.Tracks(10.1);
+  ASSERT_EQ(before.size(), 1u);
+
+  const auto late = Measurement("reusable", 9.85, 0.01, 5.0);
+  EXPECT_FALSE(tracker.Update({late}, 10.2));
+  const auto unchanged = tracker.Tracks(10.1);
+  ASSERT_EQ(unchanged.size(), 1u);
+  EXPECT_TRUE(unchanged[0].state.isApprox(before[0].state, 1e-12));
+  EXPECT_TRUE(unchanged[0].covariance.isApprox(before[0].covariance, 1e-12));
+  EXPECT_EQ(unchanged[0].status, before[0].status);
+  ASSERT_EQ(unchanged[0].observation_ids.size(),
+            before[0].observation_ids.size());
+  EXPECT_EQ(unchanged[0].observation_ids[0].value(),
+            before[0].observation_ids[0].value());
+
+  // Reusing the rejected observation ID and the earlier processing time proves
+  // neither provenance nor the processing watermark advanced on rejection.
+  EXPECT_TRUE(tracker.Update(
+      {Measurement("reusable", 9.9, 0.01, 5.0)}, 10.1));
+  const auto recovered = tracker.Tracks(10.1);
+  ASSERT_EQ(recovered.size(), 1u);
+  EXPECT_EQ(recovered[0].status,
+            uw::domain::TARGET_TRACK_STATUS_CONFIRMED);
+  EXPECT_DOUBLE_EQ(recovered[0].last_capture_time_s, 9.9);
 }
 
 TEST(TargetTracker, ThreeMissesDegradeAndLaterQueryStalesWithoutAnotherUpdate) {

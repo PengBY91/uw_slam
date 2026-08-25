@@ -479,6 +479,15 @@ AssociationDiagnostic SingleSourceDecision(const Projected& projected,
   return diagnostic;
 }
 
+TargetMeasurement BearingOnlyVisualMeasurement(const Projected& projected) {
+  TargetMeasurement measurement = projected.measurement;
+  const double bearing_variance = measurement.covariance(0, 0);
+  measurement.range_m.reset();
+  measurement.covariance.setZero();
+  measurement.covariance(0, 0) = bearing_variance;
+  return measurement;
+}
+
 bool DiagnosticLess(const AssociationDiagnostic& lhs,
                     const AssociationDiagnostic& rhs) {
   // Modality is an explicit primary key: visual boundary failures first,
@@ -761,7 +770,8 @@ TargetAssociationResult TargetAssociator::Associate(
   for (const auto& pair : pairs) result.diagnostics.push_back(pair.diagnostic);
   for (std::size_t i = 0; i < projected_visual.size(); ++i) {
     if (!used_visual[i]) {
-      result.measurements.push_back(projected_visual[i].measurement);
+      result.measurements.push_back(
+          BearingOnlyVisualMeasurement(projected_visual[i]));
       result.diagnostics.push_back(
           SingleSourceDecision(projected_visual[i], true));
     }

@@ -19,6 +19,7 @@ constexpr double kTwoPi = 2.0 * kPi;
 constexpr double kMinVariance = 1e-12;
 constexpr double kMaxMeasurementVariance = 1e12;
 constexpr double kMaxTargetRangeM = 1e6;
+constexpr double kUnobservedRangeVariance = 1e6;
 
 bool ValidStampSeconds(double seconds) {
   return std::isfinite(seconds) && seconds >= 0.0 &&
@@ -316,15 +317,17 @@ template <typename TrackT>
 void UpdateTrack(TrackT* track, const TargetMeasurement& measurement,
                  const TargetTrackerParams& params) {
   if (measurement.range_m && !track->target.range_observable) {
-    // Range becomes observable at this instant. Initialize from the first
-    // physical range measurement, then use the bearing Joseph update; later
-    // range observations use the full 2D Joseph update.
+    // Center the previously unobservable range state on the first physical
+    // measurement, but retain a high-uncertainty prior so the full correlated
+    // bearing/range measurement covariance participates in the Joseph update.
     track->target.state[1] = *measurement.range_m;
     track->target.state[3] = 0.0;
-    track->target.covariance(1, 1) = measurement.covariance(1, 1);
-    track->target.covariance(3, 3) = std::max(1.0, measurement.covariance(1, 1));
+    track->target.covariance(1, 1) = std::max(
+        track->target.covariance(1, 1), kUnobservedRangeVariance);
+    track->target.covariance(3, 3) = std::max(
+        track->target.covariance(3, 3), kUnobservedRangeVariance);
     track->target.range_observable = true;
-    JosephBearingUpdate(track, measurement);
+    JosephBearingRangeUpdate(track, measurement);
   } else if (measurement.range_m) {
     JosephBearingRangeUpdate(track, measurement);
   } else {
@@ -379,9 +382,19 @@ bool TargetTracker::Update(const std::vector<TargetMeasurement>& detections,
       (last_update_time_s_ && now_s < *last_update_time_s_ - 1e-9)) {
     return false;
   }
+  std::optional<double> committed_state_horizon_s;
+  for (const auto& track : tracks_) {
+    committed_state_horizon_s =
+        std::max(committed_state_horizon_s.value_or(track.state_time_s),
+                 track.state_time_s);
+  }
   std::set<std::string> batch_observation_ids;
   for (const auto& detection : detections) {
-    if (!ValidMeasurement(detection, now_s, last_capture_time_s_)) return false;
+    if (!ValidMeasurement(detection, now_s, last_capture_time_s_) ||
+        (committed_state_horizon_s &&
+         detection.corrected_time_s < *committed_state_horizon_s - 1e-9)) {
+      return false;
+    }
     for (const auto& observation : detection.observation_ids) {
       if (accepted_observation_ids_.count(observation.value()) != 0 ||
           !batch_observation_ids.insert(observation.value()).second) {
@@ -536,9 +549,11 @@ bool TargetTracker::Update(const std::vector<TargetMeasurement>& detections,
     track.target.covariance = Eigen::Matrix4d::Zero();
     track.target.covariance(0, 0) = detection.covariance(0, 0);
     track.target.covariance(1, 1) =
-        detection.range_m ? detection.covariance(1, 1) : 1e6;
+        detection.range_m ? detection.covariance(1, 1)
+                          : kUnobservedRangeVariance;
     track.target.covariance(2, 2) = 1.0;
-    track.target.covariance(3, 3) = detection.range_m ? 1.0 : 1e6;
+    track.target.covariance(3, 3) =
+        detection.range_m ? 1.0 : kUnobservedRangeVariance;
     if (detection.range_m) {
       track.target.covariance(0, 1) = detection.covariance(0, 1);
       track.target.covariance(1, 0) = detection.covariance(1, 0);

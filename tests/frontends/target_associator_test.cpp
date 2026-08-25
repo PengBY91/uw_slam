@@ -1,4 +1,5 @@
 #include "frontends/target_associator.hpp"
+#include "frontends/target_tracker.hpp"
 
 #include <cmath>
 #include <algorithm>
@@ -194,6 +195,38 @@ TEST(TargetAssociator, AppliesRigClockOffsetsAndKeepsUnmatchedSingleSensorMeasur
     EXPECT_NE(diagnostic.metric,
               uw::frontends::AssociationMetric::kUnspecified);
   }
+}
+
+TEST(TargetAssociator, UnmatchedVisualDepthBecomesBearingOnlyBeforeTrackerBoundary) {
+  const auto result = uw::frontends::TargetAssociator(Params()).Associate(
+      {Detection("visual-depth", uw::domain::ASSIST_SOURCE_VISUAL, 2.0,
+                 0.1, 6.0, "crate")},
+      {}, Rig());
+
+  ASSERT_EQ(result.measurements.size(), 1u);
+  const auto& measurement = result.measurements[0];
+  EXPECT_FALSE(measurement.range_m.has_value());
+  EXPECT_GT(measurement.covariance(0, 0), 0.0);
+  EXPECT_DOUBLE_EQ(measurement.covariance(0, 1), 0.0);
+  EXPECT_DOUBLE_EQ(measurement.covariance(1, 0), 0.0);
+  EXPECT_DOUBLE_EQ(measurement.covariance(1, 1), 0.0);
+  EXPECT_EQ(measurement.sources,
+            (std::vector<uw::domain::AssistSource>{
+                uw::domain::ASSIST_SOURCE_VISUAL}));
+  ASSERT_EQ(measurement.observation_ids.size(), 1u);
+  EXPECT_EQ(measurement.observation_ids[0].value(), "visual-depth");
+
+  ASSERT_EQ(result.diagnostics.size(), 1u);
+  EXPECT_TRUE(result.diagnostics[0].accepted);
+  EXPECT_TRUE(std::isfinite(result.diagnostics[0].value));
+  EXPECT_TRUE(std::isfinite(result.diagnostics[0].threshold));
+
+  uw::frontends::TargetTracker tracker;
+  ASSERT_TRUE(tracker.Update(result.measurements, 2.0));
+  const auto tracks = tracker.Tracks(2.0);
+  ASSERT_EQ(tracks.size(), 1u);
+  EXPECT_FALSE(tracks[0].range_observable);
+  EXPECT_DOUBLE_EQ(tracks[0].state[1], 0.0);
 }
 
 TEST(TargetAssociator, FailsClosedForInvalidCovarianceCalibrationAndFrame) {
