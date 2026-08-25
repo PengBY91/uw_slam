@@ -64,9 +64,21 @@ std::vector<uw::domain::TargetDetection> SonarTargetExtractor::Extract(
   std::vector<ExtractedDetection> extracted;
   extracted.reserve(static_cast<std::size_t>(hypotheses.candidates_size()));
 
+  const auto& source_header = source_frame.header();
+  constexpr int32_t kNanosPerSecond = 1'000'000'000;
+  if (source_header.observation_id().value().empty() || !source_header.has_capture_time() ||
+      source_header.capture_time().nanos() < 0 ||
+      source_header.capture_time().nanos() >= kNanosPerSecond) {
+    return {};
+  }
+
   for (int index = 0; index < hypotheses.candidates_size(); ++index) {
     const auto& evidence = hypotheses.candidates(index);
     if (!uw::domain::HasPayload<uw::domain::SonarRangeBearing>(evidence)) continue;
+    if (evidence.source_observations_size() != 1 ||
+        evidence.source_observations(0).value() != source_header.observation_id().value()) {
+      continue;
+    }
     const auto& measurement =
         uw::domain::GetPayload<uw::domain::SonarRangeBearing>(evidence);
     if (!std::isfinite(measurement.bearing_rad()) || !std::isfinite(measurement.range_m()) ||
@@ -82,12 +94,8 @@ std::vector<uw::domain::TargetDetection> SonarTargetExtractor::Extract(
     if (!std::isfinite(bearing_variance) || !std::isfinite(range_variance)) continue;
 
     uw::domain::TargetDetection detection;
-    if (evidence.source_observations_size() > 0) {
-      *detection.mutable_source_observation() = evidence.source_observations(0);
-    } else {
-      *detection.mutable_source_observation() = source_frame.header().observation_id();
-    }
-    *detection.mutable_capture_time() = source_frame.header().capture_time();
+    *detection.mutable_source_observation() = evidence.source_observations(0);
+    *detection.mutable_capture_time() = source_header.capture_time();
     detection.set_class_label("sonar_target");
     const double cfar_score = QualityMetricOr(evidence, "cfar_score", 0.0);
     detection.set_confidence(cfar_score > 0.0 ? cfar_score / (cfar_score + 1.0) : 0.0);
@@ -114,6 +122,11 @@ std::vector<uw::domain::TargetDetection> SonarTargetExtractor::Extract(
     }
     if (lhs.detection.range_m() != rhs.detection.range_m()) {
       return lhs.detection.range_m() < rhs.detection.range_m();
+    }
+    if (lhs.detection.source_observation().value() !=
+        rhs.detection.source_observation().value()) {
+      return lhs.detection.source_observation().value() <
+             rhs.detection.source_observation().value();
     }
     return lhs.canonical_evidence < rhs.canonical_evidence;
   });
