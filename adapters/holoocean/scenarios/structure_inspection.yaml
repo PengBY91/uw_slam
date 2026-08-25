@@ -11,25 +11,25 @@ props:
     prop_type: cylinder
     dimensions_m: [0.5, 0.5, 6.0]
     location_m: [10.0, 0.0, -5.0]
-    visual_material: biofouled_steel
+    visual_material: steel
     acoustic_reflectivity_class: strong
   - tag: pier_piling_02
     prop_type: cylinder
     dimensions_m: [0.5, 0.5, 6.0]
     location_m: [20.0, 0.0, -5.0]
-    visual_material: biofouled_steel
+    visual_material: steel
     acoustic_reflectivity_class: strong
   - tag: pier_piling_03
     prop_type: cylinder
     dimensions_m: [0.5, 0.5, 6.0]
     location_m: [30.0, 0.0, -5.0]
-    visual_material: biofouled_steel
+    visual_material: steel
     acoustic_reflectivity_class: strong
   - tag: pier_crossbeam
     prop_type: box
     dimensions_m: [22.0, 0.4, 0.4]
     location_m: [20.0, 0.0, -1.2]
-    visual_material: concrete_pile
+    visual_material: cobblestone
     acoustic_reflectivity_class: moderate
 
 target:
@@ -41,7 +41,7 @@ target:
     - [30.0, 0.0, -5.0]
   lateral_tolerance_m: 1.5
   visual_properties:
-    material: biofouled_steel
+    material: steel
     min_detectable_range_m: 6.0
   acoustic_properties:
     reflectivity_class: strong

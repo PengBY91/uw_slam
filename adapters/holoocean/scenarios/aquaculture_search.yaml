@@ -11,19 +11,19 @@ props:
     prop_type: cylinder
     dimensions_m: [1.2, 1.2, 2.0]
     location_m: [15.0, 6.0, -4.0]
-    visual_material: orange_buoy_marker
+    visual_material: grass
     acoustic_reflectivity_class: strong
   - tag: mooring_anchor_block
     prop_type: box
     dimensions_m: [0.8, 0.8, 0.6]
     location_m: [15.0, 6.5, -4.3]
-    visual_material: dark_metal
+    visual_material: steel
     acoustic_reflectivity_class: moderate
   - tag: distractor_float
     prop_type: sphere
     dimensions_m: [0.6, 0.6, 0.6]
     location_m: [-8.0, -10.0, -1.5]
-    visual_material: yellow_hazard_panel
+    visual_material: gold
     acoustic_reflectivity_class: weak
 
 target:
@@ -31,7 +31,7 @@ target:
   tag: net_pen_marker_buoy
   location_m: [15.0, 6.0, -4.0]
   visual_properties:
-    material: orange_buoy_marker
+    material: grass
     min_detectable_range_m: 8.0
   acoustic_properties:
     reflectivity_class: strong

@@ -50,6 +50,16 @@ _REQUIRED_SONAR_CONFIG_KEYS = (
 )
 
 _ALLOWED_PROP_TYPES = frozenset({"box", "sphere", "cylinder", "cone"})
+# HoloOcean's own HoloOceanEnvironment.spawn_prop() material palette (confirmed
+# against a real HoloOcean 2.3.0 install, not guessed — see holoocean_driver.py's
+# module docstring for this repo's other real-install-verified findings). Any
+# other value raises holoocean.exceptions.HoloOceanException at spawn time;
+# earlier drafts of this repo's task YAML files used invented names like
+# "orange_buoy_marker" that unit tests never catch because HoloOcean itself
+# isn't installed in the sandbox that writes/tests them.
+_ALLOWED_VISUAL_MATERIALS = frozenset(
+    {"white", "gold", "cobblestone", "brick", "wood", "grass", "steel", "black"}
+)
 _ALLOWED_ACOUSTIC_REFLECTIVITY_CLASSES = frozenset({"weak", "moderate", "strong"})
 _ALLOWED_DYNAMICS_CALIBRATION_STATUSES = frozenset(
     {"nominal_not_pool_calibrated", "pool_calibrated"}
@@ -266,8 +276,13 @@ def validate_realtime_manifest(data: dict[str, Any]) -> None:
                 f"{sorted(_ALLOWED_PROP_TYPES)}"
             )
 
-        if not prop.get("visual_material"):
-            raise ValueError(f"prop {tag!r} must have a non-empty visual_material")
+        visual_material = prop.get("visual_material")
+        if visual_material not in _ALLOWED_VISUAL_MATERIALS:
+            raise ValueError(
+                f"prop {tag!r} has unknown visual_material {visual_material!r}, must be one of "
+                f"{sorted(_ALLOWED_VISUAL_MATERIALS)} (HoloOceanEnvironment.spawn_prop()'s real "
+                "material palette)"
+            )
 
         reflectivity = prop.get("acoustic_reflectivity_class")
         if reflectivity not in _ALLOWED_ACOUSTIC_REFLECTIVITY_CLASSES:
