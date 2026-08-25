@@ -104,6 +104,7 @@ class SpyInputPort final : public uw::application::PipelineInputPort {
   bool OnSonarFrame(const CanonicalEvent& event) override { return Record(event); }
   bool OnImuSample(const CanonicalEvent& event) override { return Record(event); }
   bool OnDvlSample(const CanonicalEvent& event) override { return Record(event); }
+  bool OnVehicleState(const CanonicalEvent& event) override { return Record(event); }
   bool OnMeasurementEvidence(const CanonicalEvent& event) override { return Record(event); }
   bool OnReferenceState(const CanonicalEvent& event) override { return Record(event); }
   bool OnHealthReport(const CanonicalEvent& event) override { return Record(event); }

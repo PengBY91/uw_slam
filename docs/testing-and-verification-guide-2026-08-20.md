@@ -59,6 +59,37 @@ PASS：编译 → 23 项 ctest → 11 项 pytest → lint → `synth_bag_gen` �
 | Coverage 报告 | `tools/run_quality_checks.sh coverage` | gcc/gcov；独立使用 `build_cov/` | CTest 通过并打印仓库源码行覆盖摘要；当前不设覆盖率门槛 |
 | 静态分析 | `tools/run_quality_checks.sh static-analysis` | 可选 `cppcheck` | 输出 warning/performance/portability 发现；当前只报告、不作为失败 gate |
 
+### Live ingress 混合速率稳定性 gate
+
+普通 CI/CTest 只运行 3 秒 profile，验证双目 20 Hz、声呐 10 Hz、载体状态 50 Hz 经
+`LiveEventSource → PumpEvents → PipelineInputPort` 的真实线程与有界队列路径：
+
+```bash
+ctest --test-dir build -R integration.live_ingress_smoke --output-on-failure
+```
+
+30 分钟 profile 是由主控在审查通过后执行的人工稳定性 gate，不属于普通 CTest，也不要在
+日常回归里自动触发：
+
+```bash
+/usr/bin/time -v build/bin/live_ingress_smoke \
+  --duration-s 1800 --camera-hz 20 --sonar-hz 10 --state-hz 50
+```
+
+`/usr/bin/time -v` 的 `Maximum resident set size` 是外部 RSS 采样证据；也可另开终端用
+`ps -o pid,rss,etime,cmd -p <pid>` 周期采样。短档与长档都要求进程退出码为 0，最后一行
+至少包含连续字段 `reference_delivered=0 semantic_rejected=1
+queue_capacity_violations=0 flush_count=1`；同时必须看到 `reference_rejected=1`、
+`rate_count_violations=0 deadline_misses=0`，四个目标流（左相机、右相机、声呐、载体
+状态）的 `*_expected` 与 `*_actual` 分别相等，且 submitted 与 delivered 相等。每个
+`*_max_lateness_ns` 是该流相对计划 deadline 的最大迟到时间。
+
+调度器不会在落后时 burst catch-up：落后至少一个 period 时跳过所有完整过期 tick，
+每个流在每轮循环最多提交当前一帧。`deadline_misses` 是跳过的 per-stream tick 总数
+（双目左右分别计数），任何 miss 或 expected/actual 不一致都会使 gate 非零退出。CTest
+脚本用 `--inject-stall-ms`（默认 0，仅用于自测）注入短暂停顿，并要求该负例输出正的
+`deadline_misses` / `rate_count_violations` 后失败。
+
 ### 手动跑端到端 Demo
 
 ```bash

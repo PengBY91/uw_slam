@@ -26,6 +26,8 @@ struct EventSourceReport {
   uint64_t events_emitted = 0;
   uint64_t unknown_topic_count = 0;
   uint64_t parse_failure_count = 0;
+  // Reference-only inputs rejected before algorithm-consumer delivery.
+  uint64_t reference_rejected_count = 0;
 };
 
 // Returning false stops the source early: Run() returns with status

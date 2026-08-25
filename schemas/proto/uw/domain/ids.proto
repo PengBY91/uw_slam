@@ -15,6 +15,7 @@ message EvidenceId { string value = 1; }
 message KeyframeId { string value = 1; }
 message StateId { string value = 1; }
 message SubmapId { string value = 1; }
+message TrackId { string value = 1; }
 
 message CalibrationVersion { string value = 1; }
 message ModelVersion { string value = 1; }

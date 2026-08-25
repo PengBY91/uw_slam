@@ -23,6 +23,7 @@ struct ReplayInputData {
   std::vector<uw::domain::SonarFrame> sonar_frames;
   std::vector<uw::domain::ImuSample> imu_samples;
   std::vector<uw::domain::DvlSample> dvl_samples;
+  std::vector<uw::domain::VehicleState> vehicle_states;
   std::vector<uw::domain::MeasurementEvidence> evidence;
   std::vector<uw::domain::StateSnapshot> reference_states;
 };
@@ -49,6 +50,7 @@ class ReplayInputAccumulator final : public PipelineInputPort {
   bool OnSonarFrame(const uw::runtime::CanonicalEvent& event) override;
   bool OnImuSample(const uw::runtime::CanonicalEvent& event) override;
   bool OnDvlSample(const uw::runtime::CanonicalEvent& event) override;
+  bool OnVehicleState(const uw::runtime::CanonicalEvent& event) override;
   bool OnMeasurementEvidence(const uw::runtime::CanonicalEvent& event) override;
   bool OnReferenceState(const uw::runtime::CanonicalEvent& event) override;
   // No current producer emits /health or /evidence/map (see canonical_
@@ -85,8 +87,8 @@ class ReplayInputAccumulator final : public PipelineInputPort {
   // more than one ping (one per in-range target) under the same physical
   // observation identity (see replay_pipeline.cpp's documented v1 "keep the
   // first sonar frame seen per keyframe" rule); ImageFrame/ImuSample/
-  // DvlSample pass false because a repeat there is a genuine data-integrity
-  // problem, not an accepted modeling choice.
+  // DvlSample/VehicleState pass false because a repeat there is a genuine
+  // data-integrity problem, not an accepted modeling choice.
   bool ValidateRawIdentity(const std::string& sensor_id, const std::string& observation_id,
                            const std::string& kind_label, bool allow_duplicate_identity);
 

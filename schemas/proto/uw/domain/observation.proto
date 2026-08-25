@@ -29,4 +29,5 @@ message ObservationHeader {
   // Free-form provenance breadcrumb: adapter name/version, source file/topic,
   // run id. Not parsed by core, only carried through for evidence-plane audit.
   string provenance = 10;
+  ClockDomain receive_clock_domain = 11;
 }

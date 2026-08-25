@@ -24,12 +24,88 @@ TEST(DomainContract, ObservationHeaderRoundTrips) {
   EXPECT_EQ(parsed.validity(), uw::domain::ObservationHeader::VALIDITY_OK);
 }
 
+TEST(DomainContract, VehicleStateRoundTripsWithCanonicalHeaderAndDeviceHealth) {
+  uw::domain::VehicleState state;
+  state.mutable_header()->mutable_observation_id()->set_value("vehicle_0001");
+  state.mutable_header()->mutable_sensor_id()->set_value("bluerov_state");
+  state.mutable_header()->set_clock_domain(uw::domain::CLOCK_DOMAIN_SYSTEM_REALTIME);
+  state.mutable_header()->set_receive_clock_domain(uw::domain::CLOCK_DOMAIN_SYSTEM_MONOTONIC);
+  state.mutable_header()->mutable_sensor_frame()->set_value("base_link");
+  state.mutable_header()->mutable_calibration_version()->set_value("rig_v1");
+  state.mutable_header()->set_validity(uw::domain::ObservationHeader::VALIDITY_OK);
+  for (double value : {0.0, 0.0, 0.0, 1.0}) state.add_orientation_xyzw(value);
+  for (double value : {0.1, 0.2, 0.3}) state.add_angular_velocity_radps(value);
+  for (int i = 0; i < 49; ++i) state.add_covariance_7x7_row_major(0.01 * (i + 1));
+  state.set_depth_m(2.5);
+  state.set_attitude_valid(true);
+  state.set_depth_valid(true);
+  state.set_leak_detected(false);
+  state.set_supply_voltage_v(15.8);
+  state.set_supply_current_a(8.2);
+  state.set_link_quality(0.95);
+  state.set_device_health_valid(true);
+
+  std::string bytes;
+  ASSERT_TRUE(state.SerializeToString(&bytes));
+
+  uw::domain::VehicleState parsed;
+  ASSERT_TRUE(parsed.ParseFromString(bytes));
+  EXPECT_EQ(parsed.header().observation_id().value(), "vehicle_0001");
+  EXPECT_EQ(parsed.header().clock_domain(), uw::domain::CLOCK_DOMAIN_SYSTEM_REALTIME);
+  EXPECT_EQ(parsed.header().receive_clock_domain(), uw::domain::CLOCK_DOMAIN_SYSTEM_MONOTONIC);
+  EXPECT_EQ(parsed.header().calibration_version().value(), "rig_v1");
+  ASSERT_EQ(parsed.orientation_xyzw_size(), 4);
+  EXPECT_DOUBLE_EQ(parsed.orientation_xyzw(3), 1.0);
+  ASSERT_EQ(parsed.angular_velocity_radps_size(), 3);
+  EXPECT_DOUBLE_EQ(parsed.angular_velocity_radps(2), 0.3);
+  EXPECT_DOUBLE_EQ(parsed.depth_m(), 2.5);
+  ASSERT_EQ(parsed.covariance_7x7_row_major_size(), 49);
+  EXPECT_DOUBLE_EQ(parsed.covariance_7x7_row_major(48), 0.49);
+  EXPECT_TRUE(parsed.attitude_valid());
+  EXPECT_TRUE(parsed.depth_valid());
+  EXPECT_FALSE(parsed.leak_detected());
+  EXPECT_DOUBLE_EQ(parsed.supply_voltage_v(), 15.8);
+  EXPECT_DOUBLE_EQ(parsed.supply_current_a(), 8.2);
+  EXPECT_DOUBLE_EQ(parsed.link_quality(), 0.95);
+  EXPECT_TRUE(parsed.device_health_valid());
+}
+
+TEST(DomainContract, TargetTrackPreservesSourcesAgeAndUncertainty) {
+  uw::domain::TargetTrack track;
+  track.mutable_track_id()->set_value("track_9");
+  track.set_class_label("aquaculture_zone");
+  track.set_bearing_rad(0.2);
+  track.set_range_m(4.0);
+  track.add_covariance_2x2_row_major(0.01);
+  track.add_covariance_2x2_row_major(0.0);
+  track.add_covariance_2x2_row_major(0.0);
+  track.add_covariance_2x2_row_major(0.04);
+  track.add_sources(uw::domain::ASSIST_SOURCE_VISUAL);
+  track.add_sources(uw::domain::ASSIST_SOURCE_SONAR);
+  track.add_source_observations()->set_value("cam_1");
+  track.add_source_observations()->set_value("sonar_1");
+  track.set_status(uw::domain::TARGET_TRACK_STATUS_CONFIRMED);
+
+  EXPECT_EQ(track.track_id().value(), "track_9");
+  EXPECT_EQ(track.sources_size(), 2);
+  EXPECT_EQ(track.source_observations_size(), 2);
+  EXPECT_EQ(track.covariance_2x2_row_major_size(), 4);
+  EXPECT_EQ(track.status(), uw::domain::TARGET_TRACK_STATUS_CONFIRMED);
+}
+
 TEST(DomainContract, SonarFrameAscendingAzimuthAccepted) {
   uw::domain::SonarFrame frame;
   frame.add_azimuth_angles(-0.5f);
   frame.add_azimuth_angles(0.0f);
   frame.add_azimuth_angles(0.5f);
+  frame.set_operating_frequency_hz(750000.0);
   EXPECT_TRUE(uw::domain::IsAzimuthAscending(frame));
+
+  std::string bytes;
+  ASSERT_TRUE(frame.SerializeToString(&bytes));
+  uw::domain::SonarFrame parsed;
+  ASSERT_TRUE(parsed.ParseFromString(bytes));
+  EXPECT_DOUBLE_EQ(parsed.operating_frequency_hz(), 750000.0);
 }
 
 TEST(DomainContract, SonarFrameNonAscendingAzimuthRejected) {

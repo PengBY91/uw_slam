@@ -91,6 +91,11 @@ TEST(CanonicalTopics, GtStateIsMarkedReferenceOnly) {
   const auto* camera_left = LookupCanonicalTopic(uw::runtime::kTopicCameraLeft);
   ASSERT_NE(camera_left, nullptr);
   EXPECT_EQ(camera_left->role, CanonicalTopicRole::kAlgorithmInput);
+
+  const auto* vehicle_state = LookupCanonicalTopic(uw::runtime::kTopicVehicleState);
+  ASSERT_NE(vehicle_state, nullptr);
+  EXPECT_EQ(vehicle_state->kind, CanonicalEventKind::kVehicleState);
+  EXPECT_EQ(vehicle_state->role, CanonicalTopicRole::kAlgorithmInput);
 }
 
 }  // namespace

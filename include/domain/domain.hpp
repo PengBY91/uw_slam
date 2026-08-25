@@ -27,7 +27,9 @@
 #include "uw/domain/observation.pb.h"
 #include "uw/domain/sonar.pb.h"
 #include "uw/domain/state.pb.h"
+#include "uw/domain/target.pb.h"
 #include "uw/domain/time.pb.h"
+#include "uw/domain/vehicle.pb.h"
 
 namespace uw::domain {
 
@@ -50,6 +52,7 @@ enum class ValidationCode {
   kInvalidScaleStatus,
   kInvalidDepthValue,
   kInvalidVarianceValue,
+  kInvalidObservationHeader,
 };
 
 struct ValidationResult {
@@ -59,6 +62,7 @@ struct ValidationResult {
 };
 
 ValidationResult ValidateImageFrame(const ImageFrame& frame);
+ValidationResult ValidateObservationHeader(const ObservationHeader& header);
 ValidationResult ValidateOpticalDepthPrior(const OpticalDepthPriorMeasurement& prior);
 ValidationResult ValidateFusedDepth(const FusedDepthMeasurement& fused);
 

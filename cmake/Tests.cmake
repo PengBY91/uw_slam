@@ -80,7 +80,10 @@ add_executable(runtime_tests
   tests/runtime/bag_audit_checks_test.cpp
   tests/runtime/synthetic_sonar_test.cpp
   tests/runtime/canonical_event_test.cpp
+  tests/runtime/canonical_event_validation_test.cpp
   tests/runtime/mcap_event_source_test.cpp
+  tests/runtime/live_event_source_test.cpp
+  tests/runtime/rolling_latency_test.cpp
 )
 target_compile_definitions(runtime_tests PRIVATE UW_REPO_ROOT="${PROJECT_SOURCE_DIR}")
 target_link_libraries(runtime_tests PRIVATE
@@ -163,6 +166,16 @@ add_test(
 )
 set_tests_properties(integration.acoustic_optic_scenario_matrix_determinism
   PROPERTIES LABELS "integration;replay")
+
+add_test(
+  NAME integration.live_ingress_smoke
+  COMMAND bash ${PROJECT_SOURCE_DIR}/tests/integration/live_ingress_smoke_test.sh
+          ${CMAKE_BINARY_DIR}/bin/live_ingress_smoke
+)
+set_tests_properties(integration.live_ingress_smoke PROPERTIES
+  LABELS "integration;runtime;live"
+  TIMEOUT 15
+)
 
 add_test(
   NAME lint.layer_dependency_unit

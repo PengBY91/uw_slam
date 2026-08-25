@@ -11,12 +11,12 @@ enum ClockDomain {
   CLOCK_DOMAIN_SIMULATION = 1;   // HoloOcean / replay sim time
   CLOCK_DOMAIN_SYSTEM_MONOTONIC = 2;
   CLOCK_DOMAIN_SENSOR_HARDWARE = 3;
+  CLOCK_DOMAIN_SYSTEM_REALTIME = 4;
 }
 
-// Seconds since an epoch defined by the owning ClockDomain (not wall time
-// unless CLOCK_DOMAIN_SYSTEM_MONOTONIC says so). int64 seconds + int32 nanos,
-// mirroring google.protobuf.Timestamp's layout without taking the
-// well-known-types dependency.
+// Seconds since an epoch defined by the owning ClockDomain. int64 seconds +
+// int32 nanos, mirroring google.protobuf.Timestamp's layout without taking
+// the well-known-types dependency.
 message Stamp {
   int64 seconds = 1;
   int32 nanos = 2;
