@@ -112,6 +112,28 @@ struct TargetTrackerConfig {
   double merge_range_threshold_m = 0.30;
 };
 
+// Gates OnlineAssistPipeline's local dense stereo depth completion (block
+// matching, expensive). Disabled by default per docs/superpowers/plans/
+// 2026-08-24-acoustic-optic-online-tracking.md Task 6: bearing/range from
+// visual + sonar target detections already drive tracking without it, and
+// dense's real distance/path-offset benefit needs paired scenario/pool
+// evidence before it's worth the realtime budget risk.
+struct OnlineAssistDenseConfig {
+  bool enabled = false;
+  double budget_ms = 100.0;
+};
+
+// Non-dense-specific timing gates for OnlineAssistPipeline's degradation
+// reporting: how long a modality (visual detections, sonar detections) or
+// the vehicle state feed may go without a fresh capture before the
+// corresponding degradation reason (visual_unavailable/sonar_unavailable/
+// vehicle_state_stale) takes effect.
+struct OnlineAssistPipelineConfig {
+  OnlineAssistDenseConfig dense;
+  double vehicle_state_stale_after_s = 0.5;
+  double modality_stale_after_s = 1.0;
+};
+
 struct VisualOdometryConfig {
   int max_consecutive_failures = 3;
   // See frontends::CovarianceEstimationParams (rigid_transform_fit.hpp)
@@ -142,6 +164,7 @@ struct PlatformDefaultsConfig {
   SonarFrontendConfig sonar_frontend;
   TargetAssociationConfig target_association;
   TargetTrackerConfig target_tracker;
+  OnlineAssistPipelineConfig online_assist;
 
   // Discard evidence from the first N seconds of a run before fusing it
   // (0 = disabled). Motivated by a specific deployment lesson from a

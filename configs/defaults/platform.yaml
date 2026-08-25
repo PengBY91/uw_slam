@@ -55,6 +55,16 @@ frontends:
     merge_bearing_threshold_rad: 0.03
     merge_range_threshold_m: 0.30
 
+online_assist:
+  # 本地稠密立体深度补全默认关闭：视觉+声呐目标检测已经能独立驱动 tracking，
+  # 稠密深度对 distance/path-offset 的实际收益要等配对场景/水池数据验证后再开，
+  # 见 docs/superpowers/plans/2026-08-24-acoustic-optic-online-tracking.md Task 6。
+  dense:
+    enabled: false
+    budget_ms: 100.0
+  vehicle_state_stale_after_s: 0.5
+  modality_stale_after_s: 1.0
+
 runtime:
   lanes:
     localization: { priority: highest, queue_capacity: 64, overflow_policy: reject }

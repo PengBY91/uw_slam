@@ -29,6 +29,7 @@ target_link_libraries(measurement_api INTERFACE uw::core)
 add_library(opencv_adapters STATIC
   adapters/opencv/src/stereo_rectifier.cpp
   adapters/opencv/src/opencv_visual_assist_frontend.cpp
+  adapters/opencv/src/operator_overlay_renderer.cpp
 )
 add_library(uw::opencv_adapters ALIAS opencv_adapters)
 target_include_directories(opencv_adapters PUBLIC
@@ -164,6 +165,8 @@ add_library(application STATIC
   src/application/replay_pipeline.cpp
   src/application/event_pump.cpp
   src/application/replay_input_accumulator.cpp
+  src/application/online_assist_pipeline.cpp
+  src/application/latest_assist_sink.cpp
 )
 add_library(uw::application ALIAS application)
 target_include_directories(application PUBLIC "${PROJECT_SOURCE_DIR}/include")
