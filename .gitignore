@@ -34,6 +34,7 @@
 /configs/*_tmp/
 
 # Editor/OS/tooling
+.worktrees/
 .vscode/
 .idea/
 .claude/
