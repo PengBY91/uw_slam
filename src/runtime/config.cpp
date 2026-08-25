@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <locale>
 #include <filesystem>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <vector>
 
@@ -152,6 +154,92 @@ PlatformDefaultsConfig LoadPlatformDefaultsConfig(const std::string& path) {
     }
   }
 
+  if (root["frontends"] && root["frontends"]["target_association"]) {
+    const auto association = root["frontends"]["target_association"];
+    RejectUnknownKeys(association,
+                      {"max_corrected_time_delta_s", "max_bearing_mahalanobis_sq",
+                       "max_range_mahalanobis_sq", "max_motion_bearing_delta_rad",
+                       "max_motion_rate_rad_s", "max_bearing_variance_rad2",
+                       "max_range_variance_m2"},
+                      "frontends.target_association");
+    auto& out = config.target_association;
+    out.max_corrected_time_delta_s = GetOr<double>(
+        association, "max_corrected_time_delta_s", out.max_corrected_time_delta_s);
+    out.max_bearing_mahalanobis_sq = GetOr<double>(
+        association, "max_bearing_mahalanobis_sq", out.max_bearing_mahalanobis_sq);
+    out.max_range_mahalanobis_sq = GetOr<double>(
+        association, "max_range_mahalanobis_sq", out.max_range_mahalanobis_sq);
+    out.max_motion_bearing_delta_rad = GetOr<double>(
+        association, "max_motion_bearing_delta_rad", out.max_motion_bearing_delta_rad);
+    out.max_motion_rate_rad_s =
+        GetOr<double>(association, "max_motion_rate_rad_s", out.max_motion_rate_rad_s);
+    out.max_bearing_variance_rad2 = GetOr<double>(
+        association, "max_bearing_variance_rad2", out.max_bearing_variance_rad2);
+    out.max_range_variance_m2 = GetOr<double>(
+        association, "max_range_variance_m2", out.max_range_variance_m2);
+    const std::vector<std::pair<const char*, double>> positive = {
+        {"max_corrected_time_delta_s", out.max_corrected_time_delta_s},
+        {"max_bearing_mahalanobis_sq", out.max_bearing_mahalanobis_sq},
+        {"max_range_mahalanobis_sq", out.max_range_mahalanobis_sq},
+        {"max_motion_bearing_delta_rad", out.max_motion_bearing_delta_rad},
+        {"max_bearing_variance_rad2", out.max_bearing_variance_rad2},
+        {"max_range_variance_m2", out.max_range_variance_m2}};
+    for (const auto& [name, value] : positive) {
+      if (!std::isfinite(value) || value <= 0.0) {
+        throw std::runtime_error(std::string("frontends.target_association.") + name +
+                                 " must be finite and positive");
+      }
+    }
+    if (!std::isfinite(out.max_motion_rate_rad_s) || out.max_motion_rate_rad_s < 0.0) {
+      throw std::runtime_error(
+          "frontends.target_association.max_motion_rate_rad_s must be finite and non-negative");
+    }
+  }
+
+  if (root["frontends"] && root["frontends"]["target_tracker"]) {
+    const auto tracker = root["frontends"]["target_tracker"];
+    RejectUnknownKeys(tracker,
+                      {"association_mahalanobis_sq", "confirm_hits", "degraded_misses",
+                       "stale_after_s", "max_prediction_dt_s",
+                       "bearing_acceleration_noise", "range_acceleration_noise",
+                       "merge_bearing_threshold_rad", "merge_range_threshold_m"},
+                      "frontends.target_tracker");
+    auto& out = config.target_tracker;
+    out.association_mahalanobis_sq = GetOr<double>(
+        tracker, "association_mahalanobis_sq", out.association_mahalanobis_sq);
+    out.confirm_hits = GetOr<int>(tracker, "confirm_hits", out.confirm_hits);
+    out.degraded_misses = GetOr<int>(tracker, "degraded_misses", out.degraded_misses);
+    out.stale_after_s = GetOr<double>(tracker, "stale_after_s", out.stale_after_s);
+    out.max_prediction_dt_s =
+        GetOr<double>(tracker, "max_prediction_dt_s", out.max_prediction_dt_s);
+    out.bearing_acceleration_noise = GetOr<double>(
+        tracker, "bearing_acceleration_noise", out.bearing_acceleration_noise);
+    out.range_acceleration_noise = GetOr<double>(
+        tracker, "range_acceleration_noise", out.range_acceleration_noise);
+    out.merge_bearing_threshold_rad = GetOr<double>(
+        tracker, "merge_bearing_threshold_rad", out.merge_bearing_threshold_rad);
+    out.merge_range_threshold_m = GetOr<double>(
+        tracker, "merge_range_threshold_m", out.merge_range_threshold_m);
+    if (out.confirm_hits < 1 || out.degraded_misses < 1) {
+      throw std::runtime_error(
+          "frontends.target_tracker confirm_hits/degraded_misses must be positive");
+    }
+    const std::vector<std::pair<const char*, double>> positive = {
+        {"association_mahalanobis_sq", out.association_mahalanobis_sq},
+        {"stale_after_s", out.stale_after_s},
+        {"max_prediction_dt_s", out.max_prediction_dt_s},
+        {"bearing_acceleration_noise", out.bearing_acceleration_noise},
+        {"range_acceleration_noise", out.range_acceleration_noise},
+        {"merge_bearing_threshold_rad", out.merge_bearing_threshold_rad},
+        {"merge_range_threshold_m", out.merge_range_threshold_m}};
+    for (const auto& [name, value] : positive) {
+      if (!std::isfinite(value) || value <= 0.0) {
+        throw std::runtime_error(std::string("frontends.target_tracker.") + name +
+                                 " must be finite and positive");
+      }
+    }
+  }
+
   if (root["reliability"] && root["reliability"]["default_sqrt_information"]) {
     const auto info = root["reliability"]["default_sqrt_information"];
     if (info["relative_pose"]) {
@@ -245,6 +333,31 @@ PlatformDefaultsConfig LoadPlatformDefaultsConfig(const std::string& path) {
     }
   }
   return config;
+}
+
+std::string PlatformDefaultsConfig::target_fusion_manifest_parameters() const {
+  std::ostringstream out;
+  out.imbue(std::locale::classic());
+  out.precision(17);
+  out << "target_association.max_corrected_time_delta_s="
+      << target_association.max_corrected_time_delta_s
+      << ";max_bearing_mahalanobis_sq=" << target_association.max_bearing_mahalanobis_sq
+      << ";max_range_mahalanobis_sq=" << target_association.max_range_mahalanobis_sq
+      << ";max_motion_bearing_delta_rad=" << target_association.max_motion_bearing_delta_rad
+      << ";max_motion_rate_rad_s=" << target_association.max_motion_rate_rad_s
+      << ";max_bearing_variance_rad2=" << target_association.max_bearing_variance_rad2
+      << ";max_range_variance_m2=" << target_association.max_range_variance_m2
+      << ";target_tracker.association_mahalanobis_sq="
+      << target_tracker.association_mahalanobis_sq
+      << ";confirm_hits=" << target_tracker.confirm_hits
+      << ";degraded_misses=" << target_tracker.degraded_misses
+      << ";stale_after_s=" << target_tracker.stale_after_s
+      << ";max_prediction_dt_s=" << target_tracker.max_prediction_dt_s
+      << ";bearing_acceleration_noise=" << target_tracker.bearing_acceleration_noise
+      << ";range_acceleration_noise=" << target_tracker.range_acceleration_noise
+      << ";merge_bearing_threshold_rad=" << target_tracker.merge_bearing_threshold_rad
+      << ";merge_range_threshold_m=" << target_tracker.merge_range_threshold_m;
+  return out.str();
 }
 
 uw::domain::RigCalibrationSnapshot LoadRigConfig(const std::string& path) {

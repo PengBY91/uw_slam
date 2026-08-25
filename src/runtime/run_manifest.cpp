@@ -13,6 +13,7 @@ std::string RunManifest::ToJson() const {
       << "  \"calibration_hash\": \"" << calibration_hash << "\",\n"
       << "  \"derived_calibration_hash\": \"" << derived_calibration_hash << "\",\n"
       << "  \"model_hash\": \"" << model_hash << "\",\n"
+      << "  \"target_fusion_parameters\": \"" << target_fusion_parameters << "\",\n"
       << "  \"dataset_or_scenario\": \"" << dataset_or_scenario << "\",\n"
       << "  \"simulator\": \"" << simulator << "\",\n"
       << "  \"os_info\": \"" << os_info << "\",\n"

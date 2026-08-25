@@ -674,6 +674,33 @@ TEST(Config, ValidateExperimentConfigSelectionsAcceptsCeresV1Solver) {
   EXPECT_EQ(uw::runtime::ValidateExperimentConfigSelections(config), std::nullopt);
 }
 
+TEST(Config, LoadsAssociationAndTrackerDefaultsUsedByFusion) {
+  const auto config = uw::runtime::LoadPlatformDefaultsConfig(
+      std::string(UW_REPO_ROOT) + "/configs/defaults/platform.yaml");
+  EXPECT_DOUBLE_EQ(config.target_association.max_corrected_time_delta_s, 0.05);
+  EXPECT_DOUBLE_EQ(config.target_association.max_bearing_mahalanobis_sq, 9.0);
+  EXPECT_DOUBLE_EQ(config.target_association.max_range_mahalanobis_sq, 9.0);
+  EXPECT_DOUBLE_EQ(config.target_tracker.stale_after_s, 0.5);
+  EXPECT_EQ(config.target_tracker.confirm_hits, 2);
+  EXPECT_EQ(config.target_tracker.degraded_misses, 3);
+  EXPECT_NE(config.target_fusion_manifest_parameters().find("stale_after_s=0.5"),
+            std::string::npos);
+}
+
+TEST(Config, RejectsUnsafeAssociationAndTrackerThresholds) {
+  const auto path = std::filesystem::temp_directory_path() / "uw_bad_target_fusion.yaml";
+  {
+    std::ofstream out(path);
+    out << "frontends:\n"
+           "  target_association:\n"
+           "    max_corrected_time_delta_s: .nan\n"
+           "  target_tracker:\n"
+           "    stale_after_s: 0.0\n";
+  }
+  EXPECT_THROW(uw::runtime::LoadPlatformDefaultsConfig(path.string()), std::runtime_error);
+  std::remove(path.string().c_str());
+}
+
 // estimation.solver at the experiment-file level (not nested under a
 // separate defaults/*.yaml) — see docs/superpowers/specs/2026-08-23-solver-
 // and-mapping-oss-adoption.md §7 and configs/README.md's "第三个例外".

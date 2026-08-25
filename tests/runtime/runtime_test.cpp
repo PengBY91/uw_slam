@@ -47,6 +47,17 @@ TEST(RunManifest, DerivedCalibrationHashDefaultsToEmpty) {
   EXPECT_NE(manifest.ToJson().find("\"derived_calibration_hash\": \"\""), std::string::npos);
 }
 
+TEST(RunManifest, SerializesResolvedTargetFusionParameters) {
+  RunManifest manifest;
+  manifest.target_fusion_parameters =
+      "target_association.max_corrected_time_delta_s=0.05;stale_after_s=0.5";
+  EXPECT_NE(manifest.ToJson().find(
+                "\"target_fusion_parameters\": "
+                "\"target_association.max_corrected_time_delta_s=0.05;"
+                "stale_after_s=0.5\""),
+            std::string::npos);
+}
+
 TEST(BoundedQueue, DropOldestReportsOverflowAndKeepsMostRecent) {
   BoundedQueue<int> queue(2, OverflowPolicy::kDropOldest);
 

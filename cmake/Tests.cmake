@@ -24,6 +24,8 @@ add_executable(frontends_tests
   tests/frontends/cfar_detector_test.cpp
   tests/frontends/sonar_cfar_frontend_test.cpp
   tests/frontends/sonar_target_extractor_test.cpp
+  tests/frontends/target_associator_test.cpp
+  tests/frontends/target_tracker_test.cpp
   tests/frontends/block_matcher_test.cpp
   tests/frontends/stereo_optical_depth_frontend_test.cpp
   tests/frontends/harris_corner_detector_test.cpp
