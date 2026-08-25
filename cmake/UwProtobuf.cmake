@@ -27,7 +27,7 @@ foreach(UW_PROTO_FILE IN LISTS UW_DOMAIN_PROTO_FILES)
     ARGS --cpp_out=${UW_PROTO_GEN_DIR}
          --proto_path=${UW_PROTO_ROOT}
          ${UW_PROTO_RELATIVE}
-    DEPENDS ${UW_PROTO_FILE} protobuf::protoc
+    DEPENDS ${UW_DOMAIN_PROTO_FILES} protobuf::protoc
     WORKING_DIRECTORY ${UW_PROTO_ROOT}
     COMMENT "Generating C++ protobuf bindings for ${UW_PROTO_RELATIVE}"
     VERBATIM

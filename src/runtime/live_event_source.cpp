@@ -47,6 +47,11 @@ uint32_t SaturatingUint32(std::size_t value) {
   return value > static_cast<std::size_t>(kMax) ? kMax : static_cast<uint32_t>(value);
 }
 
+uint64_t SaturatingUint64Add(uint64_t value, uint64_t increment) {
+  constexpr auto kMax = std::numeric_limits<uint64_t>::max();
+  return increment > kMax - value ? kMax : value + increment;
+}
+
 Lane LaneForKind(CanonicalEventKind kind) {
   switch (kind) {
     case CanonicalEventKind::kImuSample:
@@ -190,8 +195,10 @@ LiveSubmitStatus LiveEventSource::Submit(CanonicalEvent event) {
 
   if (capture_time.has_value()) {
     sequence_by_sensor_[sensor_id] = SequenceState{calibration_version, sequence_id};
-    stats_.sequence_gap_count += pending_gap;
-    sequence_gap_counts_[LaneIndex(lane)] += pending_gap;
+    stats_.sequence_gap_count =
+        SaturatingUint64Add(stats_.sequence_gap_count, pending_gap);
+    auto& lane_gap_count = sequence_gap_counts_[LaneIndex(lane)];
+    lane_gap_count = SaturatingUint64Add(lane_gap_count, pending_gap);
     last_valid_capture_times_[LaneIndex(lane)] = std::move(capture_time);
     last_valid_receive_times_[LaneIndex(lane)] = std::move(receive_time);
   }

@@ -4,6 +4,7 @@
 #include <chrono>
 #include <exception>
 #include <future>
+#include <limits>
 #include <memory>
 #include <set>
 #include <stdexcept>
@@ -289,6 +290,24 @@ TEST(LiveEventSource, CountsForwardGapsAndCalibrationChangeResetsBaseline) {
   EXPECT_EQ(source.Submit(MakeImageEvent(3, 1, "camera", "cal-v2")),
             LiveSubmitStatus::kAccepted);
   EXPECT_EQ(source.Stats().sequence_gap_count, 2u);
+  source.Close();
+}
+
+TEST(LiveEventSourceHealth, SequenceGapCountersSaturateInsteadOfWrapping) {
+  LiveEventSource source(LiveSourceConfig::ForTest());
+  constexpr uint64_t kMax = std::numeric_limits<uint64_t>::max();
+
+  ASSERT_EQ(source.Submit(MakeImageEvent(1, 1, "camera-a")),
+            LiveSubmitStatus::kAccepted);
+  ASSERT_EQ(source.Submit(MakeImageEvent(2, kMax, "camera-a")),
+            LiveSubmitStatus::kAccepted);
+  ASSERT_EQ(source.Submit(MakeImageEvent(3, 1, "camera-b")),
+            LiveSubmitStatus::kAccepted);
+  ASSERT_EQ(source.Submit(MakeImageEvent(4, kMax, "camera-b")),
+            LiveSubmitStatus::kAccepted);
+
+  EXPECT_EQ(source.Stats().sequence_gap_count, kMax);
+  EXPECT_EQ(source.HealthReports()[2].sequence_gap_count(), kMax);
   source.Close();
 }
 
