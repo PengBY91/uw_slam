@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <utility>
 
 #include <google/protobuf/repeated_field.h>
@@ -36,8 +37,9 @@ Stamp FromSeconds(double seconds) {
 }
 
 bool IsAzimuthAscending(const SonarFrame& frame) {
-  for (int i = 1; i < frame.azimuth_angles_size(); ++i) {
-    if (frame.azimuth_angles(i) <= frame.azimuth_angles(i - 1)) return false;
+  for (int i = 0; i < frame.azimuth_angles_size(); ++i) {
+    if (!std::isfinite(frame.azimuth_angles(i))) return false;
+    if (i > 0 && frame.azimuth_angles(i) <= frame.azimuth_angles(i - 1)) return false;
   }
   return true;
 }
@@ -50,6 +52,12 @@ ValidationResult Invalid(ValidationCode code, std::string message) {
 
 std::size_t PixelCount(uint32_t width, uint32_t height) {
   return static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+}
+
+bool CheckedMultiply(std::size_t lhs, std::size_t rhs, std::size_t* product) {
+  if (lhs != 0 && rhs > std::numeric_limits<std::size_t>::max() / lhs) return false;
+  *product = lhs * rhs;
+  return true;
 }
 
 // Enforces the OpticalDepthPriorMeasurement/FusedDepthMeasurement convention
@@ -93,12 +101,17 @@ ValidationResult ValidateImageFrame(const ImageFrame& frame) {
     default:
       return Invalid(ValidationCode::kUnsupportedImageEncoding, "unsupported image encoding");
   }
-  const uint32_t minimum_stride = frame.width() * bytes_per_pixel;
-  if (frame.row_stride_bytes() < minimum_stride) {
+  std::size_t minimum_stride = 0;
+  if (!CheckedMultiply(frame.width(), bytes_per_pixel, &minimum_stride) ||
+      minimum_stride > std::numeric_limits<uint32_t>::max() ||
+      frame.row_stride_bytes() < minimum_stride) {
     return Invalid(ValidationCode::kInvalidImageStride, "image stride is smaller than one row");
   }
-  const std::size_t expected =
-      static_cast<std::size_t>(frame.height()) * frame.row_stride_bytes();
+  std::size_t expected = 0;
+  if (!CheckedMultiply(frame.height(), frame.row_stride_bytes(), &expected)) {
+    return Invalid(ValidationCode::kImagePayloadSizeMismatch,
+                   "image payload size overflows the addressable range");
+  }
   if (frame.pixel_data().size() != expected) {
     return Invalid(ValidationCode::kImagePayloadSizeMismatch, "image payload size does not match shape");
   }
@@ -106,6 +119,11 @@ ValidationResult ValidateImageFrame(const ImageFrame& frame) {
 }
 
 ValidationResult ValidateObservationHeader(const ObservationHeader& header) {
+  if (!header.has_sequence_id() || !header.has_capture_time() ||
+      !header.has_receive_time()) {
+    return Invalid(ValidationCode::kInvalidObservationHeader,
+                   "sequence, capture time, and receive time must be present");
+  }
   if (header.observation_id().value().empty() || header.sensor_id().value().empty() ||
       header.sensor_frame().value().empty() || header.calibration_version().value().empty()) {
     return Invalid(ValidationCode::kInvalidObservationHeader,

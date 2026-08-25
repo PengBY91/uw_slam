@@ -13,6 +13,7 @@ namespace {
 void PopulateValidHeader(uw::domain::ObservationHeader* header) {
   header->mutable_observation_id()->set_value("observation-1");
   header->mutable_sensor_id()->set_value("sensor-1");
+  header->mutable_sequence_id()->set_value(7);
   header->mutable_sensor_frame()->set_value("sensor-frame");
   header->mutable_calibration_version()->set_value("calibration-v1");
   header->mutable_capture_time()->set_seconds(10);
@@ -131,9 +132,50 @@ TEST(CanonicalEventValidation, AcceptsDegradedRawObservationHeader) {
   EXPECT_TRUE(uw::runtime::ValidateCanonicalEvent(event).ok());
 }
 
+TEST(CanonicalEventValidation, RejectsMissingHeaderTimeAndSequenceMessages) {
+  auto expect_invalid = [](const uw::domain::ImageFrame& frame) {
+    const uw::runtime::CanonicalEvent event{uw::runtime::kTopicCameraLeft, 10, 1, frame};
+    EXPECT_EQ(uw::runtime::ValidateCanonicalEvent(event).code,
+              uw::runtime::CanonicalEventValidationCode::kHeaderInvalid);
+  };
+
+  auto frame = MakeValidImageFrame();
+  frame.mutable_header()->clear_capture_time();
+  expect_invalid(frame);
+  frame = MakeValidImageFrame();
+  frame.mutable_header()->clear_receive_time();
+  expect_invalid(frame);
+  frame = MakeValidImageFrame();
+  frame.mutable_header()->clear_sequence_id();
+  expect_invalid(frame);
+}
+
+TEST(CanonicalEventValidation, AcceptsExplicitZeroHeaderTimeAndSequenceValues) {
+  auto frame = MakeValidImageFrame();
+  frame.mutable_header()->clear_capture_time();
+  frame.mutable_header()->mutable_capture_time();
+  frame.mutable_header()->clear_receive_time();
+  frame.mutable_header()->mutable_receive_time();
+  frame.mutable_header()->mutable_sequence_id()->set_value(0);
+  const uw::runtime::CanonicalEvent event{uw::runtime::kTopicCameraLeft, 10, 1, frame};
+  EXPECT_TRUE(uw::runtime::ValidateCanonicalEvent(event).ok());
+}
+
 TEST(CanonicalEventValidation, RejectsImagePayloadMismatch) {
   auto frame = MakeValidImageFrame();
   frame.set_pixel_data(std::string(3, '\0'));
+  const uw::runtime::CanonicalEvent event{uw::runtime::kTopicCameraLeft, 10, 1, frame};
+  EXPECT_EQ(uw::runtime::ValidateCanonicalEvent(event).code,
+            uw::runtime::CanonicalEventValidationCode::kImageInvalid);
+}
+
+TEST(CanonicalEventValidation, RejectsImageMinimumStrideMultiplicationOverflow) {
+  auto frame = MakeValidImageFrame();
+  frame.set_width(1431655766U);
+  frame.set_height(1);
+  frame.set_encoding(uw::domain::ImageFrame::IMAGE_ENCODING_RGB8);
+  frame.set_row_stride_bytes(2);
+  frame.set_pixel_data(std::string(2, '\0'));
   const uw::runtime::CanonicalEvent event{uw::runtime::kTopicCameraLeft, 10, 1, frame};
   EXPECT_EQ(uw::runtime::ValidateCanonicalEvent(event).code,
             uw::runtime::CanonicalEventValidationCode::kImageInvalid);
@@ -145,6 +187,23 @@ TEST(CanonicalEventValidation, RejectsNonAscendingSonarAzimuths) {
   const uw::runtime::CanonicalEvent event{uw::runtime::kTopicSonarFrame, 10, 1, frame};
   EXPECT_EQ(uw::runtime::ValidateCanonicalEvent(event).code,
             uw::runtime::CanonicalEventValidationCode::kSonarGeometryInvalid);
+}
+
+TEST(CanonicalEventValidation, DomainAzimuthHelperRejectsNonFiniteValues) {
+  uw::domain::SonarFrame frame;
+  frame.add_azimuth_angles(0.0f);
+  frame.add_azimuth_angles(std::numeric_limits<float>::quiet_NaN());
+  EXPECT_FALSE(uw::domain::IsAzimuthAscending(frame));
+
+  frame.clear_azimuth_angles();
+  frame.add_azimuth_angles(-std::numeric_limits<float>::infinity());
+  frame.add_azimuth_angles(0.0f);
+  EXPECT_FALSE(uw::domain::IsAzimuthAscending(frame));
+
+  frame.clear_azimuth_angles();
+  frame.add_azimuth_angles(0.0f);
+  frame.add_azimuth_angles(std::numeric_limits<float>::infinity());
+  EXPECT_FALSE(uw::domain::IsAzimuthAscending(frame));
 }
 
 TEST(CanonicalEventValidation, RejectsSonarTensorSizeMismatch) {
