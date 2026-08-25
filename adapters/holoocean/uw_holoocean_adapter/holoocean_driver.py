@@ -152,10 +152,21 @@ class HoloOceanSession:
         if isinstance(scenario_cfg, dict):
             prepared_cfg = _prepare_scenario_cfg(scenario_cfg, randomization)
             self._env = self._holoocean.make(scenario_cfg=prepared_cfg)
+            self._tick = 0
+            # Only the new manifest-driven path auto-applies randomization.
+            # The legacy scenario_name string path (record_session.py,
+            # calibrate_camera.py) targets hardware-verified, fragile
+            # real-install procedures that never called this before (it
+            # previously always raised NotImplementedError, so it was never
+            # invoked either way) — auto-pushing water_color/water_fog/
+            # set_ocean_currents/flashlight commands there would perturb
+            # those verified procedures with values this task invented
+            # (there's no ScenarioRandomization-backed spec for e.g.
+            # water_color), for no benefit those callers asked for.
+            self.apply_randomization()
         else:
             self._env = self._holoocean.make(scenario_cfg)
-        self._tick = 0
-        self.apply_randomization()
+            self._tick = 0
 
     def apply_randomization(self) -> None:
         """Pushes this session's ScenarioRandomization into the HoloOcean
