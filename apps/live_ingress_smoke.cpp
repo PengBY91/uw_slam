@@ -31,7 +31,22 @@ struct Options {
   double camera_hz = 20.0;
   double sonar_hz = 10.0;
   double state_hz = 50.0;
+  int64_t inject_stall_ms = 0;
 };
+
+int64_t ParseNonnegativeInteger(const char* option, const char* text) {
+  std::size_t parsed = 0;
+  long long value = 0;
+  try {
+    value = std::stoll(text, &parsed);
+  } catch (const std::exception&) {
+    throw std::invalid_argument(std::string(option) + " requires an integer value");
+  }
+  if (parsed != std::string(text).size() || value < 0) {
+    throw std::invalid_argument(std::string(option) + " must be nonnegative");
+  }
+  return static_cast<int64_t>(value);
+}
 
 double ParsePositiveFinite(const char* option, const char* text) {
   std::size_t parsed = 0;
@@ -52,7 +67,8 @@ Options ParseOptions(int argc, char** argv) {
   for (int index = 1; index < argc; index += 2) {
     const std::string option = argv[index];
     const bool known_option = option == "--duration-s" || option == "--camera-hz" ||
-                              option == "--sonar-hz" || option == "--state-hz";
+                              option == "--sonar-hz" || option == "--state-hz" ||
+                              option == "--inject-stall-ms";
     if (!known_option) {
       throw std::invalid_argument("unknown argument: " + option);
     }
@@ -67,14 +83,23 @@ Options ParseOptions(int argc, char** argv) {
       options.sonar_hz = ParsePositiveFinite(option.c_str(), argv[index + 1]);
     } else if (option == "--state-hz") {
       options.state_hz = ParsePositiveFinite(option.c_str(), argv[index + 1]);
+    } else if (option == "--inject-stall-ms") {
+      options.inject_stall_ms = ParseNonnegativeInteger(option.c_str(), argv[index + 1]);
     }
   }
   return options;
 }
 
 SteadyClock::duration PeriodForRate(const char* option, double rate_hz) {
+  const long double reciprocal_s = 1.0L / static_cast<long double>(rate_hz);
+  const long double maximum_s =
+      std::chrono::duration<long double>(SteadyClock::duration::max()).count();
+  if (!std::isfinite(reciprocal_s) || reciprocal_s > maximum_s) {
+    throw std::invalid_argument(std::string(option) +
+                                " is slower than the steady clock range");
+  }
   const auto period = std::chrono::duration_cast<SteadyClock::duration>(
-      std::chrono::duration<double>(1.0 / rate_hz));
+      std::chrono::duration<long double>(reciprocal_s));
   if (period <= SteadyClock::duration::zero()) {
     throw std::invalid_argument(std::string(option) +
                                 " is faster than the steady clock resolution");
@@ -83,18 +108,23 @@ SteadyClock::duration PeriodForRate(const char* option, double rate_hz) {
 }
 
 SteadyClock::duration RunDuration(double duration_s) {
-  const double maximum_s =
-      std::chrono::duration<double>(SteadyClock::duration::max()).count();
-  if (duration_s > maximum_s) {
+  const long double requested_s = static_cast<long double>(duration_s);
+  const long double maximum_s =
+      std::chrono::duration<long double>(SteadyClock::duration::max()).count();
+  if (!std::isfinite(requested_s) || requested_s > maximum_s) {
     throw std::invalid_argument("--duration-s exceeds the steady clock range");
   }
-  return std::chrono::duration_cast<SteadyClock::duration>(
-      std::chrono::duration<double>(duration_s));
+  const auto duration = std::chrono::duration_cast<SteadyClock::duration>(
+      std::chrono::duration<long double>(requested_s));
+  if (duration <= SteadyClock::duration::zero()) {
+    throw std::invalid_argument("--duration-s is shorter than the steady clock resolution");
+  }
+  return duration;
 }
 
 uw::domain::Stamp SteadyStamp(SteadyClock::time_point time) {
   const auto since_epoch = time.time_since_epoch();
-  const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(since_epoch);
+  const auto seconds = std::chrono::floor<std::chrono::seconds>(since_epoch);
   const auto nanos =
       std::chrono::duration_cast<std::chrono::nanoseconds>(since_epoch - seconds);
   uw::domain::Stamp stamp;
@@ -107,6 +137,52 @@ uint64_t SteadyNanoseconds(SteadyClock::time_point time) {
   const auto count =
       std::chrono::duration_cast<std::chrono::nanoseconds>(time.time_since_epoch()).count();
   return count < 0 ? 0 : static_cast<uint64_t>(count);
+}
+
+uint64_t DurationNanoseconds(SteadyClock::duration duration) {
+  if (duration <= SteadyClock::duration::zero()) return 0;
+  const auto count = std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count();
+  return count < 0 ? 0 : static_cast<uint64_t>(count);
+}
+
+uint64_t ExpectedTicks(SteadyClock::duration duration, SteadyClock::duration period) {
+  const auto complete_periods = duration / period;
+  const auto remainder = duration % period;
+  return static_cast<uint64_t>(complete_periods) +
+         (remainder == SteadyClock::duration::zero() ? 0U : 1U);
+}
+
+void AdvanceDeadline(SteadyClock::time_point* deadline, SteadyClock::duration period,
+                     uint64_t steps, SteadyClock::time_point end) {
+  if (*deadline >= end || steps == 0) return;
+  const uint64_t steps_to_end = ExpectedTicks(end - *deadline, period);
+  if (steps >= steps_to_end) {
+    *deadline = end;
+    return;
+  }
+  *deadline += period * static_cast<SteadyClock::duration::rep>(steps);
+}
+
+struct DeadlineStats {
+  uint64_t misses = 0;
+  SteadyClock::duration max_lateness = SteadyClock::duration::zero();
+};
+
+bool PrepareDueDeadline(SteadyClock::time_point now, SteadyClock::time_point end,
+                        SteadyClock::duration period, SteadyClock::time_point* deadline,
+                        DeadlineStats* stats) {
+  if (*deadline >= end || *deadline > now) return false;
+  stats->max_lateness = std::max(stats->max_lateness, now - *deadline);
+  if (now >= end) {
+    const uint64_t misses = ExpectedTicks(end - *deadline, period);
+    stats->misses += misses;
+    *deadline = end;
+    return false;
+  }
+  const uint64_t misses = static_cast<uint64_t>((now - *deadline) / period);
+  stats->misses += misses;
+  AdvanceDeadline(deadline, period, misses, end);
+  return *deadline < end && *deadline <= now;
 }
 
 void PopulateHeader(uw::domain::ObservationHeader* header, const std::string& sensor_id,
@@ -335,8 +411,12 @@ int Run(const Options& options) {
     try {
       report_promise.set_value(uw::application::PumpEvents(source, port));
     } catch (...) {
+      const auto error = std::current_exception();
       source.Close();
-      report_promise.set_exception(std::current_exception());
+      try {
+        report_promise.set_exception(error);
+      } catch (...) {
+      }
     }
   });
   PumpThreadGuard guard(source, consumer);
@@ -361,10 +441,19 @@ int Run(const Options& options) {
   uint64_t sonar_sequence = 0;
   uint64_t state_sequence = 0;
   const auto start = SteadyClock::now();
+  if (run_duration > SteadyClock::time_point::max() - start) {
+    throw std::invalid_argument("--duration-s exceeds the remaining steady clock range");
+  }
   const auto end = start + run_duration;
   auto next_camera = start;
   auto next_sonar = start;
   auto next_state = start;
+  DeadlineStats camera_deadlines;
+  DeadlineStats sonar_deadlines;
+  DeadlineStats state_deadlines;
+  if (options.inject_stall_ms > 0) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(options.inject_stall_ms));
+  }
 
   while (true) {
     const auto next_deadline = std::min({next_camera, next_sonar, next_state});
@@ -372,7 +461,7 @@ int Run(const Options& options) {
     std::this_thread::sleep_until(next_deadline);
     const auto now = SteadyClock::now();
 
-    if (next_camera <= now && next_camera < end) {
+    if (PrepareDueDeadline(now, end, camera_period, &next_camera, &camera_deadlines)) {
       ++camera_sequence;
       const auto capture_time = uw::domain::ToStamp(std::chrono::system_clock::now());
       const auto receive_time = SteadyStamp(now);
@@ -387,9 +476,9 @@ int Run(const Options& options) {
                                   camera_sequence, ++source_sequence, capture_time,
                                   receive_time, log_time_ns),
                    &submit_counts);
-      next_camera += camera_period;
+      AdvanceDeadline(&next_camera, camera_period, 1, end);
     }
-    if (next_sonar <= now && next_sonar < end) {
+    if (PrepareDueDeadline(now, end, sonar_period, &next_sonar, &sonar_deadlines)) {
       ++sonar_sequence;
       const auto capture_time = uw::domain::ToStamp(std::chrono::system_clock::now());
       const auto receive_time = SteadyStamp(now);
@@ -397,9 +486,9 @@ int Run(const Options& options) {
                    MakeSonarEvent(sonar_sequence, ++source_sequence, capture_time,
                                   receive_time, SteadyNanoseconds(now)),
                    &submit_counts);
-      next_sonar += sonar_period;
+      AdvanceDeadline(&next_sonar, sonar_period, 1, end);
     }
-    if (next_state <= now && next_state < end) {
+    if (PrepareDueDeadline(now, end, state_period, &next_state, &state_deadlines)) {
       ++state_sequence;
       const auto capture_time = uw::domain::ToStamp(std::chrono::system_clock::now());
       const auto receive_time = SteadyStamp(now);
@@ -407,7 +496,7 @@ int Run(const Options& options) {
                    MakeVehicleStateEvent(state_sequence, ++source_sequence, capture_time,
                                          receive_time, SteadyNanoseconds(now)),
                    &submit_counts);
-      next_state += state_period;
+      AdvanceDeadline(&next_state, state_period, 1, end);
     }
   }
 
@@ -427,6 +516,16 @@ int Run(const Options& options) {
   const uint64_t other_delivered =
       port.imu_count + port.dvl_count + port.measurement_evidence_count +
       port.health_count + port.map_evidence_count + port.unexpected_count;
+  const uint64_t camera_expected = ExpectedTicks(run_duration, camera_period);
+  const uint64_t sonar_expected = ExpectedTicks(run_duration, sonar_period);
+  const uint64_t state_expected = ExpectedTicks(run_duration, state_period);
+  const uint64_t rate_count_violations =
+      static_cast<uint64_t>(port.left_image_count != camera_expected) +
+      static_cast<uint64_t>(port.right_image_count != camera_expected) +
+      static_cast<uint64_t>(port.sonar_count != sonar_expected) +
+      static_cast<uint64_t>(port.vehicle_state_count != state_expected);
+  const uint64_t deadline_misses =
+      camera_deadlines.misses * 2 + sonar_deadlines.misses + state_deadlines.misses;
   bool ok = true;
   ok = ok && invalid_status == LiveSubmitStatus::kSemanticRejected;
   ok = ok && reference_status == LiveSubmitStatus::kReferenceRejected;
@@ -452,6 +551,8 @@ int Run(const Options& options) {
   ok = ok && port.left_image_count > 0 && port.left_image_count == port.right_image_count;
   ok = ok && port.sonar_count > 0 && port.vehicle_state_count > 0;
   ok = ok && other_delivered == 0;
+  ok = ok && rate_count_violations == 0;
+  ok = ok && deadline_misses == 0;
 
   std::cout << "reference_delivered=" << port.reference_count
             << " semantic_rejected=" << stats.semantic_rejected_count
@@ -464,9 +565,27 @@ int Run(const Options& options) {
             << " right_delivered=" << port.right_image_count
             << " sonar_delivered=" << port.sonar_count
             << " state_delivered=" << port.vehicle_state_count
+            << " left_expected=" << camera_expected
+            << " left_actual=" << port.left_image_count
+            << " right_expected=" << camera_expected
+            << " right_actual=" << port.right_image_count
+            << " sonar_expected=" << sonar_expected
+            << " sonar_actual=" << port.sonar_count
+            << " state_expected=" << state_expected
+            << " state_actual=" << port.vehicle_state_count
+            << " rate_count_violations=" << rate_count_violations
+            << " deadline_misses=" << deadline_misses
+            << " left_max_lateness_ns=" << DurationNanoseconds(camera_deadlines.max_lateness)
+            << " right_max_lateness_ns=" << DurationNanoseconds(camera_deadlines.max_lateness)
+            << " sonar_max_lateness_ns=" << DurationNanoseconds(sonar_deadlines.max_lateness)
+            << " state_max_lateness_ns=" << DurationNanoseconds(state_deadlines.max_lateness)
             << " high_water_localization=" << stats.localization.high_watermark
             << " high_water_correction=" << stats.correction.high_watermark
             << " high_water_mapping=" << stats.mapping.high_watermark << '\n';
+  std::cout.flush();
+  if (!std::cout) {
+    throw std::runtime_error("failed to write live ingress summary");
+  }
   return ok ? 0 : 1;
 }
 

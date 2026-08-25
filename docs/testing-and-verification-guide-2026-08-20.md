@@ -79,8 +79,16 @@ ctest --test-dir build -R integration.live_ingress_smoke --output-on-failure
 `/usr/bin/time -v` 的 `Maximum resident set size` 是外部 RSS 采样证据；也可另开终端用
 `ps -o pid,rss,etime,cmd -p <pid>` 周期采样。短档与长档都要求进程退出码为 0，最后一行
 至少包含连续字段 `reference_delivered=0 semantic_rejected=1
-queue_capacity_violations=0 flush_count=1`；同时应看到 `reference_rejected=1`、左右相机
-交付数相等、三类正常输入交付数非零，且 submitted 与 delivered 相等。
+queue_capacity_violations=0 flush_count=1`；同时必须看到 `reference_rejected=1`、
+`rate_count_violations=0 deadline_misses=0`，四个目标流（左相机、右相机、声呐、载体
+状态）的 `*_expected` 与 `*_actual` 分别相等，且 submitted 与 delivered 相等。每个
+`*_max_lateness_ns` 是该流相对计划 deadline 的最大迟到时间。
+
+调度器不会在落后时 burst catch-up：落后至少一个 period 时跳过所有完整过期 tick，
+每个流在每轮循环最多提交当前一帧。`deadline_misses` 是跳过的 per-stream tick 总数
+（双目左右分别计数），任何 miss 或 expected/actual 不一致都会使 gate 非零退出。CTest
+脚本用 `--inject-stall-ms`（默认 0，仅用于自测）注入短暂停顿，并要求该负例输出正的
+`deadline_misses` / `rate_count_violations` 后失败。
 
 ### 手动跑端到端 Demo
 
