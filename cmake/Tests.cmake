@@ -78,6 +78,7 @@ add_executable(runtime_tests
   tests/runtime/mcap_io_test.cpp
   tests/runtime/config_test.cpp
   tests/runtime/acoustic_optic_synchronizer_test.cpp
+  tests/runtime/acoustic_optic_buffer_test.cpp
   tests/runtime/bag_audit_checks_test.cpp
   tests/runtime/synthetic_sonar_test.cpp
   tests/runtime/canonical_event_test.cpp

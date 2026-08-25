@@ -70,6 +70,23 @@ TEST(DomainContract, VehicleStateRoundTripsWithCanonicalHeaderAndDeviceHealth) {
   EXPECT_TRUE(parsed.device_health_valid());
 }
 
+TEST(DomainContract, RigCalibrationRoundTripsTimingProvenanceAndVehicleStateRole) {
+  uw::domain::RigCalibrationSnapshot rig;
+  rig.add_vehicle_state_sensors()->set_value("rov-state");
+  (*rig.mutable_time_offset_seconds())["rov-state"] = 0.0;
+  (*rig.mutable_time_offset_provenance())["rov-state"] = "measured:pps-v3";
+  std::string bytes;
+  ASSERT_TRUE(rig.SerializeToString(&bytes));
+  uw::domain::RigCalibrationSnapshot parsed;
+  ASSERT_TRUE(parsed.ParseFromString(bytes));
+  ASSERT_EQ(parsed.vehicle_state_sensors_size(), 1);
+  EXPECT_EQ(parsed.vehicle_state_sensors(0).value(), "rov-state");
+  EXPECT_EQ(parsed.time_offset_provenance().at("rov-state"), "measured:pps-v3");
+  const auto* field = parsed.GetDescriptor()->FindFieldByName("vehicle_state_sensors");
+  ASSERT_NE(field, nullptr);
+  EXPECT_EQ(field->number(), 10);
+}
+
 TEST(DomainContract, TargetTrackPreservesSourcesAgeAndUncertainty) {
   uw::domain::TargetTrack track;
   track.mutable_track_id()->set_value("track_9");

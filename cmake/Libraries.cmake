@@ -100,6 +100,7 @@ add_library(runtime STATIC
   src/runtime/mcap_io.cpp
   src/runtime/config.cpp
   src/runtime/acoustic_optic_synchronizer.cpp
+  src/runtime/acoustic_optic_buffer.cpp
   src/runtime/bag_audit_checks.cpp
   src/runtime/synthetic_sonar.cpp
   src/runtime/mcap_event_source.cpp

@@ -7,6 +7,7 @@
 // rig calibration looks like).
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -18,6 +19,18 @@
 #include "domain/domain.hpp"
 
 namespace uw::runtime {
+
+// Bounded corrected-time queues used by AcousticOpticBuffer. Time windows
+// are inclusive; capacities are hard limits and must be positive.
+struct AcousticOpticBufferConfig {
+  double max_stereo_delta_s = 0.002;
+  double max_sonar_camera_delta_s = 0.050;
+  double max_state_bracket_s = 0.100;
+  double max_residence_s = 0.500;
+  std::size_t max_images_per_camera = 32;
+  std::size_t max_sonar_frames = 16;
+  std::size_t max_vehicle_states = 128;
+};
 
 // Translation and rotation get INDEPENDENT sqrt-information caps (rather
 // than one scalar for both) since RelativePoseFactorBuilder now whitens

@@ -65,7 +65,7 @@ TEST(AcousticOpticSynchronizer, RejectsFramesBeyondToleranceButReportsRealDelta)
   EXPECT_NEAR(decision.max_pairwise_time_delta_s, 0.21, 1e-6);
 }
 
-TEST(AcousticOpticSynchronizer, DefaultsMissingSensorOffsetToZero) {
+TEST(AcousticOpticSynchronizer, RejectsMissingSensorOffset) {
   uw::domain::RigCalibrationSnapshot rig;  // no time_offset_seconds entries at all
   const auto left = MakeImage("camera_left", 100, 0);
   const auto sonar = MakeSonar("sonar0", 100, 5'000'000);  // 5ms drift
@@ -73,13 +73,13 @@ TEST(AcousticOpticSynchronizer, DefaultsMissingSensorOffsetToZero) {
   uw::runtime::SynchronizerParams params;
   params.max_time_delta_s = 0.02;
   const auto decision = uw::runtime::SynchronizeAcousticOptic(left, std::nullopt, sonar, rig, params);
-  EXPECT_EQ(decision.status, SynchronizationStatus::kSynchronized);
-  ASSERT_TRUE(decision.bundle.has_value());
-  EXPECT_NEAR(decision.max_pairwise_time_delta_s, 0.005, 1e-6);
+  EXPECT_EQ(decision.status, SynchronizationStatus::kInvalidTimestamp);
+  EXPECT_FALSE(decision.bundle.has_value());
 }
 
 TEST(AcousticOpticSynchronizer, NoSonarIsNotAFailure) {
   uw::domain::RigCalibrationSnapshot rig;
+  (*rig.mutable_time_offset_seconds())["camera_left"] = 0.0;
   const auto left = MakeImage("camera_left", 100, 0);
 
   uw::runtime::SynchronizerParams params;
@@ -92,6 +92,8 @@ TEST(AcousticOpticSynchronizer, NoSonarIsNotAFailure) {
 
 TEST(AcousticOpticSynchronizer, AllZeroStampIsALegalTimestamp) {
   uw::domain::RigCalibrationSnapshot rig;
+  (*rig.mutable_time_offset_seconds())["camera_left"] = 0.0;
+  (*rig.mutable_time_offset_seconds())["sonar0"] = 0.0;
   const auto left = MakeImage("camera_left", 0, 0);
   const auto sonar = MakeSonar("sonar0", 0, 0);
 
@@ -123,6 +125,20 @@ TEST(AcousticOpticSynchronizer, RejectsNanosAtOrAboveOneBillion) {
 
   uw::runtime::SynchronizerParams params;
   const auto decision = uw::runtime::SynchronizeAcousticOptic(left, std::nullopt, sonar, rig, params);
+  EXPECT_EQ(decision.status, SynchronizationStatus::kInvalidTimestamp);
+  EXPECT_FALSE(decision.bundle.has_value());
+}
+
+TEST(AcousticOpticSynchronizer, RejectsAbsentCaptureTime) {
+  uw::domain::RigCalibrationSnapshot rig;
+  (*rig.mutable_time_offset_seconds())["camera_left"] = 0.0;
+  (*rig.mutable_time_offset_seconds())["sonar0"] = 0.0;
+  auto left = MakeImage("camera_left", 100, 0);
+  left.mutable_header()->clear_capture_time();
+  const auto sonar = MakeSonar("sonar0", 100, 0);
+
+  const auto decision = uw::runtime::SynchronizeAcousticOptic(
+      left, std::nullopt, sonar, rig, uw::runtime::SynchronizerParams{});
   EXPECT_EQ(decision.status, SynchronizationStatus::kInvalidTimestamp);
   EXPECT_FALSE(decision.bundle.has_value());
 }

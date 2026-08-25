@@ -4,6 +4,7 @@
 #include <cmath>
 #include <limits>
 #include <filesystem>
+#include <set>
 #include <stdexcept>
 #include <vector>
 
@@ -310,6 +311,27 @@ uw::domain::RigCalibrationSnapshot LoadRigConfig(const std::string& path) {
     }
   }
 
+  if (root["time_offset_provenance"]) {
+    for (const auto& entry : root["time_offset_provenance"]) {
+      (*snapshot.mutable_time_offset_provenance())[entry.first.as<std::string>()] =
+          entry.second.as<std::string>();
+    }
+  }
+
+  if (root["vehicle_state_sensors"]) {
+    if (!root["vehicle_state_sensors"].IsSequence()) {
+      throw std::runtime_error("vehicle_state_sensors must be a sequence: " + path);
+    }
+    std::set<std::string> state_sensor_ids;
+    for (const auto& sensor_node : root["vehicle_state_sensors"]) {
+      const std::string sensor_id = sensor_node.as<std::string>();
+      if (sensor_id.empty() || !state_sensor_ids.insert(sensor_id).second) {
+        throw std::runtime_error("vehicle_state_sensors entries must be non-empty and unique: " + path);
+      }
+      snapshot.add_vehicle_state_sensors()->set_value(sensor_id);
+    }
+  }
+
   if (root["sonar_beam_models"]) {
     for (const auto& sonar_node : root["sonar_beam_models"]) {
       auto* model = snapshot.add_sonar_beam_models();
@@ -329,6 +351,50 @@ uw::domain::RigCalibrationSnapshot LoadRigConfig(const std::string& path) {
       model->mutable_sensor_id()->set_value(depth_node["sensor_id"].as<std::string>());
       model->set_noise_sigma_m(GetOr<double>(depth_node, "noise_sigma_m", 0.05));
       model->set_depth_enabled(GetOr<bool>(depth_node, "depth_enabled", true));
+    }
+  }
+  std::set<std::string> online_sensor_ids;
+  for (const auto& camera : snapshot.cameras()) {
+    if (camera.sensor_id().value().empty() ||
+        !online_sensor_ids.insert(camera.sensor_id().value()).second) {
+      throw std::runtime_error("camera sensor ids must be non-empty and unique: " + path);
+    }
+  }
+  for (const auto& sonar : snapshot.sonar_beam_models()) {
+    if (!sonar.sonar_enabled()) continue;
+    if (sonar.sensor_id().value().empty() ||
+        !online_sensor_ids.insert(sonar.sensor_id().value()).second) {
+      throw std::runtime_error("enabled sonar sensor ids must be non-empty and unique: " + path);
+    }
+  }
+  for (const auto& sensor : snapshot.vehicle_state_sensors()) {
+    if (!online_sensor_ids.insert(sensor.value()).second) {
+      throw std::runtime_error("online sensor roles must use unique sensor ids: " + path);
+    }
+  }
+  for (const std::string& sensor_id : online_sensor_ids) {
+    const auto offset = snapshot.time_offset_seconds().find(sensor_id);
+    const auto provenance = snapshot.time_offset_provenance().find(sensor_id);
+    if (offset == snapshot.time_offset_seconds().end() || !std::isfinite(offset->second) ||
+        provenance == snapshot.time_offset_provenance().end() || provenance->second.empty()) {
+      throw std::runtime_error("online sensor requires finite time offset and non-empty provenance: " +
+                               sensor_id + " in " + path);
+    }
+  }
+  for (const auto& entry : snapshot.time_offset_seconds()) {
+    if (!std::isfinite(entry.second)) {
+      throw std::runtime_error("time offset must be finite: " + entry.first + " in " + path);
+    }
+    const auto provenance = snapshot.time_offset_provenance().find(entry.first);
+    if (provenance == snapshot.time_offset_provenance().end() || provenance->second.empty()) {
+      throw std::runtime_error("every time offset requires non-empty provenance: " + entry.first +
+                               " in " + path);
+    }
+  }
+  for (const auto& entry : snapshot.time_offset_provenance()) {
+    if (entry.second.empty() || snapshot.time_offset_seconds().count(entry.first) == 0) {
+      throw std::runtime_error("time offset provenance requires a matching offset: " + entry.first +
+                               " in " + path);
     }
   }
 

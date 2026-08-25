@@ -29,6 +29,16 @@ time_offset_seconds:
   sonar0: 0.0
   imu0: 0.0
   depth0: 0.0
+  rov-state: 0.0
+
+time_offset_provenance:
+  sonar0: measured:simulation
+  imu0: measured:simulation
+  depth0: measured:simulation
+  rov-state: measured:simulation
+
+vehicle_state_sensors:
+  - rov-state
 
 imu_noise:
   sigma_gyro_c: 1.6968e-4

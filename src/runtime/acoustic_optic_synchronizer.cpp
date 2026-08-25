@@ -18,12 +18,13 @@ constexpr int32_t kNanosPerSecond = 1'000'000'000;
 std::optional<double> CorrectedTime(const uw::domain::ObservationHeader& header,
                                     const uw::domain::RigCalibrationSnapshot& rig) {
   if (header.sensor_id().value().empty()) return std::nullopt;
+  if (!header.has_capture_time()) return std::nullopt;
   const auto& stamp = header.capture_time();
   if (stamp.nanos() < 0 || stamp.nanos() >= kNanosPerSecond) return std::nullopt;
 
-  const double offset = rig.time_offset_seconds().count(header.sensor_id().value()) > 0
-                            ? rig.time_offset_seconds().at(header.sensor_id().value())
-                            : 0.0;
+  const auto offset_it = rig.time_offset_seconds().find(header.sensor_id().value());
+  if (offset_it == rig.time_offset_seconds().end()) return std::nullopt;
+  const double offset = offset_it->second;
   if (!std::isfinite(offset)) return std::nullopt;
 
   const double corrected = uw::domain::ToSeconds(stamp) + offset;

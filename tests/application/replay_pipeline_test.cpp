@@ -294,7 +294,10 @@ TEST(ReplayPipeline, RectifiesNonParallelRigBeforeStereoFrontendsAndPopulatesBot
             "    distortion_model: plumb_bob\n"
             "time_offset_seconds:\n"
             "  camera_left: 0.0\n"
-            "  camera_right: 0.0\n");
+            "  camera_right: 0.0\n"
+            "time_offset_provenance:\n"
+            "  camera_left: measured:test-clock\n"
+            "  camera_right: measured:test-clock\n");
 
   WriteFile(root / "scenario" / "test_scenario.yaml", "seed: 1\nnum_keyframes: 2\n");
 
