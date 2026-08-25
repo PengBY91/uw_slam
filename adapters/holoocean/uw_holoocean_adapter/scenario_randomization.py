@@ -108,3 +108,16 @@ def sample_uniform_sweep(
         return type(low_obj)(**kwargs)
 
     return sample_dataclass(low, high)
+
+
+def sample_run_randomization(
+    seed: int,
+    low: ScenarioRandomization,
+    high: ScenarioRandomization,
+) -> ScenarioRandomization:
+    """Same as `sample_uniform_sweep`, but owns its `Generator` construction
+    from a plain integer `seed` instead of taking a caller-owned `Generator`
+    — for run-level callers (HoloOcean session setup, the realtime gate)
+    that have a single seed and want one deterministic sample, not a batch
+    sweep where reusing one `Generator` across many samples matters."""
+    return sample_uniform_sweep(np.random.default_rng(seed), low, high)

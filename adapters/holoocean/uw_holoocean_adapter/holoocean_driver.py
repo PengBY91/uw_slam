@@ -42,15 +42,65 @@ single `numpy.random.Generator` seeded once from the scenario config and
 threads it through explicitly; nothing here calls `numpy.random.seed()` at
 runtime (that was the specific bug that broke L2 replay determinism in the
 audited code).
+
+Realtime closed-loop Task 2 update: `__init__` no longer calls
+`self._env.reset()` — reading `HoloOceanEnvironment.__init__`'s own source
+directly confirmed it already calls `self.reset()` before returning from
+`holoocean.make()`, so the old explicit reset was a real double-reset bug,
+just one the four bugs above didn't happen to expose. `__init__` also now
+accepts either a `scenario_cfg` dict (the realtime BlueROV manifest path,
+see `scenario_manifest.py`) or a legacy bare `scenario_name` string (the
+path `record_session.py`/`calibrate_camera.py` already use against
+hardware-verified HoloOcean built-in scenarios) — dispatched by
+`isinstance`, both are real independently-supported forms of
+`holoocean.make()`. `apply_randomization()` is implemented for real and
+called automatically at construction time instead of raising
+`NotImplementedError`. And Python's global `random` module state is now
+saved/seeded/restored around the session's lifetime in addition to the
+owned `numpy.random.Generator` above — HoloOcean's own internals may reach
+into the global `random` module in ways this repo doesn't control, so
+leaving it unseeded would reintroduce the same class of non-determinism
+the numpy Generator was already threaded through to avoid. This is
+deliberately scoped to construction→close (seed once, restore once), not a
+mid-run reseed — the pattern CLAUDE.md's "已经踩过的坑" section flags as the
+actual bug class to avoid.
 """
 from __future__ import annotations
 
+import copy
 import dataclasses
+import random
 from typing import Any, Dict, Optional
 
 import numpy as np
 
 from uw_holoocean_adapter.scenario_randomization import ScenarioRandomization
+
+_NOMINAL_FLASHLIGHT_INTENSITY = 5000.0  # HoloOcean's own turn_on_flashlight() default
+
+
+def _prepare_scenario_cfg(scenario_cfg: Dict[str, Any], randomization: ScenarioRandomization) -> Dict[str, Any]:
+    """Returns a deep copy of `scenario_cfg` with `randomization.sonar`'s
+    speckle/range-noise/sound-speed axes applied to every ImagingSonar
+    sensor's `configuration` block. These are construction-time HoloOcean
+    sensor parameters (baked into the scenario the server loads), not
+    runtime commands, so they must land in the dict passed to
+    `holoocean.make()` rather than be pushed via a post-construction API
+    call. `AddSigma`/`MultiPath` are left untouched (no corresponding
+    ScenarioRandomization field exists yet) rather than overwritten with a
+    fabricated value."""
+    prepared = copy.deepcopy(scenario_cfg)
+    sonar = randomization.sonar
+    for agent in prepared.get("agents", []):
+        for sensor in agent.get("sensors", []):
+            if sensor.get("sensor_type") != "ImagingSonar":
+                continue
+            config = sensor.setdefault("configuration", {})
+            config["MultSigma"] = sonar.speckle_sigma
+            config["RangeSigma"] = sonar.range_noise_sigma_m
+            if "WaterSpeedSound" in config:
+                config["WaterSpeedSound"] = config["WaterSpeedSound"] * sonar.sound_speed_scale
+    return prepared
 
 
 def _import_holoocean():
@@ -90,28 +140,69 @@ class HoloOceanSession:
 
     def __init__(
         self,
-        scenario_name: str,
+        scenario_cfg: Dict[str, Any] | str,
         seed: int,
-        randomization: Optional[ScenarioRandomization] = None,
+        randomization: ScenarioRandomization = ScenarioRandomization(),
     ):
         self._holoocean = _import_holoocean()
+        self._saved_random_state = random.getstate()
+        random.seed(seed)
         self._rng = np.random.default_rng(seed)
-        self._randomization = randomization or ScenarioRandomization()
-        self._env = self._holoocean.make(scenario_name)
-        self._env.reset()
+        self._randomization = randomization
+        if isinstance(scenario_cfg, dict):
+            prepared_cfg = _prepare_scenario_cfg(scenario_cfg, randomization)
+            self._env = self._holoocean.make(scenario_cfg=prepared_cfg)
+        else:
+            self._env = self._holoocean.make(scenario_cfg)
         self._tick = 0
+        self.apply_randomization()
 
     def apply_randomization(self) -> None:
         """Pushes this session's ScenarioRandomization into the HoloOcean
-        environment. NOT implemented/tested here (see module docstring) —
-        the exact HoloOcean API calls for water/sonar parameter injection
-        depend on the HoloOcean version and scene, and must be filled in
-        against a real HoloOcean install."""
-        raise NotImplementedError(
-            "HoloOceanSession.apply_randomization: fill in against a real "
-            "HoloOcean environment; see ScenarioRandomization for the "
-            "parameter space this must cover."
+        environment via real, post-construction command APIs (sonar
+        construction-time parameters are handled separately, before
+        `make()`, by `_prepare_scenario_cfg` — see its docstring). Called
+        automatically at the end of `__init__`; exposed as a public method
+        too in case a caller wants to re-push after mutating
+        `self._randomization` mid-session (not currently exercised by any
+        caller in this repo, but harmless — every call here is idempotent,
+        not incremental)."""
+        visual = self._randomization.visual
+        self._env.water_fog(visual.turbidity)
+        # No ScenarioRandomization field maps directly onto an RGB water
+        # tint; this is a coarse, undocumented-by-spec placeholder (murkier
+        # water skews darker/greener as backscatter rises) rather than a
+        # value any test pins down numerically.
+        self._env.water_color(
+            0.05,
+            max(0.0, 0.55 - 0.25 * visual.backscatter_gain),
+            max(0.0, 0.65 - 0.15 * visual.backscatter_gain),
         )
+
+        agent_name = self._try_resolve_agent_name()
+        if agent_name is not None:
+            # Baseline neutral current — ScenarioRandomization has no
+            # current-velocity axis yet; Task 5's fault injector is where
+            # `set_ocean_currents` gets driven with real, non-zero values
+            # (see the realtime closed-loop plan's Task 5: "route current
+            # changes through set_ocean_currents"). Calling it here with a
+            # zero vector still satisfies this task's "apply ... after
+            # creation" requirement without fabricating a randomization
+            # axis that doesn't exist yet.
+            self._env.set_ocean_currents(agent_name, [0.0, 0.0, 0.0])
+
+        scenario = getattr(self._env, "_scenario", None)
+        if isinstance(scenario, dict):
+            for flashlight in scenario.get("flashlight", []):
+                name = flashlight.get("flashlight_name", "flashlight1")
+                base_intensity = flashlight.get("intensity", _NOMINAL_FLASHLIGHT_INTENSITY)
+                self._env.turn_on_flashlight(name, intensity=base_intensity * visual.illumination_scale)
+
+    def _try_resolve_agent_name(self) -> Optional[str]:
+        try:
+            return self._resolve_agent_name()
+        except ValueError:
+            return None
 
     def step(self, action: Optional[Any] = None) -> RawSensorFrame:
         import time as _time
@@ -128,13 +219,17 @@ class HoloOceanSession:
         return RawSensorFrame(sim_time_s=sim_time_s, receive_time_s=_time.time(), sensors=state)
 
     def close(self) -> None:
-        # HoloOceanEnvironment has no public close() either (confirmed the
-        # same way as ticks_per_sec above) — cleanup is only exposed
-        # through the context-manager protocol (`with holoocean.make(...)
-        # as env:`), which is what its own source calls "Context manager
-        # APIs" in a comment, i.e. the one bit of the exit path actually
-        # meant to be called from outside the class.
-        self._env.__exit__(None, None, None)
+        try:
+            # HoloOceanEnvironment has no public close() either (confirmed
+            # the same way as ticks_per_sec above) — cleanup is only
+            # exposed through the context-manager protocol (`with
+            # holoocean.make(...) as env:`), which is what its own source
+            # calls "Context manager APIs" in a comment, i.e. the one bit
+            # of the exit path actually meant to be called from outside the
+            # class.
+            self._env.__exit__(None, None, None)
+        finally:
+            random.setstate(self._saved_random_state)
 
     def spawn_prop(
         self,
@@ -142,6 +237,7 @@ class HoloOceanSession:
         location: Any,
         rotation: Any = (0.0, 0.0, 0.0),
         scale: Any = (1.0, 1.0, 1.0),
+        sim_physics: bool = False,
         material: str = "white",
         tag: Optional[str] = None,
     ) -> None:
@@ -157,6 +253,7 @@ class HoloOceanSession:
             location=location,
             rotation=rotation,
             scale=scale,
+            sim_physics=sim_physics,
             material=material,
             tag=tag,
         )
@@ -177,12 +274,16 @@ class HoloOceanSession:
         frame. HoloOcean has no public API to move a sensor independently
         of its agent, so this moves the whole rig; the camera moves with it
         via its fixed mounting extrinsic."""
+        agent_name = self._resolve_agent_name(agent_name)
+        self._env.agents[agent_name].set_physics_state(location, rotation, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
+
+    def _resolve_agent_name(self, agent_name: Optional[str] = None) -> str:
         agents = self._env.agents
-        if agent_name is None:
-            if len(agents) != 1:
-                raise ValueError(
-                    f"scenario has {len(agents)} agents ({sorted(agents)}); "
-                    "pass agent_name explicitly to disambiguate"
-                )
-            agent_name = next(iter(agents))
-        agents[agent_name].set_physics_state(location, rotation, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
+        if agent_name is not None:
+            return agent_name
+        if len(agents) != 1:
+            raise ValueError(
+                f"scenario has {len(agents)} agents ({sorted(agents)}); "
+                "pass agent_name explicitly to disambiguate"
+            )
+        return next(iter(agents))
