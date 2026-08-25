@@ -127,6 +127,12 @@ uw::domain::ImageFrame MakeSupportedStructureImage() {
   return image;
 }
 
+uw::domain::ImageFrame MakeSingleStructureLineImage() {
+  auto image = MakeRgbImage(320, 240, {45, 45, 45});
+  PaintLine(&image, 125, 239, 165, 20, {230, 230, 230}, 1);
+  return image;
+}
+
 uw::domain::ImageFrame MakeSmoothGradientImage() {
   auto image = MakeRgbImage(320, 240, {0, 0, 0});
   std::string pixels = image.pixel_data();
@@ -227,6 +233,14 @@ TEST(OpenCvVisualAssistFrontend, RejectsStructureOffsetWhenLineSupportIsWeak) {
   const auto result = frontend.Process(MakeUniformRgbImage(), std::nullopt,
                                        TestCameraIntrinsics());
   EXPECT_FALSE(result.path_lateral_offset_m.has_value());
+}
+
+TEST(OpenCvVisualAssistFrontend, RejectsTwoCannyEdgesFromOnePhysicalStructureLine) {
+  OpenCvVisualAssistFrontend frontend(TestVisualAssistParams());
+  const auto result = frontend.Process(MakeSingleStructureLineImage(),
+                                       MakeEmptyMetricDepth(), TestCameraIntrinsics());
+  EXPECT_FALSE(result.path_lateral_offset_m.has_value());
+  EXPECT_FALSE(result.path_offset_sigma_m.has_value());
 }
 
 TEST(OpenCvVisualAssistFrontend, ReportsExactVisualQualityReasons) {
@@ -495,6 +509,37 @@ TEST(OpenCvVisualAssistFrontend, RejectsInvalidParamsAtConstruction) {
   params = TestVisualAssistParams();
   params.canny_high_threshold = params.canny_low_threshold;
   EXPECT_THROW(OpenCvVisualAssistFrontend frontend(params), std::invalid_argument);
+}
+
+TEST(OpenCvVisualAssistFrontend, RejectsParamsWhoseFixedCovarianceDerivationsOverflow) {
+  auto params = TestVisualAssistParams();
+  params.bearing_sigma_rad = std::numeric_limits<double>::max();
+  EXPECT_THROW(OpenCvVisualAssistFrontend frontend(params), std::invalid_argument);
+
+  params = TestVisualAssistParams();
+  params.minimum_range_sigma_m = std::numeric_limits<double>::max();
+  EXPECT_THROW(OpenCvVisualAssistFrontend frontend(params), std::invalid_argument);
+}
+
+TEST(OpenCvVisualAssistFrontend, FailsRangeClosedWhenDepthUncertaintyDerivationOverflows) {
+  auto params = TestVisualAssistParams();
+  params.depth_mad_scale = std::numeric_limits<double>::max();
+  OpenCvVisualAssistFrontend frontend(params);
+  const auto image =
+      MakeRgbImageWithRectangle(320, 240, 130, 80, 60, 50, {20, 220, 20});
+  const auto result = frontend.Process(image, MakeDepthWithNineCentralSamples(),
+                                       TestCameraIntrinsics());
+
+  ASSERT_EQ(result.targets.size(), 1u);
+  const auto& target = result.targets[0];
+  EXPECT_FALSE(target.has_range());
+  EXPECT_DOUBLE_EQ(target.range_m(), 0.0);
+  ASSERT_EQ(target.covariance_2x2_row_major_size(), 4);
+  for (double covariance : target.covariance_2x2_row_major()) {
+    EXPECT_TRUE(std::isfinite(covariance));
+  }
+  EXPECT_EQ(result.health.status(), uw::domain::HealthReport::STATUS_SUSPECT);
+  EXPECT_EQ(result.health.reason_code(), "stereo_depth_unavailable");
 }
 
 }  // namespace

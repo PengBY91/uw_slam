@@ -14,9 +14,13 @@ namespace uw::opencv_adapters {
 namespace {
 
 constexpr char kImplementationLabel[] = "sim_fixture_detector_v1";
+constexpr double kPi = 3.14159265358979323846;
 
 bool FiniteNonNegative(double value) { return std::isfinite(value) && value >= 0.0; }
 bool FinitePositive(double value) { return std::isfinite(value) && value > 0.0; }
+bool HasFiniteSquare(double value) {
+  return FiniteNonNegative(value) && std::isfinite(value * value);
+}
 
 void ValidateParams(const VisualAssistParams& params) {
   const bool valid_hsv = params.hsv_hue_min >= 0 && params.hsv_hue_min <= 179 &&
@@ -37,13 +41,18 @@ void ValidateParams(const VisualAssistParams& params) {
                                FinitePositive(params.hough_min_line_length_px) &&
                                FiniteNonNegative(params.hough_max_line_gap_px) &&
                                FinitePositive(params.minimum_structure_vertical_span_px) &&
+                               FinitePositive(params.structure_orientation_cluster_tolerance_rad) &&
+                               params.structure_orientation_cluster_tolerance_rad <= kPi * 0.5 &&
+                               FinitePositive(params.structure_normal_distance_cluster_px) &&
                                params.minimum_structure_line_count > 0 &&
                                FinitePositive(params.structure_reference_range_m) &&
                                FinitePositive(params.path_offset_sigma_m);
   const bool valid_uncertainty = params.minimum_valid_depth_samples >= 9 &&
                                  FinitePositive(params.depth_mad_scale) &&
                                  FinitePositive(params.minimum_range_sigma_m) &&
+                                 HasFiniteSquare(params.minimum_range_sigma_m) &&
                                  FinitePositive(params.bearing_sigma_rad) &&
+                                 HasFiniteSquare(params.bearing_sigma_rad) &&
                                  FinitePositive(params.unobserved_range_variance_m2);
   if (!valid_hsv || params.minimum_component_area_px <= 0 || !valid_quality ||
       !valid_structure || !valid_uncertainty || params.class_label.empty()) {
@@ -139,22 +148,78 @@ void PopulatePathOffset(const cv::Mat& edges, const VisualAssistParams& params,
   cv::HoughLinesP(edges, lines, 1.0, CV_PI / 180.0, params.hough_vote_threshold,
                   params.hough_min_line_length_px, params.hough_max_line_gap_px);
 
-  std::size_t supported_line_count = 0;
-  double weighted_center_sum = 0.0;
-  double total_length = 0.0;
+  struct StructureLine {
+    double angle_rad = 0.0;
+    double midpoint_x = 0.0;
+    double midpoint_y = 0.0;
+    double center_u = 0.0;
+    double length = 0.0;
+  };
+  std::vector<StructureLine> structure_lines;
   for (const cv::Vec4i& line : lines) {
     const double dx = static_cast<double>(line[2] - line[0]);
     const double dy = static_cast<double>(line[3] - line[1]);
     if (std::abs(dy) < params.minimum_structure_vertical_span_px) continue;
     const double length = std::hypot(dx, dy);
-    const double center_u = 0.5 * static_cast<double>(line[0] + line[2]);
-    weighted_center_sum += center_u * length;
-    total_length += length;
-    ++supported_line_count;
+    if (!FinitePositive(length)) continue;
+    double angle = std::atan2(dy, dx);
+    if (angle < 0.0) angle += kPi;
+    if (angle >= kPi) angle -= kPi;
+    structure_lines.push_back(
+        StructureLine{angle, 0.5 * static_cast<double>(line[0] + line[2]),
+                      0.5 * static_cast<double>(line[1] + line[3]),
+                      0.5 * static_cast<double>(line[0] + line[2]), length});
   }
-  if (supported_line_count < params.minimum_structure_line_count || total_length <= 0.0) return;
 
-  const double structure_center_u = weighted_center_sum / total_length;
+  std::sort(structure_lines.begin(), structure_lines.end(),
+            [](const StructureLine& lhs, const StructureLine& rhs) {
+              if (lhs.angle_rad != rhs.angle_rad) return lhs.angle_rad < rhs.angle_rad;
+              if (lhs.midpoint_x != rhs.midpoint_x) return lhs.midpoint_x < rhs.midpoint_x;
+              return lhs.midpoint_y < rhs.midpoint_y;
+            });
+
+  struct StructureSupport {
+    double angle_rad = 0.0;
+    double reference_midpoint_x = 0.0;
+    double reference_midpoint_y = 0.0;
+    double weighted_center_sum = 0.0;
+    double total_length = 0.0;
+  };
+  std::vector<StructureSupport> supports;
+  for (const StructureLine& line : structure_lines) {
+    StructureSupport* matched_support = nullptr;
+    for (auto& support : supports) {
+      const double direct_angle_difference = std::abs(line.angle_rad - support.angle_rad);
+      const double angle_difference =
+          std::min(direct_angle_difference, kPi - direct_angle_difference);
+      if (angle_difference > params.structure_orientation_cluster_tolerance_rad) continue;
+      const double normal_x = -std::sin(support.angle_rad);
+      const double normal_y = std::cos(support.angle_rad);
+      const double normal_distance =
+          std::abs((line.midpoint_x - support.reference_midpoint_x) * normal_x +
+                   (line.midpoint_y - support.reference_midpoint_y) * normal_y);
+      if (normal_distance <= params.structure_normal_distance_cluster_px) {
+        matched_support = &support;
+        break;
+      }
+    }
+    if (matched_support == nullptr) {
+      supports.push_back(StructureSupport{line.angle_rad, line.midpoint_x, line.midpoint_y,
+                                          0.0, 0.0});
+      matched_support = &supports.back();
+    }
+    matched_support->weighted_center_sum += line.center_u * line.length;
+    matched_support->total_length += line.length;
+  }
+  if (supports.size() < params.minimum_structure_line_count) return;
+
+  double structure_center_sum = 0.0;
+  for (const StructureSupport& support : supports) {
+    if (!FinitePositive(support.total_length)) return;
+    structure_center_sum += support.weighted_center_sum / support.total_length;
+  }
+
+  const double structure_center_u = structure_center_sum / static_cast<double>(supports.size());
   const double fx = intrinsics.k_matrix_row_major(0);
   const double cx = intrinsics.k_matrix_row_major(2);
   result->path_lateral_offset_m =
@@ -314,11 +379,19 @@ uw::measurement_api::VisualAssistResult OpenCvVisualAssistFrontend::Process(
       deviations.reserve(statistics.samples.size());
       for (double sample : statistics.samples) deviations.push_back(std::abs(sample - median));
       const double mad = Median(&deviations);
-      const double sigma = std::max(params_.minimum_range_sigma_m, params_.depth_mad_scale * mad);
+      const double scaled_mad = params_.depth_mad_scale * mad;
+      const double sigma = std::max(params_.minimum_range_sigma_m, scaled_mad);
+      const double range_variance = sigma * sigma;
+      const double range_extent = 2.0 * sigma;
+      if (!std::isfinite(median) || !std::isfinite(scaled_mad) || !std::isfinite(sigma) ||
+          !std::isfinite(range_variance) || !std::isfinite(range_extent)) {
+        depth_degraded = true;
+        continue;
+      }
       target.set_has_range(true);
       target.set_range_m(median);
-      target.set_covariance_2x2_row_major(3, sigma * sigma);
-      target.set_range_extent_m(2.0 * sigma);
+      target.set_covariance_2x2_row_major(3, range_variance);
+      target.set_range_extent_m(range_extent);
     }
   }
 

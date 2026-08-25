@@ -27,6 +27,8 @@ struct VisualAssistParams {
   double hough_min_line_length_px = 40.0;
   double hough_max_line_gap_px = 12.0;
   double minimum_structure_vertical_span_px = 80.0;
+  double structure_orientation_cluster_tolerance_rad = 0.12;
+  double structure_normal_distance_cluster_px = 8.0;
   std::size_t minimum_structure_line_count = 2;
   double structure_reference_range_m = 4.0;
   double path_offset_sigma_m = 0.15;
