@@ -26,6 +26,17 @@ reliability:
     sonar_range: 15.0
     depth: 20.0
 
+frontends:
+  sonar_cfar:
+    training_cells: 16
+    guard_cells: 4
+    probability_false_alarm: 0.01
+    detector_threshold: 50
+    dbscan_eps_m: 0.20
+    dbscan_min_samples: 2
+    default_range_sigma_m: 0.05
+    default_bearing_sigma_rad: 0.01
+
 runtime:
   lanes:
     localization: { priority: highest, queue_capacity: 64, overflow_policy: reject }

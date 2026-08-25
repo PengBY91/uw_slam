@@ -22,6 +22,14 @@ TEST(Config, LoadsExperimentConfigWithAllThreeLayers) {
   EXPECT_EQ(config.defaults.max_iterations, 30);
   EXPECT_DOUBLE_EQ(config.defaults.default_sqrt_information.sonar_range, 15.0);
   EXPECT_DOUBLE_EQ(config.defaults.warmup_seconds, 0.0);
+  EXPECT_EQ(config.defaults.sonar_frontend.training_cells, 16);
+  EXPECT_EQ(config.defaults.sonar_frontend.guard_cells, 4);
+  EXPECT_DOUBLE_EQ(config.defaults.sonar_frontend.probability_false_alarm, 0.01);
+  EXPECT_EQ(config.defaults.sonar_frontend.detector_threshold, 50);
+  EXPECT_DOUBLE_EQ(config.defaults.sonar_frontend.dbscan_eps_m, 0.20);
+  EXPECT_EQ(config.defaults.sonar_frontend.dbscan_min_samples, 2);
+  EXPECT_DOUBLE_EQ(config.defaults.sonar_frontend.default_range_sigma_m, 0.05);
+  EXPECT_DOUBLE_EQ(config.defaults.sonar_frontend.default_bearing_sigma_rad, 0.01);
 
   // rig/example_auv.yaml
   EXPECT_EQ(config.rig.calibration_version().value(), "example_auv_v2");
@@ -82,6 +90,33 @@ TEST(Config, StereoRectificationDefaultsWhenSectionAbsent) {
   EXPECT_DOUBLE_EQ(config.stereo_rectification.alpha, 0.0);
   EXPECT_EQ(config.stereo_rectification.crop_policy, "full_canvas");
   EXPECT_EQ(config.stereo_rectification.frame_suffix, "_rectified");
+}
+
+TEST(Config, ParsesTypedSonarCfarOverrides) {
+  const auto tmp_path = std::filesystem::temp_directory_path() / "uw_config_test_sonar_cfar.yaml";
+  {
+    std::ofstream out(tmp_path);
+    out << "frontends:\n"
+           "  sonar_cfar:\n"
+           "    training_cells: 20\n"
+           "    guard_cells: 6\n"
+           "    probability_false_alarm: 0.005\n"
+           "    detector_threshold: 60\n"
+           "    dbscan_eps_m: 0.25\n"
+           "    dbscan_min_samples: 3\n"
+           "    default_range_sigma_m: 0.08\n"
+           "    default_bearing_sigma_rad: 0.02\n";
+  }
+  const auto config = uw::runtime::LoadPlatformDefaultsConfig(tmp_path.string());
+  EXPECT_EQ(config.sonar_frontend.training_cells, 20);
+  EXPECT_EQ(config.sonar_frontend.guard_cells, 6);
+  EXPECT_DOUBLE_EQ(config.sonar_frontend.probability_false_alarm, 0.005);
+  EXPECT_EQ(config.sonar_frontend.detector_threshold, 60);
+  EXPECT_DOUBLE_EQ(config.sonar_frontend.dbscan_eps_m, 0.25);
+  EXPECT_EQ(config.sonar_frontend.dbscan_min_samples, 3);
+  EXPECT_DOUBLE_EQ(config.sonar_frontend.default_range_sigma_m, 0.08);
+  EXPECT_DOUBLE_EQ(config.sonar_frontend.default_bearing_sigma_rad, 0.02);
+  std::remove(tmp_path.string().c_str());
 }
 
 TEST(Config, ParsesStereoRectificationOverrides) {

@@ -93,6 +93,25 @@ TEST(DomainContract, TargetTrackPreservesSourcesAgeAndUncertainty) {
   EXPECT_EQ(track.status(), uw::domain::TARGET_TRACK_STATUS_CONFIRMED);
 }
 
+TEST(DomainContract, SonarHealthMetricsRoundTripWithTypedSemantics) {
+  uw::domain::HealthReport report;
+  report.set_background_noise_mean(12.5);
+  report.set_false_alarm_density(0.125);
+  report.set_valid_measurement_count(3);
+  report.set_config_hash_consistent(false);
+  report.set_latency_p95_ms(7.5);
+
+  std::string bytes;
+  ASSERT_TRUE(report.SerializeToString(&bytes));
+  uw::domain::HealthReport parsed;
+  ASSERT_TRUE(parsed.ParseFromString(bytes));
+  EXPECT_DOUBLE_EQ(parsed.background_noise_mean(), 12.5);
+  EXPECT_DOUBLE_EQ(parsed.false_alarm_density(), 0.125);
+  EXPECT_EQ(parsed.valid_measurement_count(), 3u);
+  EXPECT_FALSE(parsed.config_hash_consistent());
+  EXPECT_DOUBLE_EQ(parsed.latency_p95_ms(), 7.5);
+}
+
 TEST(DomainContract, SonarFrameAscendingAzimuthAccepted) {
   uw::domain::SonarFrame frame;
   frame.add_azimuth_angles(-0.5f);

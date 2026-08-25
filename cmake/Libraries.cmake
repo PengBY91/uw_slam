@@ -43,6 +43,7 @@ add_library(frontends STATIC
   src/frontends/cfar_detector.cpp
   src/frontends/dbscan.cpp
   src/frontends/sonar_cfar_frontend.cpp
+  src/frontends/sonar_target_extractor.cpp
   src/frontends/block_matcher.cpp
   src/frontends/stereo_optical_depth_frontend.cpp
   src/frontends/harris_corner_detector.cpp

@@ -91,6 +91,66 @@ PlatformDefaultsConfig LoadPlatformDefaultsConfig(const std::string& path) {
     }
   }
 
+  if (root["frontends"] && root["frontends"]["sonar_cfar"]) {
+    const auto sonar = root["frontends"]["sonar_cfar"];
+    RejectUnknownKeys(sonar,
+                      {"training_cells", "guard_cells", "probability_false_alarm",
+                       "detector_threshold", "dbscan_eps_m", "dbscan_min_samples",
+                       "default_range_sigma_m", "default_bearing_sigma_rad"},
+                      "frontends.sonar_cfar");
+    config.sonar_frontend.training_cells =
+        GetOr<int>(sonar, "training_cells", config.sonar_frontend.training_cells);
+    config.sonar_frontend.guard_cells =
+        GetOr<int>(sonar, "guard_cells", config.sonar_frontend.guard_cells);
+    config.sonar_frontend.probability_false_alarm = GetOr<double>(
+        sonar, "probability_false_alarm", config.sonar_frontend.probability_false_alarm);
+    config.sonar_frontend.detector_threshold =
+        GetOr<int>(sonar, "detector_threshold", config.sonar_frontend.detector_threshold);
+    config.sonar_frontend.dbscan_eps_m =
+        GetOr<double>(sonar, "dbscan_eps_m", config.sonar_frontend.dbscan_eps_m);
+    config.sonar_frontend.dbscan_min_samples =
+        GetOr<int>(sonar, "dbscan_min_samples", config.sonar_frontend.dbscan_min_samples);
+    config.sonar_frontend.default_range_sigma_m = GetOr<double>(
+        sonar, "default_range_sigma_m", config.sonar_frontend.default_range_sigma_m);
+    config.sonar_frontend.default_bearing_sigma_rad = GetOr<double>(
+        sonar, "default_bearing_sigma_rad", config.sonar_frontend.default_bearing_sigma_rad);
+
+    if (config.sonar_frontend.training_cells <= 0 ||
+        config.sonar_frontend.training_cells % 2 != 0) {
+      throw std::runtime_error("frontends.sonar_cfar.training_cells must be positive and even");
+    }
+    if (config.sonar_frontend.guard_cells < 0 || config.sonar_frontend.guard_cells % 2 != 0) {
+      throw std::runtime_error("frontends.sonar_cfar.guard_cells must be non-negative and even");
+    }
+    if (!std::isfinite(config.sonar_frontend.probability_false_alarm) ||
+        config.sonar_frontend.probability_false_alarm <= 0.0 ||
+        config.sonar_frontend.probability_false_alarm >= 1.0) {
+      throw std::runtime_error(
+          "frontends.sonar_cfar.probability_false_alarm must be finite and in (0, 1)");
+    }
+    if (config.sonar_frontend.detector_threshold < 0 ||
+        config.sonar_frontend.detector_threshold > 255) {
+      throw std::runtime_error("frontends.sonar_cfar.detector_threshold must be in [0, 255]");
+    }
+    if (!std::isfinite(config.sonar_frontend.dbscan_eps_m) ||
+        config.sonar_frontend.dbscan_eps_m <= 0.0) {
+      throw std::runtime_error("frontends.sonar_cfar.dbscan_eps_m must be finite and positive");
+    }
+    if (config.sonar_frontend.dbscan_min_samples <= 0) {
+      throw std::runtime_error("frontends.sonar_cfar.dbscan_min_samples must be positive");
+    }
+    if (!std::isfinite(config.sonar_frontend.default_range_sigma_m) ||
+        config.sonar_frontend.default_range_sigma_m <= 0.0) {
+      throw std::runtime_error(
+          "frontends.sonar_cfar.default_range_sigma_m must be finite and positive");
+    }
+    if (!std::isfinite(config.sonar_frontend.default_bearing_sigma_rad) ||
+        config.sonar_frontend.default_bearing_sigma_rad <= 0.0) {
+      throw std::runtime_error(
+          "frontends.sonar_cfar.default_bearing_sigma_rad must be finite and positive");
+    }
+  }
+
   if (root["reliability"] && root["reliability"]["default_sqrt_information"]) {
     const auto info = root["reliability"]["default_sqrt_information"];
     if (info["relative_pose"]) {

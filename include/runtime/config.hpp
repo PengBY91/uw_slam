@@ -56,6 +56,17 @@ struct StereoMatchingConfig {
   double left_right_max_diff_px = 1.0;
 };
 
+struct SonarFrontendConfig {
+  int training_cells = 16;
+  int guard_cells = 4;
+  double probability_false_alarm = 0.01;
+  int detector_threshold = 50;
+  double dbscan_eps_m = 0.20;
+  int dbscan_min_samples = 2;
+  double default_range_sigma_m = 0.05;
+  double default_bearing_sigma_rad = 0.01;
+};
+
 struct VisualOdometryConfig {
   int max_consecutive_failures = 3;
   // See frontends::CovarianceEstimationParams (rigid_transform_fit.hpp)
@@ -83,6 +94,7 @@ struct PlatformDefaultsConfig {
   StereoRectificationConfig stereo_rectification;
   VisualOdometryConfig visual_odometry;
   StereoMatchingConfig stereo_matching;
+  SonarFrontendConfig sonar_frontend;
 
   // Discard evidence from the first N seconds of a run before fusing it
   // (0 = disabled). Motivated by a specific deployment lesson from a

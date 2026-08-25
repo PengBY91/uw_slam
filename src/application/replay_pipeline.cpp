@@ -240,6 +240,20 @@ std::vector<std::string> uw::application::EvaluateReplayGates(
   return failures;
 }
 
+uw::frontends::SonarCfarFrontendParams uw::application::BuildSonarCfarFrontendParams(
+    const uw::runtime::SonarFrontendConfig& config) {
+  uw::frontends::SonarCfarFrontendParams params;
+  params.cfar.num_training_cells = config.training_cells;
+  params.cfar.num_guard_cells = config.guard_cells;
+  params.cfar.probability_false_alarm = config.probability_false_alarm;
+  params.detector_threshold = static_cast<uint8_t>(config.detector_threshold);
+  params.dbscan_eps_m = config.dbscan_eps_m;
+  params.dbscan_min_samples = config.dbscan_min_samples;
+  params.default_range_sigma_m = config.default_range_sigma_m;
+  params.default_bearing_sigma_rad = config.default_bearing_sigma_rad;
+  return params;
+}
+
 int uw::application::RunReplayPipeline(const ReplayOptions& opt,
                                        const std::string& git_commit) {
   if (opt.bag_path.empty()) {
@@ -662,15 +676,8 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
   std::cout << "added " << num_relative_pose_factors << " relative-pose factors, "
             << problem.NumKeyframes() << " keyframes\n";
 
-  // sonar_cfar_frontend params: same values as
-  // tests/frontends/sonar_cfar_frontend_test.cpp's
-  // synthetic fixture, which synth_bag_gen's RenderSyntheticSonarFrame
-  // deliberately mirrors (background=5, target blob=200 intensity).
-  uw::frontends::SonarCfarFrontendParams cfar_params;
-  cfar_params.cfar.num_training_cells = 16;
-  cfar_params.cfar.num_guard_cells = 4;
-  cfar_params.cfar.probability_false_alarm = 1e-2;
-  cfar_params.detector_threshold = 50;
+  const auto cfar_params =
+      uw::application::BuildSonarCfarFrontendParams(defaults.sonar_frontend);
   uw::frontends::SonarCfarFrontend sonar_frontend(cfar_params);
 
   int num_sonar_frames = 0;
