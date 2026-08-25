@@ -46,7 +46,9 @@ message TargetTrack {
   string class_label = 2;
   double class_confidence = 3;
   double bearing_rad = 4;
-  double range_m = 5;
+  // Presence distinguishes a bearing-only visual track from an observable
+  // range. `optional` retains legacy field number 5 and fixed64 wire type.
+  optional double range_m = 5;
   repeated double covariance_2x2_row_major = 6;
   Stamp first_capture_time = 7;
   Stamp last_capture_time = 8;

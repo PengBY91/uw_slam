@@ -1038,7 +1038,6 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
     manifest.git_commit = git_commit;
     manifest.config_hash = config_hash;
     manifest.calibration_hash = calibration_hash;
-    manifest.target_fusion_parameters = defaults.target_fusion_manifest_parameters();
     manifest.derived_calibration_hash =
         rectification_context.has_value()
             ? Fnv1aHex(rectification_context->DerivedRig().SerializeAsString())

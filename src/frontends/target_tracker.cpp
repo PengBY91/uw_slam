@@ -78,13 +78,27 @@ bool ValidSortedSources(const std::vector<uw::domain::AssistSource>& sources) {
   std::set<int> unique;
   for (auto source : sources) {
     if (source != uw::domain::ASSIST_SOURCE_VISUAL &&
-        source != uw::domain::ASSIST_SOURCE_SONAR &&
-        source != uw::domain::ASSIST_SOURCE_ACOUSTIC_OPTIC) {
+        source != uw::domain::ASSIST_SOURCE_SONAR) {
       return false;
     }
     if (!unique.insert(static_cast<int>(source)).second) return false;
   }
   return true;
+}
+
+bool ValidTrackProvenance(
+    const std::vector<uw::domain::AssistSource>& sources,
+    const std::vector<uw::domain::ObservationId>& observations,
+    bool range_observable) {
+  const bool visual = std::find(sources.begin(), sources.end(),
+                                uw::domain::ASSIST_SOURCE_VISUAL) !=
+                      sources.end();
+  const bool sonar = std::find(sources.begin(), sources.end(),
+                               uw::domain::ASSIST_SOURCE_SONAR) !=
+                     sources.end();
+  if (visual && !sonar) return !range_observable;
+  if (!visual && sonar) return range_observable;
+  return visual && sonar && range_observable && observations.size() >= 2;
 }
 
 bool ValidSortedObservations(const std::vector<uw::domain::ObservationId>& observations) {
@@ -118,8 +132,7 @@ bool ValidMeasurement(const TargetMeasurement& measurement, double now_s,
   std::set<int> sources;
   for (auto source : measurement.sources) {
     if (source != uw::domain::ASSIST_SOURCE_VISUAL &&
-        source != uw::domain::ASSIST_SOURCE_SONAR &&
-        source != uw::domain::ASSIST_SOURCE_ACOUSTIC_OPTIC) {
+        source != uw::domain::ASSIST_SOURCE_SONAR) {
       return false;
     }
     sources.insert(static_cast<int>(source));
@@ -131,7 +144,16 @@ bool ValidMeasurement(const TargetMeasurement& measurement, double now_s,
       return false;
     }
   }
-  return true;
+  const bool visual = sources.count(uw::domain::ASSIST_SOURCE_VISUAL) != 0;
+  const bool sonar = sources.count(uw::domain::ASSIST_SOURCE_SONAR) != 0;
+  if (visual && !sonar) {
+    return !measurement.range_m && observations.size() == 1;
+  }
+  if (!visual && sonar) {
+    return measurement.range_m.has_value() && observations.size() == 1;
+  }
+  return visual && sonar && measurement.range_m.has_value() &&
+         observations.size() == 2;
 }
 
 bool GenericClass(const std::string& label) {
@@ -368,6 +390,24 @@ bool TargetTracker::Update(const std::vector<TargetMeasurement>& detections,
     }
   }
 
+  if (detections.empty()) {
+    const double processing_delta_s =
+        last_update_time_s_ ? now_s - *last_update_time_s_ : 0.0;
+    for (auto& track : tracks_) {
+      // Stored state lives in corrected-capture time. Advance it by the
+      // processing-clock delta so fixed ingress latency is preserved; a
+      // future delayed capture can then still be applied chronologically.
+      Predict(&track, track.state_time_s + processing_delta_s, params_);
+      ++track.consecutive_misses;
+      if (track.consecutive_misses >=
+          static_cast<uint64_t>(params_.degraded_misses)) {
+        track.target.status = uw::domain::TARGET_TRACK_STATUS_DEGRADED;
+      }
+    }
+    last_update_time_s_ = now_s;
+    return true;
+  }
+
   std::vector<TargetMeasurement> ordered_detections = detections;
   std::sort(ordered_detections.begin(), ordered_detections.end(),
             [](const auto& lhs, const auto& rhs) {
@@ -557,19 +597,38 @@ std::vector<TrackedTarget> TargetTracker::Tracks(double now_s) const {
   return output;
 }
 
+std::optional<uw::domain::TargetTrackSet> TargetTracker::ToProtoSet(
+    double publish_time_s) const {
+  const auto publish_stamp = ToStamp(publish_time_s);
+  if (!publish_stamp) return std::nullopt;
+  const auto tracks = Tracks(publish_time_s);
+  if (!tracks_.empty() && tracks.empty()) return std::nullopt;
+  uw::domain::TargetTrackSet output;
+  *output.mutable_publish_time() = *publish_stamp;
+  for (const auto& track : tracks) {
+    const auto proto = track.ToProto(publish_time_s);
+    if (!proto) return std::nullopt;
+    *output.add_tracks() = *proto;
+  }
+  return output;
+}
+
 std::optional<uw::domain::TargetTrack> TrackedTarget::ToProto(
     double publish_time_s) const {
   const auto first_stamp = ToStamp(first_capture_time_s);
   const auto last_stamp = ToStamp(last_capture_time_s);
   const auto publish_stamp = ToStamp(publish_time_s);
-  if (!range_observable || numeric_id == 0 || track_id.empty() || class_label.empty() ||
+  if (numeric_id == 0 || track_id.empty() || class_label.empty() ||
       !std::isfinite(class_confidence) || class_confidence < 0.0 || class_confidence > 1.0 ||
-      !state.allFinite() || std::abs(state[0]) > kPi || !FinitePositive(state[1]) ||
-      state[1] > kMaxTargetRangeM || !ValidTrackCovariance(covariance) ||
+      !state.allFinite() || std::abs(state[0]) > kPi ||
+      (range_observable &&
+       (!FinitePositive(state[1]) || state[1] > kMaxTargetRangeM)) ||
+      !ValidTrackCovariance(covariance) ||
       !first_stamp || !last_stamp || !publish_stamp ||
       first_capture_time_s > last_capture_time_s || last_capture_time_s > publish_time_s ||
       !ValidTrackStatus(status) || !ValidSortedSources(sources) ||
-      !ValidSortedObservations(observation_ids)) {
+      !ValidSortedObservations(observation_ids) ||
+      !ValidTrackProvenance(sources, observation_ids, range_observable)) {
     return std::nullopt;
   }
   uw::domain::TargetTrack proto;
@@ -577,7 +636,7 @@ std::optional<uw::domain::TargetTrack> TrackedTarget::ToProto(
   proto.set_class_label(class_label);
   proto.set_class_confidence(class_confidence);
   proto.set_bearing_rad(WrapBearing(state[0]));
-  proto.set_range_m(state[1]);
+  if (range_observable) proto.set_range_m(state[1]);
   proto.add_covariance_2x2_row_major(covariance(0, 0));
   proto.add_covariance_2x2_row_major(covariance(0, 1));
   proto.add_covariance_2x2_row_major(covariance(1, 0));

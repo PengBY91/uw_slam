@@ -8,6 +8,7 @@
 #include <vector>
 
 #include <gtest/gtest.h>
+#include <Eigen/Eigenvalues>
 
 #include "sensor_models/geometry.hpp"
 
@@ -120,6 +121,10 @@ TEST(TargetAssociator, ProjectsVersionedRigAndPreservesDeterministicProvenance) 
   ASSERT_EQ(result.diagnostics.size(), 1u);
   EXPECT_TRUE(result.diagnostics[0].accepted);
   EXPECT_EQ(result.diagnostics[0].reason, uw::frontends::AssociationReason::kAccepted);
+  EXPECT_EQ(result.diagnostics[0].metric,
+            uw::frontends::AssociationMetric::kPairCost);
+  EXPECT_DOUBLE_EQ(result.diagnostics[0].threshold,
+                   Params().max_bearing_mahalanobis_sq + 2.0);
 }
 
 TEST(TargetAssociator, GreedyMinimumCostKeepsIdentityWhenTwoBearingsCross) {
@@ -149,11 +154,19 @@ TEST(TargetAssociator, RejectsIncompatibleClassesWithExactGateThreshold) {
       {Detection("s", uw::domain::ASSIST_SOURCE_SONAR, 1.0, 0.0, 4.0, "fish")}, Rig());
 
   ASSERT_EQ(result.measurements.size(), 2u);
-  ASSERT_EQ(result.diagnostics.size(), 1u);
-  EXPECT_FALSE(result.diagnostics[0].accepted);
-  EXPECT_EQ(result.diagnostics[0].reason,
+  const auto rejected = std::find_if(
+      result.diagnostics.begin(), result.diagnostics.end(),
+      [](const auto& diagnostic) {
+        return !diagnostic.visual_observation_id.empty() &&
+               !diagnostic.sonar_observation_id.empty();
+      });
+  ASSERT_NE(rejected, result.diagnostics.end());
+  EXPECT_FALSE(rejected->accepted);
+  EXPECT_EQ(rejected->reason,
             uw::frontends::AssociationReason::kClassIncompatible);
-  EXPECT_FALSE(std::isfinite(result.diagnostics[0].threshold));
+  EXPECT_EQ(rejected->metric, uw::frontends::AssociationMetric::kCompatibility);
+  EXPECT_DOUBLE_EQ(rejected->value, 0.0);
+  EXPECT_DOUBLE_EQ(rejected->threshold, 1.0);
 }
 
 TEST(TargetAssociator, AppliesRigClockOffsetsAndKeepsUnmatchedSingleSensorMeasurements) {
@@ -175,6 +188,12 @@ TEST(TargetAssociator, AppliesRigClockOffsetsAndKeepsUnmatchedSingleSensorMeasur
   ASSERT_NE(sonar_only, result.measurements.end());
   ASSERT_TRUE(sonar_only->range_m.has_value());
   EXPECT_DOUBLE_EQ(*sonar_only->range_m, 7.0);
+  for (const auto& diagnostic : result.diagnostics) {
+    EXPECT_TRUE(std::isfinite(diagnostic.value));
+    EXPECT_TRUE(std::isfinite(diagnostic.threshold));
+    EXPECT_NE(diagnostic.metric,
+              uw::frontends::AssociationMetric::kUnspecified);
+  }
 }
 
 TEST(TargetAssociator, FailsClosedForInvalidCovarianceCalibrationAndFrame) {
@@ -318,11 +337,17 @@ TEST(TargetAssociator, AcceptedAndConflictDiagnosticsDoNotInventTotalCostThresho
                  std::nullopt)},
       {Detection("s-best", uw::domain::ASSIST_SOURCE_SONAR, 1.0, 0.0, 4.0),
        Detection("s-conflict", uw::domain::ASSIST_SOURCE_SONAR, 1.0, 0.01, 4.0)}, Rig());
-  ASSERT_EQ(result.diagnostics.size(), 2u);
+  ASSERT_GE(result.diagnostics.size(), 2u);
   for (const auto& diagnostic : result.diagnostics) {
-    EXPECT_FALSE(std::isfinite(diagnostic.threshold));
-    EXPECT_TRUE(diagnostic.accepted ||
-                diagnostic.reason == uw::frontends::AssociationReason::kPairConflict);
+    EXPECT_TRUE(std::isfinite(diagnostic.value));
+    EXPECT_TRUE(std::isfinite(diagnostic.threshold));
+    EXPECT_NE(diagnostic.metric,
+              uw::frontends::AssociationMetric::kUnspecified);
+    if (diagnostic.reason == uw::frontends::AssociationReason::kPairConflict) {
+      EXPECT_EQ(diagnostic.metric,
+                uw::frontends::AssociationMetric::kWinningPairCost);
+      EXPECT_GE(diagnostic.value, diagnostic.threshold);
+    }
   }
 }
 
@@ -338,8 +363,122 @@ TEST(TargetAssociator, RejectsBearingWrapAwareMotionAndMahalanobisGatesDetermini
 
   sonar.detection.set_bearing_rad(-kPi + 0.20);
   const auto rejected = uw::frontends::TargetAssociator(params).Associate({visual}, {sonar}, Rig());
-  ASSERT_EQ(rejected.diagnostics.size(), 1u);
-  EXPECT_EQ(rejected.diagnostics[0].reason,
+  const auto motion_rejection = std::find_if(
+      rejected.diagnostics.begin(), rejected.diagnostics.end(),
+      [](const auto& diagnostic) {
+        return diagnostic.reason ==
+               uw::frontends::AssociationReason::kMotionContinuity;
+      });
+  ASSERT_NE(motion_rejection, rejected.diagnostics.end());
+  EXPECT_EQ(motion_rejection->reason,
             uw::frontends::AssociationReason::kMotionContinuity);
-  EXPECT_DOUBLE_EQ(rejected.diagnostics[0].threshold, 0.05);
+  EXPECT_DOUBLE_EQ(motion_rejection->threshold, 0.05);
+}
+
+TEST(TargetAssociator, FullCorrelatedCovarianceRejectsJointlyInconsistentPair) {
+  auto params = Params();
+  params.max_bearing_mahalanobis_sq = 4.0;
+  params.max_range_mahalanobis_sq = 4.0;
+  params.max_motion_bearing_delta_rad = 1.0;
+  params.max_bearing_variance_rad2 = 2.0;
+  params.max_range_variance_m2 = 2.0;
+  auto visual = Detection("v-correlated", uw::domain::ASSIST_SOURCE_VISUAL,
+                          2.0, 0.0, 5.0);
+  auto sonar = Detection("s-correlated", uw::domain::ASSIST_SOURCE_SONAR,
+                         2.0, 0.5, 4.5);
+  // The camera bearing Jacobian reverses sign, so this projects to the same
+  // positive cross-covariance as the sonar measurement.
+  visual.detection.set_covariance_2x2_row_major(0, 1.0);
+  visual.detection.set_covariance_2x2_row_major(1, -0.99);
+  visual.detection.set_covariance_2x2_row_major(2, -0.99);
+  visual.detection.set_covariance_2x2_row_major(3, 1.0);
+  sonar.detection.set_covariance_2x2_row_major(0, 1.0);
+  sonar.detection.set_covariance_2x2_row_major(1, 0.99);
+  sonar.detection.set_covariance_2x2_row_major(2, 0.99);
+  sonar.detection.set_covariance_2x2_row_major(3, 1.0);
+
+  const auto result = uw::frontends::TargetAssociator(params).Associate(
+      {visual}, {sonar}, Rig());
+  EXPECT_EQ(result.measurements.size(), 2u);
+  const auto joint = std::find_if(
+      result.diagnostics.begin(), result.diagnostics.end(),
+      [](const auto& diagnostic) {
+        return diagnostic.reason ==
+               uw::frontends::AssociationReason::kJointMahalanobis;
+      });
+  ASSERT_NE(joint, result.diagnostics.end());
+  EXPECT_EQ(joint->metric,
+            uw::frontends::AssociationMetric::kJointMahalanobisSquared);
+  EXPECT_GT(joint->value, joint->threshold);
+  EXPECT_DOUBLE_EQ(joint->threshold, 8.0);
+}
+
+TEST(TargetAssociator, FusedMeasurementPropagatesCorrelatedCovariance) {
+  auto params = Params();
+  params.max_bearing_variance_rad2 = 1.0;
+  auto visual = Detection("v-cross", uw::domain::ASSIST_SOURCE_VISUAL,
+                          2.0, 0.0, 5.0);
+  auto sonar = Detection("s-cross", uw::domain::ASSIST_SOURCE_SONAR,
+                         2.0, 0.0, 5.0);
+  visual.detection.set_covariance_2x2_row_major(0, 0.04);
+  visual.detection.set_covariance_2x2_row_major(1, -0.01);
+  visual.detection.set_covariance_2x2_row_major(2, -0.01);
+  visual.detection.set_covariance_2x2_row_major(3, 0.09);
+  sonar.detection.set_covariance_2x2_row_major(0, 0.04);
+  sonar.detection.set_covariance_2x2_row_major(1, 0.01);
+  sonar.detection.set_covariance_2x2_row_major(2, 0.01);
+  sonar.detection.set_covariance_2x2_row_major(3, 0.09);
+
+  const auto result = uw::frontends::TargetAssociator(params).Associate(
+      {visual}, {sonar}, Rig());
+  ASSERT_EQ(result.measurements.size(), 1u);
+  const auto& covariance = result.measurements[0].covariance;
+  EXPECT_GT(std::abs(covariance(0, 1)), 1e-6);
+  EXPECT_TRUE(covariance.isApprox(covariance.transpose(), 1e-12));
+  EXPECT_GT(Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d>(covariance)
+                .eigenvalues().minCoeff(),
+            0.0);
+}
+
+TEST(TargetAssociator, SingleSourceAcceptanceHasAuditableFiniteDecision) {
+  const auto result = uw::frontends::TargetAssociator(Params()).Associate(
+      {Detection("visual-only", uw::domain::ASSIST_SOURCE_VISUAL, 2.0,
+                 0.0, std::nullopt)},
+      {}, Rig());
+  ASSERT_EQ(result.measurements.size(), 1u);
+  ASSERT_EQ(result.diagnostics.size(), 1u);
+  const auto& diagnostic = result.diagnostics[0];
+  EXPECT_TRUE(diagnostic.accepted);
+  EXPECT_EQ(diagnostic.reason,
+            uw::frontends::AssociationReason::kSingleSourceAccepted);
+  EXPECT_EQ(diagnostic.metric,
+            uw::frontends::AssociationMetric::kInputValidity);
+  EXPECT_DOUBLE_EQ(diagnostic.value, 1.0);
+  EXPECT_DOUBLE_EQ(diagnostic.threshold, 1.0);
+}
+
+TEST(TargetAssociator, RejectsNegativeAndUnsafeCorrectedCaptureTime) {
+  auto negative = Detection("negative", uw::domain::ASSIST_SOURCE_VISUAL,
+                            0.0, 0.0, std::nullopt);
+  negative.detection.mutable_capture_time()->set_seconds(-1);
+  auto huge = Detection("huge", uw::domain::ASSIST_SOURCE_VISUAL,
+                        0.0, 0.0, std::nullopt);
+  huge.detection.mutable_capture_time()->set_seconds(
+      std::numeric_limits<int64_t>::max());
+  const auto invalid_stamps = uw::frontends::TargetAssociator(Params()).Associate(
+      {negative, huge}, {}, Rig());
+  EXPECT_TRUE(invalid_stamps.measurements.empty());
+  ASSERT_EQ(invalid_stamps.diagnostics.size(), 2u);
+
+  auto negative_offset_rig = Rig(-0.1, 0.0);
+  const auto negative_corrected =
+      uw::frontends::TargetAssociator(Params()).Associate(
+          {Detection("offset-negative", uw::domain::ASSIST_SOURCE_VISUAL,
+                     0.0, 0.0, std::nullopt)},
+          {}, negative_offset_rig);
+  EXPECT_TRUE(negative_corrected.measurements.empty());
+  for (const auto& diagnostic : invalid_stamps.diagnostics) {
+    EXPECT_TRUE(std::isfinite(diagnostic.value));
+    EXPECT_TRUE(std::isfinite(diagnostic.threshold));
+  }
 }

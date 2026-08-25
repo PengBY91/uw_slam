@@ -683,8 +683,6 @@ TEST(Config, LoadsAssociationAndTrackerDefaultsUsedByFusion) {
   EXPECT_DOUBLE_EQ(config.target_tracker.stale_after_s, 0.5);
   EXPECT_EQ(config.target_tracker.confirm_hits, 2);
   EXPECT_EQ(config.target_tracker.degraded_misses, 3);
-  EXPECT_NE(config.target_fusion_manifest_parameters().find("stale_after_s=0.5"),
-            std::string::npos);
 }
 
 TEST(Config, RejectsUnsafeAssociationAndTrackerThresholds) {

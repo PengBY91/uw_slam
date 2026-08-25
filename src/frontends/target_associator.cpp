@@ -11,6 +11,7 @@
 #include <utility>
 
 #include <Eigen/Eigenvalues>
+#include <Eigen/Cholesky>
 #include <Eigen/Geometry>
 
 #include "sensor_models/camera_model.hpp"
@@ -24,6 +25,8 @@ constexpr double kTwoPi = 2.0 * kPi;
 constexpr double kMinVariance = 1e-12;
 constexpr double kMaxMeasurementVariance = 1e12;
 constexpr double kMaxTargetRangeM = 1e6;
+constexpr long double kMaxExactlyRepresentableIntegerInDouble =
+    9007199254740992.0L;  // 2^53
 
 double WrapBearing(double angle) {
   angle = std::remainder(angle, kTwoPi);
@@ -56,12 +59,15 @@ bool ValidCovariance(const Eigen::Matrix2d& covariance) {
          covariance(0, 0) > 0.0;
 }
 
-std::optional<double> StampSeconds(const uw::domain::Stamp& stamp) {
-  if (stamp.nanos() < 0 || stamp.nanos() >= 1'000'000'000) return std::nullopt;
-  const double seconds = static_cast<double>(stamp.seconds()) +
-                         static_cast<double>(stamp.nanos()) * 1e-9;
-  if (!std::isfinite(seconds)) return std::nullopt;
-  return seconds;
+std::optional<long double> StampSeconds(const uw::domain::Stamp& stamp) {
+  if (stamp.seconds() < 0 || stamp.nanos() < 0 ||
+      stamp.nanos() >= 1'000'000'000 ||
+      static_cast<long double>(stamp.seconds()) >
+          kMaxExactlyRepresentableIntegerInDouble) {
+    return std::nullopt;
+  }
+  return static_cast<long double>(stamp.seconds()) +
+         static_cast<long double>(stamp.nanos()) * 1.0e-9L;
 }
 
 std::optional<Eigen::Matrix4d> EdgeMatrix(const uw::domain::FrameEdge& edge) {
@@ -294,7 +300,13 @@ ProjectResult ProjectOne(const SensorTargetDetection& input, bool visual,
   if (!FrameMatchesSensor(input.sensor_id, input.sensor_frame, visual)) return {};
 
   TargetMeasurement measurement;
-  measurement.corrected_time_s = *capture_time + offset->second;
+  const long double corrected_time =
+      *capture_time + static_cast<long double>(offset->second);
+  if (corrected_time < 0.0L ||
+      corrected_time > kMaxExactlyRepresentableIntegerInDouble) {
+    return {};
+  }
+  measurement.corrected_time_s = static_cast<double>(corrected_time);
   measurement.class_label = detection.class_label();
   measurement.confidence = detection.confidence();
   measurement.sources = {detection.source()};
@@ -370,36 +382,52 @@ void SortUnique(std::vector<T>* values, Less less) {
                 values->end());
 }
 
-TargetMeasurement Fuse(const TargetMeasurement& visual,
-                       const TargetMeasurement& sonar) {
+std::optional<TargetMeasurement> Fuse(const TargetMeasurement& visual,
+                                      const TargetMeasurement& sonar) {
   TargetMeasurement fused;
   fused.corrected_time_s = std::max(visual.corrected_time_s, sonar.corrected_time_s);
   fused.class_label = GenericClass(visual.class_label) ? sonar.class_label : visual.class_label;
   fused.confidence = 1.0 - (1.0 - visual.confidence) * (1.0 - sonar.confidence);
 
-  const double visual_bearing_variance = visual.covariance(0, 0);
-  const double sonar_bearing_variance = sonar.covariance(0, 0);
-  const double visual_weight = 1.0 / visual_bearing_variance;
-  const double sonar_weight = 1.0 / sonar_bearing_variance;
-  const double bearing_delta = WrapBearing(sonar.bearing_rad - visual.bearing_rad);
-  fused.bearing_rad = WrapBearing(
-      visual.bearing_rad + bearing_delta * sonar_weight / (visual_weight + sonar_weight));
-  fused.covariance.setZero();
-  fused.covariance(0, 0) = 1.0 / (visual_weight + sonar_weight);
-
-  if (visual.range_m && sonar.range_m) {
-    const double visual_range_weight = 1.0 / visual.covariance(1, 1);
-    const double sonar_range_weight = 1.0 / sonar.covariance(1, 1);
-    fused.range_m = (*visual.range_m * visual_range_weight +
-                     *sonar.range_m * sonar_range_weight) /
-                    (visual_range_weight + sonar_range_weight);
-    fused.covariance(1, 1) = 1.0 / (visual_range_weight + sonar_range_weight);
-  } else if (sonar.range_m) {
-    fused.range_m = sonar.range_m;
-    fused.covariance(1, 1) = sonar.covariance(1, 1);
+  if (!sonar.range_m) return std::nullopt;
+  if (visual.range_m) {
+    const Eigen::Matrix2d innovation_covariance =
+        visual.covariance + sonar.covariance;
+    Eigen::LDLT<Eigen::Matrix2d> ldlt(innovation_covariance);
+    if (ldlt.info() != Eigen::Success || !ldlt.isPositive()) {
+      return std::nullopt;
+    }
+    const Eigen::Matrix2d gain =
+        visual.covariance * ldlt.solve(Eigen::Matrix2d::Identity());
+    if (ldlt.info() != Eigen::Success || !gain.allFinite()) {
+      return std::nullopt;
+    }
+    const Eigen::Vector2d innovation(
+        WrapBearing(sonar.bearing_rad - visual.bearing_rad),
+        *sonar.range_m - *visual.range_m);
+    const Eigen::Vector2d state =
+        Eigen::Vector2d(visual.bearing_rad, *visual.range_m) + gain * innovation;
+    fused.bearing_rad = WrapBearing(state[0]);
+    fused.range_m = state[1];
+    fused.covariance = visual.covariance - gain * visual.covariance;
   } else {
-    fused.range_m = visual.range_m;
-    fused.covariance(1, 1) = visual.covariance(1, 1);
+    const double innovation_variance =
+        sonar.covariance(0, 0) + visual.covariance(0, 0);
+    if (!FinitePositive(innovation_variance)) return std::nullopt;
+    const Eigen::Vector2d gain =
+        sonar.covariance.col(0) / innovation_variance;
+    const double innovation = WrapBearing(visual.bearing_rad - sonar.bearing_rad);
+    const Eigen::Vector2d state =
+        Eigen::Vector2d(sonar.bearing_rad, *sonar.range_m) + gain * innovation;
+    fused.bearing_rad = WrapBearing(state[0]);
+    fused.range_m = state[1];
+    fused.covariance =
+        sonar.covariance - gain * sonar.covariance.row(0);
+  }
+  fused.covariance = 0.5 * (fused.covariance + fused.covariance.transpose());
+  if (!fused.range_m || !FinitePositive(*fused.range_m) ||
+      !ValidCovariance(fused.covariance) || fused.covariance(1, 1) <= 0.0) {
+    return std::nullopt;
   }
   fused.sources = visual.sources;
   fused.sources.insert(fused.sources.end(), sonar.sources.begin(), sonar.sources.end());
@@ -415,6 +443,40 @@ TargetMeasurement Fuse(const TargetMeasurement& visual,
 
 std::string FirstId(const TargetMeasurement& measurement) {
   return measurement.observation_ids.empty() ? "" : measurement.observation_ids[0].value();
+}
+
+void SetBoundaryDecision(AssociationDiagnostic* diagnostic,
+                         AssociationReason reason) {
+  diagnostic->reason = reason;
+  diagnostic->value = 0.0;
+  diagnostic->threshold = 1.0;
+  switch (reason) {
+    case AssociationReason::kCalibrationMismatch:
+      diagnostic->metric = AssociationMetric::kCalibrationMatch;
+      break;
+    case AssociationReason::kFrameUnresolved:
+      diagnostic->metric = AssociationMetric::kFrameResolution;
+      break;
+    default:
+      diagnostic->metric = AssociationMetric::kInputValidity;
+      break;
+  }
+}
+
+AssociationDiagnostic SingleSourceDecision(const Projected& projected,
+                                           bool visual) {
+  AssociationDiagnostic diagnostic;
+  if (visual) {
+    diagnostic.visual_observation_id = projected.id;
+  } else {
+    diagnostic.sonar_observation_id = projected.id;
+  }
+  diagnostic.accepted = true;
+  diagnostic.reason = AssociationReason::kSingleSourceAccepted;
+  diagnostic.metric = AssociationMetric::kInputValidity;
+  diagnostic.value = 1.0;
+  diagnostic.threshold = 1.0;
+  return diagnostic;
 }
 
 bool DiagnosticLess(const AssociationDiagnostic& lhs,
@@ -465,12 +527,14 @@ TargetAssociationResult TargetAssociator::Associate(
       AssociationDiagnostic diagnostic;
       diagnostic.visual_observation_id =
           input.detection.source_observation().value();
+      SetBoundaryDecision(&diagnostic, AssociationReason::kInvalidInput);
       result.diagnostics.push_back(std::move(diagnostic));
     }
     for (const auto& input : sonar) {
       AssociationDiagnostic diagnostic;
       diagnostic.sonar_observation_id =
           input.detection.source_observation().value();
+      SetBoundaryDecision(&diagnostic, AssociationReason::kInvalidInput);
       result.diagnostics.push_back(std::move(diagnostic));
     }
     std::sort(result.diagnostics.begin(), result.diagnostics.end(), DiagnosticLess);
@@ -492,7 +556,7 @@ TargetAssociationResult TargetAssociator::Associate(
         } else {
           diagnostic.sonar_observation_id = input.detection.source_observation().value();
         }
-        diagnostic.reason = projected.reason;
+        SetBoundaryDecision(&diagnostic, projected.reason);
         result.diagnostics.push_back(std::move(diagnostic));
       }
     }
@@ -507,7 +571,9 @@ TargetAssociationResult TargetAssociator::Associate(
     std::size_t visual_index = 0;
     std::size_t sonar_index = 0;
     double cost = 0.0;
+    double max_cost = 0.0;
     bool gated_in = false;
+    std::optional<TargetMeasurement> fused;
     AssociationDiagnostic diagnostic;
   };
   std::vector<Pair> pairs;
@@ -526,56 +592,127 @@ TargetAssociationResult TargetAssociator::Associate(
 
       if (time_delta > params_.max_corrected_time_delta_s) {
         pair.diagnostic.reason = AssociationReason::kCorrectedTimeDelta;
+        pair.diagnostic.metric = AssociationMetric::kCorrectedTimeDeltaSeconds;
         pair.diagnostic.value = time_delta;
         pair.diagnostic.threshold = params_.max_corrected_time_delta_s;
       } else if (!ClassesCompatible(v.class_label, s.class_label)) {
         pair.diagnostic.reason = AssociationReason::kClassIncompatible;
-      } else if (v.covariance(0, 0) > params_.max_bearing_variance_rad2 ||
-                 s.covariance(0, 0) > params_.max_bearing_variance_rad2 ||
-                 (v.range_m && v.covariance(1, 1) > params_.max_range_variance_m2) ||
-                 (s.range_m && s.covariance(1, 1) > params_.max_range_variance_m2)) {
-        pair.diagnostic.reason = AssociationReason::kUncertainty;
-        pair.diagnostic.value = std::max({v.covariance(0, 0), s.covariance(0, 0),
-                                          v.range_m ? v.covariance(1, 1) : 0.0,
-                                          s.range_m ? s.covariance(1, 1) : 0.0});
-        pair.diagnostic.threshold =
-            pair.diagnostic.value == v.covariance(0, 0) ||
-                    pair.diagnostic.value == s.covariance(0, 0)
-                ? params_.max_bearing_variance_rad2
-                : params_.max_range_variance_m2;
+        pair.diagnostic.metric = AssociationMetric::kCompatibility;
+        pair.diagnostic.value = 0.0;
+        pair.diagnostic.threshold = 1.0;
       } else {
-        const double bearing_mahalanobis =
-            bearing_delta * bearing_delta / std::max(kMinVariance, bearing_variance);
-        if (bearing_mahalanobis > params_.max_bearing_mahalanobis_sq) {
-          pair.diagnostic.reason = AssociationReason::kBearingMahalanobis;
-          pair.diagnostic.value = bearing_mahalanobis;
-          pair.diagnostic.threshold = params_.max_bearing_mahalanobis_sq;
-        } else if (v.range_m && s.range_m) {
-          const double range_delta = *v.range_m - *s.range_m;
-          const double range_mahalanobis =
-              range_delta * range_delta /
-              std::max(kMinVariance, v.covariance(1, 1) + s.covariance(1, 1));
-          if (range_mahalanobis > params_.max_range_mahalanobis_sq) {
-            pair.diagnostic.reason = AssociationReason::kRangeMahalanobis;
-            pair.diagnostic.value = range_mahalanobis;
-            pair.diagnostic.threshold = params_.max_range_mahalanobis_sq;
-          } else {
-            pair.cost += range_mahalanobis;
+        double worst_variance_ratio = 0.0;
+        double worst_variance = 0.0;
+        double worst_variance_threshold = 1.0;
+        const auto consider_variance = [&](double variance, double threshold) {
+          const double ratio = variance / threshold;
+          if (ratio > worst_variance_ratio) {
+            worst_variance_ratio = ratio;
+            worst_variance = variance;
+            worst_variance_threshold = threshold;
           }
+        };
+        consider_variance(v.covariance(0, 0),
+                          params_.max_bearing_variance_rad2);
+        consider_variance(s.covariance(0, 0),
+                          params_.max_bearing_variance_rad2);
+        if (v.range_m) {
+          consider_variance(v.covariance(1, 1),
+                            params_.max_range_variance_m2);
         }
-        if (pair.diagnostic.reason == AssociationReason::kInvalidInput) {
+        if (s.range_m) {
+          consider_variance(s.covariance(1, 1),
+                            params_.max_range_variance_m2);
+        }
+        if (worst_variance_ratio > 1.0) {
+          pair.diagnostic.reason = AssociationReason::kUncertainty;
+          pair.diagnostic.metric = AssociationMetric::kVariance;
+          pair.diagnostic.value = worst_variance;
+          pair.diagnostic.threshold = worst_variance_threshold;
+        } else {
+          bool statistical_gate_passed = false;
+          if (v.range_m && s.range_m) {
+            const Eigen::Vector2d residual(
+                bearing_delta, *v.range_m - *s.range_m);
+            const Eigen::Matrix2d innovation_covariance =
+                v.covariance + s.covariance;
+            Eigen::LDLT<Eigen::Matrix2d> ldlt(innovation_covariance);
+            if (ldlt.info() != Eigen::Success || !ldlt.isPositive()) {
+              pair.diagnostic.reason = AssociationReason::kUncertainty;
+              pair.diagnostic.metric = AssociationMetric::kInputValidity;
+              pair.diagnostic.value = 0.0;
+              pair.diagnostic.threshold = 1.0;
+            } else {
+              const Eigen::Vector2d whitened = ldlt.solve(residual);
+              const double joint_mahalanobis = residual.dot(whitened);
+              const double joint_threshold =
+                  params_.max_bearing_mahalanobis_sq +
+                  params_.max_range_mahalanobis_sq;
+              if (ldlt.info() != Eigen::Success || !whitened.allFinite() ||
+                  !std::isfinite(joint_mahalanobis) ||
+                  joint_mahalanobis < 0.0) {
+                pair.diagnostic.reason = AssociationReason::kUncertainty;
+                pair.diagnostic.metric = AssociationMetric::kInputValidity;
+                pair.diagnostic.value = 0.0;
+                pair.diagnostic.threshold = 1.0;
+              } else if (joint_mahalanobis > joint_threshold) {
+                pair.diagnostic.reason = AssociationReason::kJointMahalanobis;
+                pair.diagnostic.metric =
+                    AssociationMetric::kJointMahalanobisSquared;
+                pair.diagnostic.value = joint_mahalanobis;
+                pair.diagnostic.threshold = joint_threshold;
+              } else {
+                pair.cost = joint_mahalanobis;
+                pair.max_cost = joint_threshold + 1.0;
+                statistical_gate_passed = true;
+              }
+            }
+          } else {
+            const double bearing_mahalanobis =
+                bearing_delta * bearing_delta /
+                std::max(kMinVariance, bearing_variance);
+            if (bearing_mahalanobis >
+                params_.max_bearing_mahalanobis_sq) {
+              pair.diagnostic.reason = AssociationReason::kBearingMahalanobis;
+              pair.diagnostic.metric =
+                  AssociationMetric::kBearingMahalanobisSquared;
+              pair.diagnostic.value = bearing_mahalanobis;
+              pair.diagnostic.threshold =
+                  params_.max_bearing_mahalanobis_sq;
+            } else {
+              pair.cost = bearing_mahalanobis;
+              pair.max_cost = params_.max_bearing_mahalanobis_sq + 1.0;
+              statistical_gate_passed = true;
+            }
+          }
+          if (!statistical_gate_passed) {
+            pairs.push_back(std::move(pair));
+            continue;
+          }
           const double motion_threshold = params_.max_motion_bearing_delta_rad +
                                           params_.max_motion_rate_rad_s * time_delta;
           if (std::abs(bearing_delta) > motion_threshold) {
             pair.diagnostic.reason = AssociationReason::kMotionContinuity;
+            pair.diagnostic.metric =
+                AssociationMetric::kMotionBearingDeltaRadians;
             pair.diagnostic.value = std::abs(bearing_delta);
             pair.diagnostic.threshold = motion_threshold;
           } else {
-            pair.cost += bearing_mahalanobis +
-                         time_delta * time_delta /
-                             (params_.max_corrected_time_delta_s *
-                              params_.max_corrected_time_delta_s);
-            pair.gated_in = true;
+            pair.cost += time_delta * time_delta /
+                         (params_.max_corrected_time_delta_s *
+                          params_.max_corrected_time_delta_s);
+            pair.cost += bearing_delta * bearing_delta /
+                         (motion_threshold * motion_threshold);
+            pair.max_cost += 1.0;
+            pair.fused = Fuse(v, s);
+            if (!pair.fused) {
+              pair.diagnostic.reason = AssociationReason::kUncertainty;
+              pair.diagnostic.metric = AssociationMetric::kInputValidity;
+              pair.diagnostic.value = 0.0;
+              pair.diagnostic.threshold = 1.0;
+            } else {
+              pair.gated_in = true;
+            }
           }
         }
       }
@@ -595,6 +732,10 @@ TargetAssociationResult TargetAssociator::Associate(
   });
   std::vector<bool> used_visual(projected_visual.size(), false);
   std::vector<bool> used_sonar(projected_sonar.size(), false);
+  std::vector<double> winning_visual_cost(
+      projected_visual.size(), std::numeric_limits<double>::infinity());
+  std::vector<double> winning_sonar_cost(
+      projected_sonar.size(), std::numeric_limits<double>::infinity());
   for (std::size_t index : eligible) {
     auto& pair = pairs[index];
     if (!used_visual[pair.visual_index] && !used_sonar[pair.sonar_index]) {
@@ -602,21 +743,35 @@ TargetAssociationResult TargetAssociator::Associate(
       used_sonar[pair.sonar_index] = true;
       pair.diagnostic.accepted = true;
       pair.diagnostic.reason = AssociationReason::kAccepted;
+      pair.diagnostic.metric = AssociationMetric::kPairCost;
       pair.diagnostic.value = pair.cost;
-      result.measurements.push_back(
-          Fuse(projected_visual[pair.visual_index].measurement,
-               projected_sonar[pair.sonar_index].measurement));
+      pair.diagnostic.threshold = pair.max_cost;
+      winning_visual_cost[pair.visual_index] = pair.cost;
+      winning_sonar_cost[pair.sonar_index] = pair.cost;
+      result.measurements.push_back(*pair.fused);
     } else {
       pair.diagnostic.reason = AssociationReason::kPairConflict;
+      pair.diagnostic.metric = AssociationMetric::kWinningPairCost;
       pair.diagnostic.value = pair.cost;
+      pair.diagnostic.threshold = std::min(
+          winning_visual_cost[pair.visual_index],
+          winning_sonar_cost[pair.sonar_index]);
     }
   }
   for (const auto& pair : pairs) result.diagnostics.push_back(pair.diagnostic);
   for (std::size_t i = 0; i < projected_visual.size(); ++i) {
-    if (!used_visual[i]) result.measurements.push_back(projected_visual[i].measurement);
+    if (!used_visual[i]) {
+      result.measurements.push_back(projected_visual[i].measurement);
+      result.diagnostics.push_back(
+          SingleSourceDecision(projected_visual[i], true));
+    }
   }
   for (std::size_t i = 0; i < projected_sonar.size(); ++i) {
-    if (!used_sonar[i]) result.measurements.push_back(projected_sonar[i].measurement);
+    if (!used_sonar[i]) {
+      result.measurements.push_back(projected_sonar[i].measurement);
+      result.diagnostics.push_back(
+          SingleSourceDecision(projected_sonar[i], false));
+    }
   }
   std::sort(result.measurements.begin(), result.measurements.end(),
             [](const auto& lhs, const auto& rhs) {

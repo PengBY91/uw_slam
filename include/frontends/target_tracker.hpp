@@ -69,6 +69,7 @@ class TargetTracker {
   // and does not mutate IDs, tracks, or the monotonic time watermark.
   bool Update(const std::vector<TargetMeasurement>& detections, double now_s);
   std::vector<TrackedTarget> Tracks(double now_s) const;
+  std::optional<uw::domain::TargetTrackSet> ToProtoSet(double publish_time_s) const;
 
  private:
   struct Track;

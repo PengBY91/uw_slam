@@ -1,7 +1,6 @@
 #pragma once
 
 #include <optional>
-#include <limits>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -56,8 +55,28 @@ enum class AssociationReason {
   kUncertainty,
   kBearingMahalanobis,
   kRangeMahalanobis,
+  kJointMahalanobis,
   kMotionContinuity,
   kPairConflict,
+  kSingleSourceAccepted,
+};
+
+// The scalar represented by value/threshold. Every diagnostic names one
+// metric and carries finite values; callers never infer semantics from NaN.
+enum class AssociationMetric {
+  kUnspecified,
+  kInputValidity,
+  kCalibrationMatch,
+  kFrameResolution,
+  kCorrectedTimeDeltaSeconds,
+  kCompatibility,
+  kVariance,
+  kBearingMahalanobisSquared,
+  kRangeMahalanobisSquared,
+  kJointMahalanobisSquared,
+  kMotionBearingDeltaRadians,
+  kPairCost,
+  kWinningPairCost,
 };
 
 struct AssociationDiagnostic {
@@ -65,10 +84,9 @@ struct AssociationDiagnostic {
   std::string sonar_observation_id;
   bool accepted = false;
   AssociationReason reason = AssociationReason::kInvalidInput;
+  AssociationMetric metric = AssociationMetric::kUnspecified;
   double value = 0.0;
-  // NaN means the decision has no scalar configured threshold (accepted,
-  // invalid boundary input, class mismatch, or deterministic pair conflict).
-  double threshold = std::numeric_limits<double>::quiet_NaN();
+  double threshold = 0.0;
 };
 
 struct TargetAssociationResult {

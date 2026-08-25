@@ -48,6 +48,7 @@ add_library(frontends STATIC
   src/frontends/sonar_target_extractor.cpp
   src/frontends/target_associator.cpp
   src/frontends/target_tracker.cpp
+  src/frontends/target_fusion_components.cpp
   src/frontends/block_matcher.cpp
   src/frontends/stereo_optical_depth_frontend.cpp
   src/frontends/harris_corner_detector.cpp

@@ -125,9 +125,11 @@ uw_register_gtest(spatial_index_adapters_tests "unit.spatial_index_adapters" "un
 
 add_executable(application_tests
   tests/application/replay_pipeline_test.cpp
+  tests/application/target_fusion_binding_test.cpp
   tests/application/event_pump_test.cpp
   tests/application/replay_input_accumulator_test.cpp
 )
+target_compile_definitions(application_tests PRIVATE UW_REPO_ROOT="${PROJECT_SOURCE_DIR}")
 target_link_libraries(application_tests PRIVATE
   uw::application uw::domain uw::core uw::runtime GTest::gtest GTest::gtest_main
 )

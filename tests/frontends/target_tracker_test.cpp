@@ -14,7 +14,7 @@ namespace {
 
 uw::frontends::TargetMeasurement Measurement(
     std::string id, double time_s, double bearing_rad, std::optional<double> range_m,
-    uw::domain::AssistSource source = uw::domain::ASSIST_SOURCE_VISUAL,
+    std::optional<uw::domain::AssistSource> source = std::nullopt,
     std::string class_label = "target") {
   uw::frontends::TargetMeasurement measurement;
   measurement.corrected_time_s = time_s;
@@ -25,10 +25,26 @@ uw::frontends::TargetMeasurement Measurement(
   measurement.covariance.setZero();
   measurement.covariance(0, 0) = 0.01 * 0.01;
   measurement.covariance(1, 1) = range_m ? 0.1 * 0.1 : 1000.0;
-  measurement.sources = {source};
+  measurement.sources = {
+      source.value_or(range_m ? uw::domain::ASSIST_SOURCE_SONAR
+                              : uw::domain::ASSIST_SOURCE_VISUAL)};
   uw::domain::ObservationId observation;
   observation.set_value(std::move(id));
   measurement.observation_ids = {observation};
+  return measurement;
+}
+
+uw::frontends::TargetMeasurement FusedMeasurement(
+    std::string visual_id, std::string sonar_id, double time_s,
+    double bearing_rad, double range_m, std::string class_label = "target") {
+  auto measurement = Measurement(std::move(visual_id), time_s, bearing_rad,
+                                 range_m, uw::domain::ASSIST_SOURCE_SONAR,
+                                 std::move(class_label));
+  measurement.sources = {uw::domain::ASSIST_SOURCE_VISUAL,
+                         uw::domain::ASSIST_SOURCE_SONAR};
+  uw::domain::ObservationId sonar_observation;
+  sonar_observation.set_value(std::move(sonar_id));
+  measurement.observation_ids.push_back(std::move(sonar_observation));
   return measurement;
 }
 
@@ -92,7 +108,13 @@ TEST(TargetTracker, BearingOnlyTrackNeverFabricatesRange) {
   EXPECT_FALSE(tracks[0].range_observable);
   EXPECT_TRUE(std::isfinite(tracks[0].state[0]));
   EXPECT_TRUE(tracks[0].covariance.allFinite());
-  EXPECT_FALSE(tracks[0].ToProto(1.2).has_value());
+  const auto proto = tracks[0].ToProto(1.2);
+  ASSERT_TRUE(proto.has_value());
+  EXPECT_FALSE(proto->has_range_m());
+  const auto set = tracker.ToProtoSet(1.2);
+  ASSERT_TRUE(set.has_value());
+  ASSERT_EQ(set->tracks_size(), 1);
+  EXPECT_FALSE(set->tracks(0).has_range_m());
 }
 
 TEST(TargetTracker, ProtoExportFailsClosedForUnsafeTimeAndTrackInvariants) {
@@ -100,7 +122,9 @@ TEST(TargetTracker, ProtoExportFailsClosedForUnsafeTimeAndTrackInvariants) {
   ASSERT_TRUE(tracker.Update({Measurement("wire", 1.0, 0.1, 4.0,
                                          uw::domain::ASSIST_SOURCE_SONAR)}, 1.0));
   const auto valid = tracker.Tracks(1.1)[0];
-  EXPECT_TRUE(valid.ToProto(1.1).has_value());
+  const auto valid_proto = valid.ToProto(1.1);
+  ASSERT_TRUE(valid_proto.has_value());
+  EXPECT_TRUE(valid_proto->has_range_m());
 
   auto invalid = valid;
   invalid.first_capture_time_s = 1.0e300;
@@ -110,6 +134,12 @@ TEST(TargetTracker, ProtoExportFailsClosedForUnsafeTimeAndTrackInvariants) {
   EXPECT_FALSE(invalid.ToProto(1.1).has_value());
   invalid = valid;
   invalid.track_id.clear();
+  EXPECT_FALSE(invalid.ToProto(1.1).has_value());
+  invalid = valid;
+  invalid.sources = {uw::domain::ASSIST_SOURCE_ACOUSTIC_OPTIC};
+  EXPECT_FALSE(invalid.ToProto(1.1).has_value());
+  invalid = valid;
+  invalid.sources = {uw::domain::ASSIST_SOURCE_VISUAL};
   EXPECT_FALSE(invalid.ToProto(1.1).has_value());
   EXPECT_FALSE(valid.ToProto(0.9).has_value());
 
@@ -122,14 +152,93 @@ TEST(TargetTracker, SonarOnlyBirthHasObservableRangeAndJosephPsdCovariance) {
   uw::frontends::TargetTracker tracker(Params());
   ASSERT_TRUE(tracker.Update({Measurement("s", 2.0, 0.2, 7.0,
                                          uw::domain::ASSIST_SOURCE_SONAR)}, 2.0));
-  ASSERT_TRUE(tracker.Update({Measurement("f", 2.1, 0.21, 7.1,
-                                         uw::domain::ASSIST_SOURCE_ACOUSTIC_OPTIC)}, 2.1));
+  ASSERT_TRUE(tracker.Update(
+      {FusedMeasurement("v-f", "s-f", 2.1, 0.21, 7.1)}, 2.1));
   const auto track = tracker.Tracks(2.1)[0];
   EXPECT_TRUE(track.range_observable);
   EXPECT_TRUE(track.covariance.isApprox(track.covariance.transpose(), 1e-12));
   EXPECT_GE(Eigen::SelfAdjointEigenSolver<Eigen::Matrix4d>(track.covariance)
                 .eigenvalues().minCoeff(),
             -1e-10);
+}
+
+TEST(TargetTracker, RejectsInvalidSourceRangeAndProvenanceBatchAtomically) {
+  uw::frontends::TargetTracker tracker(Params());
+  ASSERT_TRUE(tracker.Update(
+      {Measurement("seed", 1.0, 0.0, std::nullopt)}, 1.0));
+  const auto before = tracker.Tracks(1.0);
+
+  auto visual_with_range = Measurement(
+      "visual-range", 1.1, 0.0, 4.0, uw::domain::ASSIST_SOURCE_VISUAL);
+  auto sonar_without_range = Measurement(
+      "sonar-bearing", 1.1, 0.0, std::nullopt,
+      uw::domain::ASSIST_SOURCE_SONAR);
+  auto fused_one_observation = FusedMeasurement(
+      "fused-v", "fused-s", 1.1, 0.0, 4.0);
+  fused_one_observation.observation_ids.pop_back();
+  auto aggregate_source = Measurement(
+      "aggregate", 1.1, 0.0, 4.0,
+      uw::domain::ASSIST_SOURCE_ACOUSTIC_OPTIC);
+
+  EXPECT_FALSE(tracker.Update(
+      {visual_with_range, sonar_without_range, fused_one_observation,
+       aggregate_source},
+      1.1));
+  const auto unchanged = tracker.Tracks(1.0);
+  ASSERT_EQ(unchanged.size(), before.size());
+  EXPECT_TRUE(unchanged[0].state.isApprox(before[0].state));
+  EXPECT_TRUE(unchanged[0].covariance.isApprox(before[0].covariance));
+
+  // The rejected processing time must not advance either watermark.
+  EXPECT_TRUE(tracker.Update(
+      {Measurement("valid-after-reject", 1.05, 0.01, std::nullopt)}, 1.05));
+}
+
+TEST(TargetTracker, EmptyBatchCommitsPredictionAndCovarianceWithoutDoublePrediction) {
+  uw::frontends::TargetTracker committed(Params());
+  uw::frontends::TargetTracker uncommitted(Params());
+  const auto seed = Measurement("seed", 3.0, 0.0, 5.0);
+  ASSERT_TRUE(committed.Update({seed}, 3.0));
+  ASSERT_TRUE(uncommitted.Update({seed}, 3.0));
+
+  ASSERT_TRUE(committed.Update({}, 3.2));
+  const auto committed_view = committed.Tracks(3.4);
+  const auto single_step_view = uncommitted.Tracks(3.4);
+  ASSERT_EQ(committed_view.size(), 1u);
+  ASSERT_EQ(single_step_view.size(), 1u);
+  EXPECT_FALSE(committed_view[0].covariance.isApprox(
+      single_step_view[0].covariance, 1e-12));
+
+  const auto at_commit = committed.Tracks(3.2)[0];
+  ASSERT_TRUE(committed.Update({}, 3.2));
+  const auto repeated_same_time = committed.Tracks(3.2)[0];
+  EXPECT_TRUE(repeated_same_time.state.isApprox(at_commit.state, 1e-12));
+  EXPECT_TRUE(repeated_same_time.covariance.isApprox(at_commit.covariance, 1e-12));
+}
+
+TEST(TargetTracker, EmptyBatchPredictionPreservesCorrectedCaptureTimeDomain) {
+  uw::frontends::TargetTracker with_disappearance(Params());
+  uw::frontends::TargetTracker direct_measurement(Params());
+  for (auto* tracker : {&with_disappearance, &direct_measurement}) {
+    ASSERT_TRUE(tracker->Update(
+        {Measurement("motion-1", 9.7, 0.0, 5.0)}, 9.9));
+    ASSERT_TRUE(tracker->Update(
+        {Measurement("motion-2", 9.8, 0.05, 5.0)}, 10.0));
+  }
+
+  ASSERT_TRUE(with_disappearance.Update({}, 10.1));
+  ASSERT_TRUE(with_disappearance.Update(
+      {Measurement("motion-3", 9.9, 0.10, 5.0)}, 10.1));
+  ASSERT_TRUE(direct_measurement.Update(
+      {Measurement("motion-3", 9.9, 0.10, 5.0)}, 10.1));
+
+  const auto disappeared = with_disappearance.Tracks(10.1);
+  const auto direct = direct_measurement.Tracks(10.1);
+  ASSERT_EQ(disappeared.size(), 1u);
+  ASSERT_EQ(direct.size(), 1u);
+  EXPECT_TRUE(disappeared[0].state.isApprox(direct[0].state, 1e-10));
+  EXPECT_TRUE(
+      disappeared[0].covariance.isApprox(direct[0].covariance, 1e-10));
 }
 
 TEST(TargetTracker, ThreeMissesDegradeAndLaterQueryStalesWithoutAnotherUpdate) {

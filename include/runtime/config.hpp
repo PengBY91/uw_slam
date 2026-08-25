@@ -143,11 +143,6 @@ struct PlatformDefaultsConfig {
   TargetAssociationConfig target_association;
   TargetTrackerConfig target_tracker;
 
-  // Stable, ordered representation intended to be included in a resolved
-  // run-manifest config hash. Unlike map iteration or YAML emitter output,
-  // this format is deterministic across platforms and locale independent.
-  std::string target_fusion_manifest_parameters() const;
-
   // Discard evidence from the first N seconds of a run before fusing it
   // (0 = disabled). Motivated by a specific deployment lesson from a
   // sibling ROS2 SVIn+HoloOcean bring-up (workfiles_02's merge_node), which

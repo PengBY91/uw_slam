@@ -3,10 +3,8 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
-#include <locale>
 #include <filesystem>
 #include <set>
-#include <sstream>
 #include <stdexcept>
 #include <vector>
 
@@ -333,31 +331,6 @@ PlatformDefaultsConfig LoadPlatformDefaultsConfig(const std::string& path) {
     }
   }
   return config;
-}
-
-std::string PlatformDefaultsConfig::target_fusion_manifest_parameters() const {
-  std::ostringstream out;
-  out.imbue(std::locale::classic());
-  out.precision(17);
-  out << "target_association.max_corrected_time_delta_s="
-      << target_association.max_corrected_time_delta_s
-      << ";max_bearing_mahalanobis_sq=" << target_association.max_bearing_mahalanobis_sq
-      << ";max_range_mahalanobis_sq=" << target_association.max_range_mahalanobis_sq
-      << ";max_motion_bearing_delta_rad=" << target_association.max_motion_bearing_delta_rad
-      << ";max_motion_rate_rad_s=" << target_association.max_motion_rate_rad_s
-      << ";max_bearing_variance_rad2=" << target_association.max_bearing_variance_rad2
-      << ";max_range_variance_m2=" << target_association.max_range_variance_m2
-      << ";target_tracker.association_mahalanobis_sq="
-      << target_tracker.association_mahalanobis_sq
-      << ";confirm_hits=" << target_tracker.confirm_hits
-      << ";degraded_misses=" << target_tracker.degraded_misses
-      << ";stale_after_s=" << target_tracker.stale_after_s
-      << ";max_prediction_dt_s=" << target_tracker.max_prediction_dt_s
-      << ";bearing_acceleration_noise=" << target_tracker.bearing_acceleration_noise
-      << ";range_acceleration_noise=" << target_tracker.range_acceleration_noise
-      << ";merge_bearing_threshold_rad=" << target_tracker.merge_bearing_threshold_rad
-      << ";merge_range_threshold_m=" << target_tracker.merge_range_threshold_m;
-  return out.str();
 }
 
 uw::domain::RigCalibrationSnapshot LoadRigConfig(const std::string& path) {
