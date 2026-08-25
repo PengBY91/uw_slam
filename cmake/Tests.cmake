@@ -168,6 +168,16 @@ set_tests_properties(integration.acoustic_optic_scenario_matrix_determinism
   PROPERTIES LABELS "integration;replay")
 
 add_test(
+  NAME integration.live_ingress_smoke
+  COMMAND bash ${PROJECT_SOURCE_DIR}/tests/integration/live_ingress_smoke_test.sh
+          ${CMAKE_BINARY_DIR}/bin/live_ingress_smoke
+)
+set_tests_properties(integration.live_ingress_smoke PROPERTIES
+  LABELS "integration;runtime;live"
+  TIMEOUT 15
+)
+
+add_test(
   NAME lint.layer_dependency_unit
   COMMAND ${Python3_EXECUTABLE} tests/lint/check_layer_dependencies_test.py -v
 )
