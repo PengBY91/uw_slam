@@ -14,18 +14,13 @@
 #include "frontends/stereo_optical_depth_frontend.hpp"
 #include "frontends/target_fusion_components.hpp"
 #include "runtime/acoustic_optic_buffer.hpp"
+#include "sensor_models/camera_model.hpp"
 
 namespace uw::application {
 
 namespace {
 
-const uw::domain::CameraIntrinsics* FindCamera(const uw::domain::RigCalibrationSnapshot& rig,
-                                                const std::string& sensor_id) {
-  for (const auto& camera : rig.cameras()) {
-    if (camera.sensor_id().value() == sensor_id) return &camera;
-  }
-  return nullptr;
-}
+using uw::sensor_models::FindCamera;
 
 uw::domain::Stamp DefaultNow() {
   const double seconds =

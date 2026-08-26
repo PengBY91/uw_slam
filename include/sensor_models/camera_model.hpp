@@ -9,6 +9,11 @@
 
 namespace uw::sensor_models {
 
+// Returns the calibrated intrinsics for `sensor_id`, or nullptr if the rig
+// has no camera with that id.
+const uw::domain::CameraIntrinsics* FindCamera(const uw::domain::RigCalibrationSnapshot& rig,
+                                                const std::string& sensor_id);
+
 // Pinhole intrinsics only. v1 assumes already-undistorted pixel coordinates
 // — CameraIntrinsics.distortion is not applied here. This mirrors
 // StereoGeometry's parallel-rig assumption below: general

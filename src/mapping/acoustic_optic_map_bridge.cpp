@@ -10,22 +10,8 @@ namespace uw::mapping {
 
 namespace {
 
-const uw::domain::CameraIntrinsics* FindCamera(const uw::domain::RigCalibrationSnapshot& rig,
-                                                const std::string& sensor_id) {
-  for (const auto& camera : rig.cameras()) {
-    if (camera.sensor_id().value() == sensor_id) return &camera;
-  }
-  return nullptr;
-}
-
-std::optional<uw::sensor_models::Pose3> FindEdgePose(const uw::domain::RigCalibrationSnapshot& rig,
-                                                      const std::string& child_frame) {
-  for (const auto& edge : rig.frame_tree()) {
-    if (edge.child_frame().value() != child_frame) continue;
-    return uw::sensor_models::Pose3::FromProto(edge.transform());
-  }
-  return std::nullopt;
-}
+using uw::sensor_models::FindCamera;
+using uw::sensor_models::FindEdgePose;
 
 }  // namespace
 

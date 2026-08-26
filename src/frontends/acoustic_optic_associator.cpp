@@ -11,13 +11,8 @@ namespace uw::frontends {
 
 namespace {
 
-const uw::domain::CameraIntrinsics* FindCamera(const uw::domain::RigCalibrationSnapshot& rig,
-                                                const std::string& sensor_id) {
-  for (const auto& camera : rig.cameras()) {
-    if (camera.sensor_id().value() == sensor_id) return &camera;
-  }
-  return nullptr;
-}
+using uw::sensor_models::FindCamera;
+using uw::sensor_models::FindEdgePose;
 
 const uw::domain::SonarBeamModel* FindBeamModel(const uw::domain::RigCalibrationSnapshot& rig,
                                                  const std::string& sensor_id) {
@@ -25,15 +20,6 @@ const uw::domain::SonarBeamModel* FindBeamModel(const uw::domain::RigCalibration
     if (model.sensor_id().value() == sensor_id) return &model;
   }
   return nullptr;
-}
-
-std::optional<uw::sensor_models::Pose3> FindEdgePose(const uw::domain::RigCalibrationSnapshot& rig,
-                                                      const std::string& child_frame) {
-  for (const auto& edge : rig.frame_tree()) {
-    if (edge.child_frame().value() != child_frame) continue;
-    return uw::sensor_models::Pose3::FromProto(edge.transform());
-  }
-  return std::nullopt;
 }
 
 }  // namespace

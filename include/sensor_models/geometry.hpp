@@ -5,6 +5,8 @@
 #pragma once
 
 #include <array>
+#include <optional>
+#include <string>
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>
@@ -35,5 +37,10 @@ struct Pose3 {
   uw::domain::Transform3D ToProto() const;
   static Pose3 FromProto(const uw::domain::Transform3D& transform);
 };
+
+// Returns the pose of `child_frame` from its rig frame_tree edge, or
+// nullopt if no edge targets that frame.
+std::optional<Pose3> FindEdgePose(const uw::domain::RigCalibrationSnapshot& rig,
+                                   const std::string& child_frame);
 
 }  // namespace uw::sensor_models

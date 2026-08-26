@@ -63,4 +63,13 @@ Pose3 Pose3::FromProto(const uw::domain::Transform3D& transform) {
   return pose;
 }
 
+std::optional<Pose3> FindEdgePose(const uw::domain::RigCalibrationSnapshot& rig,
+                                   const std::string& child_frame) {
+  for (const auto& edge : rig.frame_tree()) {
+    if (edge.child_frame().value() != child_frame) continue;
+    return Pose3::FromProto(edge.transform());
+  }
+  return std::nullopt;
+}
+
 }  // namespace uw::sensor_models

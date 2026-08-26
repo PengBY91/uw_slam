@@ -17,13 +17,7 @@ namespace {
 constexpr uint32_t kWidth = 640;
 constexpr uint32_t kHeight = 480;
 
-const uw::domain::CameraIntrinsics* FindCamera(const uw::domain::RigCalibrationSnapshot& rig,
-                                                const std::string& sensor_id) {
-  for (const auto& camera : rig.cameras()) {
-    if (camera.sensor_id().value() == sensor_id) return &camera;
-  }
-  return nullptr;
-}
+using uw::sensor_models::FindCamera;
 
 uw::sensor_models::Pose3 FindEdgePose(const uw::domain::RigCalibrationSnapshot& rig,
                                       const std::string& child_frame) {

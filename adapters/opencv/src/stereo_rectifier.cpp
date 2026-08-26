@@ -23,6 +23,7 @@ namespace {
 using uw::domain::CameraIntrinsics;
 using uw::domain::FrameEdge;
 using uw::domain::RigCalibrationSnapshot;
+using uw::sensor_models::FindCamera;
 using uw::sensor_models::Pose3;
 
 // Not a cryptographic hash -- only used to make DerivedRig()'s calibration
@@ -38,13 +39,6 @@ std::string Fnv1aHex(const std::string& data) {
   std::ostringstream out;
   out << std::hex << hash;
   return out.str();
-}
-
-const CameraIntrinsics* FindCamera(const RigCalibrationSnapshot& rig, const std::string& sensor_id) {
-  for (const auto& camera : rig.cameras()) {
-    if (camera.sensor_id().value() == sensor_id) return &camera;
-  }
-  return nullptr;
 }
 
 const FrameEdge* FindEdge(const RigCalibrationSnapshot& rig, const std::string& child_frame) {

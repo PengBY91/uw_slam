@@ -11,14 +11,6 @@ namespace uw::sensor_models {
 
 namespace {
 
-const uw::domain::CameraIntrinsics* FindCamera(const uw::domain::RigCalibrationSnapshot& rig,
-                                                const std::string& sensor_id) {
-  for (const auto& camera : rig.cameras()) {
-    if (camera.sensor_id().value() == sensor_id) return &camera;
-  }
-  return nullptr;
-}
-
 std::optional<Eigen::Matrix4d> FindEdgeTransform(const uw::domain::RigCalibrationSnapshot& rig,
                                                   const std::string& child_frame) {
   for (const auto& edge : rig.frame_tree()) {
@@ -62,6 +54,14 @@ Pose3 LinkToOptical() {
 }
 
 }  // namespace
+
+const uw::domain::CameraIntrinsics* FindCamera(const uw::domain::RigCalibrationSnapshot& rig,
+                                                const std::string& sensor_id) {
+  for (const auto& camera : rig.cameras()) {
+    if (camera.sensor_id().value() == sensor_id) return &camera;
+  }
+  return nullptr;
+}
 
 PinholeCamera PinholeCamera::FromIntrinsics(const uw::domain::CameraIntrinsics& intrinsics) {
   PinholeCamera camera;
