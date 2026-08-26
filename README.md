@@ -688,6 +688,7 @@ target 按架构层合并，不要为单个实现新建 target 或 `CMakeLists.t
 |---|---|
 | 不确定应该先读哪份文档 | [文档中心](./docs/README.md) |
 | 作为新贡献者第一次读代码、理清调用链 | [新人上手指南](./docs/uw-slam-newcomer-guide.md) |
+| 按执行顺序逐阶段读懂两条主线的代码块与机制 | [两条主线代码走读](./docs/uw-slam-two-mainlines-walkthrough-2026-08-26.md) |
 | 长期模块边界、状态机、可靠性和 Gate 设计 | [声光 SLAM 平台架构](./docs/acoustic-optic-slam-platform-architecture-2026-08-17.md) |
 | 当前代码里实际存在的类型、算法和数据流 | [代码库参考](./docs/uw-slam-codebase-reference-2026-08-18.md) |
 | 验证某个功能、该加载什么环境 | [测试与验证指南](./docs/testing-and-verification-guide-2026-08-20.md) |
