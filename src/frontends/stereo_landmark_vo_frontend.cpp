@@ -1,72 +1,10 @@
 #include "frontends/stereo_landmark_vo_frontend.hpp"
 
+#include "frontends/camera_body_conjugation.hpp"
 #include "frontends/rigid_transform_fit.hpp"
 #include "sensor_models/camera_model.hpp"
 
 namespace uw::frontends {
-namespace {
-
-// Same lookup as apps/synth_bag_gen.cpp's local FindRigEdgePose (and
-// several algorithms/ callers — see acoustic_optic_depth_fusion_frontend.cpp,
-// acoustic_optic_associator.cpp, acoustic_optic_map_bridge.cpp for the same
-// pattern; there is no shared public rig-lookup utility to call instead).
-uw::sensor_models::Pose3 FindRigEdgePose(const uw::domain::RigCalibrationSnapshot& rig,
-                                          const std::string& child_frame) {
-  for (const auto& edge : rig.frame_tree()) {
-    if (edge.child_frame().value() == child_frame) return uw::sensor_models::Pose3::FromProto(edge.transform());
-  }
-  return uw::sensor_models::Pose3::Identity();
-}
-
-// The Pose3 that maps a point already expressed in the LEFT camera's
-// OPTICAL frame (PinholeCamera::Project/Unproject's convention) into the
-// rig's body frame — i.e. body_T_camera_optical.Apply(p_optical) == p_body.
-// Composes the frame_tree edge (base_link -> camera_left_link, itself in
-// BODY convention) with the inverse of the fixed optical<->body axis
-// rotation (see camera_model.hpp's OpticalFromBodyRotation doc comment,
-// and synth_bag_gen's BuildStereoPair for the forward direction of this
-// exact composition — world/body point down to optical, this is that
-// same chain run backwards).
-uw::sensor_models::Pose3 BodyFromCameraOptical(const uw::domain::RigCalibrationSnapshot& rig,
-                                                const std::string& camera_frame) {
-  const auto camera_link_body_pose = FindRigEdgePose(rig, camera_frame);
-  uw::sensor_models::Pose3 optical_to_body_rotation;
-  optical_to_body_rotation.rotation = Eigen::Quaterniond(uw::sensor_models::OpticalFromBodyRotation()).inverse();
-  return camera_link_body_pose * optical_to_body_rotation;
-}
-
-// Transforms a 6x6 covariance of `original_pose`'s LEFT [dt(3);dtheta(3)]
-// perturbation (rigid_transform_fit.hpp's convention: pose_perturbed =
-// Exp(dtheta)*pose, translation += dt -- decoupled, NOT the fully-coupled
-// SE(3) exponential) into the covariance of (conjugator * original_pose *
-// conjugator^-1)'s perturbation under the SAME conjugator applied on both
-// sides. Derived by first-order expansion of that conjugation (verified
-// numerically against a central-difference Jacobian during development,
-// max abs error ~1e-10):
-//   dt'     = R_C * dt + R_C * [w]_x * dtheta
-//   dtheta' = R_C * dtheta
-// where R_C is conjugator's rotation and w = original_pose.rotation *
-// (conjugator.rotation^-1 * conjugator.translation).
-Eigen::Matrix<double, 6, 6> TransformCovarianceForConjugation(
-    const uw::sensor_models::Pose3& original_pose, const uw::sensor_models::Pose3& conjugator,
-    const Eigen::Matrix<double, 6, 6>& covariance) {
-  const Eigen::Matrix3d r_c = conjugator.rotation.toRotationMatrix();
-  const Eigen::Vector3d w =
-      original_pose.rotation * (conjugator.rotation.conjugate() * conjugator.translation);
-  Eigen::Matrix3d w_hat;
-  w_hat << 0.0, -w.z(), w.y(), w.z(), 0.0, -w.x(), -w.y(), w.x(), 0.0;
-
-  Eigen::Matrix<double, 6, 6> jacobian = Eigen::Matrix<double, 6, 6>::Zero();
-  jacobian.block<3, 3>(0, 0) = r_c;
-  jacobian.block<3, 3>(0, 3) = r_c * w_hat;
-  jacobian.block<3, 3>(3, 3) = r_c;
-
-  Eigen::Matrix<double, 6, 6> result = jacobian * covariance * jacobian.transpose();
-  return 0.5 * (result + result.transpose());
-}
-
-}  // namespace
-
 namespace {
 std::function<std::vector<LandmarkBlob>(const uint8_t*, uint32_t, uint32_t, uint32_t)> MakeDetector(
     const StereoLandmarkVoFrontendParams& params) {

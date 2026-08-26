@@ -148,6 +148,33 @@ struct VisualOdometryConfig {
   double max_inlier_rmse_m = std::numeric_limits<double>::infinity();
 };
 
+// Loop-closure pose-graph edges (architecture-inspired by SVIn's pose_graph
+// module, an ORIGINAL implementation -- see frontends::LoopClosureFrontend's
+// own header comment for the v1 scope limits this config controls).
+// Default-off (`enabled = false`): zero behavior change to any existing
+// experiment unless a config explicitly opts in.
+struct LoopClosureConfig {
+  bool enabled = false;
+  // Pose-proximity candidate retrieval -- see LoopClosureFrontend's header
+  // comment for why this (not DBoW2/appearance-only retrieval) is v1's
+  // deliberate scope boundary.
+  double candidate_search_radius_m = 3.0;
+  int min_keyframe_index_gap = 15;
+  // Sanity gate on the RECOVERED relative pose (translation/rotation
+  // magnitude), applied by the frontend AFTER RANSAC's own inlier-
+  // count/rmse gates -- see LoopClosureFrontendParams' own field comments.
+  double max_accepted_translation_m = 5.0;
+  double max_accepted_rotation_rad = 0.6;
+  int min_landmarks_for_pose = 3;
+  int max_loop_edges_per_keyframe = 1;
+  // Threaded into GaussNewtonOptions::huber_delta (gauss_newton_solver.hpp)
+  // -- a threshold on a loop edge's WHITENED residual norm, only meaningful
+  // when defaults.solver == "gauss_newton_v1" (the default); the Ceres
+  // adapter does not yet read PoseGraphProblem::ResidualBinding::
+  // robust_policy (see ceres_pose_graph_solver.cpp's own TODO).
+  double huber_delta = 1.5;
+};
+
 struct PlatformDefaultsConfig {
   // "gauss_newton_v1" (default, uw::estimation::GaussNewtonSolver) or
   // "ceres_v1" (uw::adapters::ceres_solver::CeresPoseGraphSolver — only
@@ -160,6 +187,7 @@ struct PlatformDefaultsConfig {
   SqrtInformationDefaults default_sqrt_information;
   StereoRectificationConfig stereo_rectification;
   VisualOdometryConfig visual_odometry;
+  LoopClosureConfig loop_closure;
   StereoMatchingConfig stereo_matching;
   SonarFrontendConfig sonar_frontend;
   TargetAssociationConfig target_association;

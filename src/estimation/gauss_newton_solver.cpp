@@ -23,7 +23,7 @@ void RenormalizeQuaternion(double* params) {
 double GaussNewtonSolver::EvaluateAll(PoseGraphProblem& problem,
                                        const std::unordered_map<std::string, double*>& param_ptrs,
                                        const std::unordered_map<std::string, int>& free_index,
-                                       Eigen::MatrixXd* jtj, Eigen::VectorXd* jtr) {
+                                       Eigen::MatrixXd* jtj, Eigen::VectorXd* jtr, double huber_delta) {
   double cost = 0.0;
 
   // Reads/writes go through PoseGraphProblem's public ResidualBindings()/
@@ -53,6 +53,27 @@ double GaussNewtonSolver::EvaluateAll(PoseGraphProblem& problem,
 
     const bool ok = binding.block->Evaluate(params, residuals.data(), want_jacobian ? &jac_ptrs : nullptr);
     if (!ok) continue;
+
+    // IRLS-style scaled-residual reweighting (Ceres's Corrector, minus the
+    // curvature/alpha term a Gauss-Newton-only solver has no use for):
+    // scales BOTH the residual and every Jacobian block by the same w, so
+    // everything downstream (cost, jtj/jtr accumulation below) only ever
+    // reads the already-reweighted values and needs no further changes.
+    // kNone bindings (every pre-existing factor type) skip this entirely,
+    // so their contribution stays bit-identical to before this existed.
+    if (binding.robust_policy == PoseGraphProblem::RobustPolicy::kHuber) {
+      Eigen::Map<Eigen::VectorXd> r_mut(residuals.data(), dim);
+      const double norm = r_mut.norm();
+      if (norm > huber_delta && norm > 1e-12) {
+        const double w = std::sqrt(huber_delta / norm);
+        r_mut *= w;
+        if (want_jacobian) {
+          for (auto& storage : jac_storage) {
+            for (double& v : storage) v *= w;
+          }
+        }
+      }
+    }
 
     Eigen::Map<const Eigen::VectorXd> r(residuals.data(), dim);
     cost += 0.5 * r.squaredNorm();
@@ -102,19 +123,21 @@ GaussNewtonSolver::Summary GaussNewtonSolver::Solve(PoseGraphProblem& problem,
   }
 
   if (num_free == 0) {
-    summary.initial_cost = summary.final_cost = EvaluateAll(problem, param_ptrs, free_index, nullptr, nullptr);
+    summary.initial_cost = summary.final_cost =
+        EvaluateAll(problem, param_ptrs, free_index, nullptr, nullptr, options.huber_delta);
     summary.converged = true;
     return summary;
   }
 
   double lambda = options.initial_lambda;
-  double current_cost = EvaluateAll(problem, param_ptrs, free_index, nullptr, nullptr);
+  double current_cost = EvaluateAll(problem, param_ptrs, free_index, nullptr, nullptr, options.huber_delta);
   summary.initial_cost = current_cost;
 
   for (int iter = 0; iter < options.max_iterations; ++iter) {
     Eigen::MatrixXd jtj = Eigen::MatrixXd::Zero(kBlockDim * num_free, kBlockDim * num_free);
     Eigen::VectorXd jtr = Eigen::VectorXd::Zero(kBlockDim * num_free);
-    const double cost_at_linearization = EvaluateAll(problem, param_ptrs, free_index, &jtj, &jtr);
+    const double cost_at_linearization =
+        EvaluateAll(problem, param_ptrs, free_index, &jtj, &jtr, options.huber_delta);
 
     bool step_accepted = false;
     for (int retry = 0; retry < options.max_inner_retries; ++retry) {
@@ -135,7 +158,8 @@ GaussNewtonSolver::Summary GaussNewtonSolver::Solve(PoseGraphProblem& problem,
         RenormalizeQuaternion(params);
       }
 
-      const double trial_cost = EvaluateAll(problem, param_ptrs, free_index, nullptr, nullptr);
+      const double trial_cost =
+          EvaluateAll(problem, param_ptrs, free_index, nullptr, nullptr, options.huber_delta);
       if (trial_cost <= cost_at_linearization) {
         current_cost = trial_cost;
         lambda = std::max(lambda / options.lambda_down_factor, 1e-12);

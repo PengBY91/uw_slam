@@ -37,11 +37,12 @@ bool PoseGraphProblem::IsFixed(const std::string& keyframe_id) const {
 }
 
 void PoseGraphProblem::AddResidualBlock(std::unique_ptr<uw::measurement_api::ResidualBlock> block,
-                                         std::vector<std::string> involved_keyframes) {
+                                         std::vector<std::string> involved_keyframes,
+                                         RobustPolicy robust_policy) {
   for (const auto& id : involved_keyframes) {
     if (keyframes_.count(id) == 0) throw std::out_of_range("unknown keyframe: " + id);
   }
-  residual_blocks_.push_back(Binding{std::move(block), std::move(involved_keyframes)});
+  residual_blocks_.push_back(Binding{std::move(block), std::move(involved_keyframes), robust_policy});
 }
 
 std::vector<PoseGraphProblem::KeyframeParameterBlock> PoseGraphProblem::MutableParameterBlocks() {
@@ -58,7 +59,7 @@ std::vector<PoseGraphProblem::ResidualBinding> PoseGraphProblem::ResidualBinding
   std::vector<ResidualBinding> bindings;
   bindings.reserve(residual_blocks_.size());
   for (const auto& binding : residual_blocks_) {
-    bindings.push_back(ResidualBinding{binding.block.get(), &binding.involved_keyframes});
+    bindings.push_back(ResidualBinding{binding.block.get(), &binding.involved_keyframes, binding.robust_policy});
   }
   return bindings;
 }

@@ -23,6 +23,13 @@ struct GaussNewtonOptions {
   double lambda_down_factor = 3.0;
   int max_inner_retries = 8;
   double cost_change_tolerance = 1e-12;
+  // Huber threshold on a residual block's WHITENED norm ||r|| (residuals
+  // are already sqrt-information-scaled by the factor_builder, so this is
+  // directly comparable to Ceres's own HuberLoss(a) parameter). Only
+  // applied to bindings flagged PoseGraphProblem::RobustPolicy::kHuber
+  // (see EvaluateAll); kNone bindings (every pre-existing factor type)
+  // ignore this value entirely.
+  double huber_delta = 1.0;
 };
 
 struct GaussNewtonSummary {
@@ -66,7 +73,7 @@ class GaussNewtonSolver {
   static double EvaluateAll(PoseGraphProblem& problem,
                             const std::unordered_map<std::string, double*>& param_ptrs,
                             const std::unordered_map<std::string, int>& free_index,
-                            Eigen::MatrixXd* jtj, Eigen::VectorXd* jtr);
+                            Eigen::MatrixXd* jtj, Eigen::VectorXd* jtr, double huber_delta);
 };
 
 }  // namespace uw::estimation

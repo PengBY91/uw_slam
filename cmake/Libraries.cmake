@@ -56,7 +56,9 @@ add_library(frontends STATIC
   src/frontends/landmark_blob_detector.cpp
   src/frontends/patch_matcher.cpp
   src/frontends/rigid_transform_fit.cpp
+  src/frontends/camera_body_conjugation.cpp
   src/frontends/stereo_landmark_vo_frontend.cpp
+  src/frontends/loop_closure_frontend.cpp
   src/frontends/acoustic_optic_associator.cpp
   src/frontends/posterior_depth_optimizer.cpp
   src/frontends/acoustic_optic_depth_fusion_frontend.cpp

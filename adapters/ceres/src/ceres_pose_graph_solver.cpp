@@ -75,6 +75,11 @@ uw::estimation::GaussNewtonSummary CeresPoseGraphSolver::Solve(uw::estimation::P
     // No robust loss (nullptr): matches this repo's current, deliberate
     // scope — see docs/superpowers/specs/2026-08-23-frontend-correctness-
     // closure-design.md §8.2 ("本阶段不实现 robust kernel").
+    // TODO: binding.robust_policy (PoseGraphProblem::RobustPolicy, used by
+    // GaussNewtonSolver for e.g. loop-closure edges) is not read here yet —
+    // a kHuber binding silently gets no robust loss under this backend
+    // until a ceres::LossFunction is wired in. Huber only takes effect
+    // under estimation.solver == "gauss_newton_v1" (the default) for now.
     ceres_problem.AddResidualBlock(new ResidualBlockCostFunction(binding.block), nullptr, parameter_blocks);
   }
 

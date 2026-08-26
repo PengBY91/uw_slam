@@ -335,6 +335,53 @@ PlatformDefaultsConfig LoadPlatformDefaultsConfig(const std::string& path) {
     }
   }
 
+  if (root["loop_closure"]) {
+    const auto lc = root["loop_closure"];
+    RejectUnknownKeys(lc,
+                      {"enabled", "candidate_search_radius_m", "min_keyframe_index_gap",
+                       "max_accepted_translation_m", "max_accepted_rotation_rad", "min_landmarks_for_pose",
+                       "max_loop_edges_per_keyframe", "huber_delta"},
+                      "loop_closure");
+    config.loop_closure.enabled = GetOr<bool>(lc, "enabled", config.loop_closure.enabled);
+    config.loop_closure.candidate_search_radius_m =
+        GetOr<double>(lc, "candidate_search_radius_m", config.loop_closure.candidate_search_radius_m);
+    if (!std::isfinite(config.loop_closure.candidate_search_radius_m) ||
+        config.loop_closure.candidate_search_radius_m <= 0.0) {
+      throw std::runtime_error("loop_closure.candidate_search_radius_m must be finite and positive");
+    }
+    config.loop_closure.min_keyframe_index_gap =
+        GetOr<int>(lc, "min_keyframe_index_gap", config.loop_closure.min_keyframe_index_gap);
+    if (config.loop_closure.min_keyframe_index_gap < 1) {
+      throw std::runtime_error("loop_closure.min_keyframe_index_gap must be >= 1");
+    }
+    config.loop_closure.max_accepted_translation_m =
+        GetOr<double>(lc, "max_accepted_translation_m", config.loop_closure.max_accepted_translation_m);
+    if (!std::isfinite(config.loop_closure.max_accepted_translation_m) ||
+        config.loop_closure.max_accepted_translation_m <= 0.0) {
+      throw std::runtime_error("loop_closure.max_accepted_translation_m must be finite and positive");
+    }
+    config.loop_closure.max_accepted_rotation_rad =
+        GetOr<double>(lc, "max_accepted_rotation_rad", config.loop_closure.max_accepted_rotation_rad);
+    if (!std::isfinite(config.loop_closure.max_accepted_rotation_rad) ||
+        config.loop_closure.max_accepted_rotation_rad <= 0.0) {
+      throw std::runtime_error("loop_closure.max_accepted_rotation_rad must be finite and positive");
+    }
+    config.loop_closure.min_landmarks_for_pose =
+        GetOr<int>(lc, "min_landmarks_for_pose", config.loop_closure.min_landmarks_for_pose);
+    if (config.loop_closure.min_landmarks_for_pose < 3) {
+      throw std::runtime_error("loop_closure.min_landmarks_for_pose must be >= 3");
+    }
+    config.loop_closure.max_loop_edges_per_keyframe =
+        GetOr<int>(lc, "max_loop_edges_per_keyframe", config.loop_closure.max_loop_edges_per_keyframe);
+    if (config.loop_closure.max_loop_edges_per_keyframe < 1) {
+      throw std::runtime_error("loop_closure.max_loop_edges_per_keyframe must be >= 1");
+    }
+    config.loop_closure.huber_delta = GetOr<double>(lc, "huber_delta", config.loop_closure.huber_delta);
+    if (!std::isfinite(config.loop_closure.huber_delta) || config.loop_closure.huber_delta <= 0.0) {
+      throw std::runtime_error("loop_closure.huber_delta must be finite and positive");
+    }
+  }
+
   if (root["stereo_matching"]) {
     const auto sm = root["stereo_matching"];
     RejectUnknownKeys(sm, {"min_texture_variance", "min_uniqueness_margin", "left_right_max_diff_px"},

@@ -33,6 +33,7 @@ add_executable(frontends_tests
   tests/frontends/patch_matcher_test.cpp
   tests/frontends/rigid_transform_fit_test.cpp
   tests/frontends/stereo_landmark_vo_frontend_test.cpp
+  tests/frontends/loop_closure_frontend_test.cpp
   tests/frontends/acoustic_optic_associator_test.cpp
   tests/frontends/posterior_depth_optimizer_test.cpp
   tests/frontends/acoustic_optic_depth_fusion_frontend_test.cpp

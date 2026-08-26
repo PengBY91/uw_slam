@@ -73,6 +73,7 @@
 #include "factor_builders/relative_pose_factor_builder.hpp"
 #include "factor_builders/sonar_range_factor_builder.hpp"
 #include "frontends/acoustic_optic_depth_fusion_frontend.hpp"
+#include "frontends/loop_closure_frontend.hpp"
 #include "frontends/sonar_cfar_frontend.hpp"
 #include "frontends/stereo_landmark_vo_frontend.hpp"
 #include "frontends/stereo_optical_depth_frontend.hpp"
@@ -676,6 +677,65 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
   std::cout << "added " << num_relative_pose_factors << " relative-pose factors, "
             << problem.NumKeyframes() << " keyframes\n";
 
+  // Loop-closure pose-graph edges (architecture-inspired by SVIn's
+  // pose_graph module — see frontends/loop_closure_frontend.hpp's own
+  // header comment for what was and wasn't ported). A second pass, AFTER
+  // the stereo_landmark_vo loop above has finished dead-reckoning every
+  // keyframe into `problem` — not interleaved with it — so "advance dead
+  // reckoning one edge at a time" and "search the whole archive so far"
+  // stay separate concerns and the archive never contains a not-yet-
+  // dead-reckoned keyframe. Gated by the SAME rig/estimator_mode
+  // precondition as VO (loop closure needs real camera frames) plus
+  // defaults.loop_closure.enabled (default off — zero behavior change to
+  // any existing experiment unless a config explicitly opts in).
+  int num_loop_closure_factors = 0;
+  if (rig.has_value() && estimator_mode == "stereo_landmark_vo" && defaults.loop_closure.enabled) {
+    uw::frontends::LoopClosureFrontendParams lc_params;
+    lc_params.left_frame = rectification_context->LeftRectifiedFrame();
+    lc_params.right_frame = rectification_context->RightRectifiedFrame();
+    lc_params.candidate_search_radius_m = defaults.loop_closure.candidate_search_radius_m;
+    lc_params.min_keyframe_index_gap = defaults.loop_closure.min_keyframe_index_gap;
+    lc_params.max_accepted_translation_m = defaults.loop_closure.max_accepted_translation_m;
+    lc_params.max_accepted_rotation_rad = defaults.loop_closure.max_accepted_rotation_rad;
+    lc_params.min_landmarks_for_pose = defaults.loop_closure.min_landmarks_for_pose;
+    lc_params.max_loop_edges_per_keyframe = defaults.loop_closure.max_loop_edges_per_keyframe;
+    uw::frontends::LoopClosureFrontend loop_frontend(lc_params);
+
+    for (const auto& kf_id : ordered_camera_keyframe_ids) {
+      if (!problem.HasKeyframe(kf_id)) continue;  // VO never dead-reckoned this one (e.g. the first frame)
+      auto* rectified = get_rectified(kf_id);
+      if (rectified == nullptr) continue;
+
+      uw::measurement_api::CameraFrameBundle bundle = rectified->images;
+      bundle.primary.mutable_header()->mutable_observation_id()->set_value(kf_id);
+
+      // problem.GetKeyframePose(kf_id) here is still the PRE-SOLVE
+      // dead-reckoned estimate (solver.Solve() hasn't run yet) — exactly
+      // the "position at insertion time" pose-proximity search needs.
+      const auto loop_evidences =
+          loop_frontend.Process(bundle, rectification_context->DerivedRig(), kf_id, problem.GetKeyframePose(kf_id));
+      for (const auto& loop_evidence : loop_evidences) {
+        const auto& measurement = uw::domain::GetPayload<uw::domain::RelativePoseMeasurement>(loop_evidence);
+        const std::string from = measurement.from_keyframe().value();
+        const std::string to = measurement.to_keyframe().value();
+        if (!problem.HasKeyframe(from) || !problem.HasKeyframe(to)) continue;
+
+        uw::domain::FactorCandidate candidate;
+        candidate.set_residual_model(uw::factor_builders::RelativePoseFactorBuilder::kResidualModel);
+        candidate.set_proposed_noise(relative_pose_sqrt_info);
+        candidate.set_robust_policy_hint(uw::domain::ROBUST_POLICY_HUBER);
+        auto block = relative_pose_builder.Build(candidate, loop_evidence, {});
+        if (block) {
+          problem.AddResidualBlock(std::move(block), {from, to},
+                                   uw::estimation::PoseGraphProblem::RobustPolicy::kHuber);
+          evidence_by_keyframe[to].push_back(loop_evidence.evidence_id());
+          ++num_loop_closure_factors;
+        }
+      }
+    }
+    std::cout << "loop_closure_frontend: added " << num_loop_closure_factors << " loop-closure factors\n";
+  }
+
   const auto cfar_params =
       uw::application::BuildSonarCfarFrontendParams(defaults.sonar_frontend);
   uw::frontends::SonarCfarFrontend sonar_frontend(cfar_params);
@@ -830,6 +890,9 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
     uw::estimation::GaussNewtonSolver::Options solver_options;
     solver_options.max_iterations = defaults.max_iterations;
     solver_options.initial_lambda = defaults.initial_lambda;
+    // Only affects RobustPolicy::kHuber-flagged bindings (loop-closure
+    // edges above); harmless no-op when none exist.
+    solver_options.huber_delta = defaults.loop_closure.huber_delta;
     summary = solver.Solve(problem, solver_options);
   }
   std::cout << "solver(" << defaults.solver << "): " << summary.iterations << " iterations, cost "

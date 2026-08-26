@@ -388,6 +388,68 @@ TEST(Config, RejectsVisualOdometryUnknownKey) {
   std::remove(tmp_path.string().c_str());
 }
 
+TEST(Config, LoopClosureDefaultsToDisabled) {
+  const auto config = uw::runtime::PlatformDefaultsConfig{};
+  EXPECT_FALSE(config.loop_closure.enabled);
+  EXPECT_EQ(config.loop_closure.min_keyframe_index_gap, 15);
+}
+
+TEST(Config, ParsesLoopClosureOverrides) {
+  const auto tmp_path = std::filesystem::temp_directory_path() / "uw_config_test_lc.yaml";
+  {
+    std::ofstream out(tmp_path);
+    out << "loop_closure:\n"
+           "  enabled: true\n"
+           "  candidate_search_radius_m: 2.5\n"
+           "  min_keyframe_index_gap: 10\n"
+           "  max_accepted_translation_m: 4.0\n"
+           "  max_accepted_rotation_rad: 0.4\n"
+           "  min_landmarks_for_pose: 4\n"
+           "  max_loop_edges_per_keyframe: 2\n"
+           "  huber_delta: 2.0\n";
+  }
+  const auto config = uw::runtime::LoadPlatformDefaultsConfig(tmp_path.string());
+  EXPECT_TRUE(config.loop_closure.enabled);
+  EXPECT_DOUBLE_EQ(config.loop_closure.candidate_search_radius_m, 2.5);
+  EXPECT_EQ(config.loop_closure.min_keyframe_index_gap, 10);
+  EXPECT_DOUBLE_EQ(config.loop_closure.max_accepted_translation_m, 4.0);
+  EXPECT_DOUBLE_EQ(config.loop_closure.max_accepted_rotation_rad, 0.4);
+  EXPECT_EQ(config.loop_closure.min_landmarks_for_pose, 4);
+  EXPECT_EQ(config.loop_closure.max_loop_edges_per_keyframe, 2);
+  EXPECT_DOUBLE_EQ(config.loop_closure.huber_delta, 2.0);
+  std::remove(tmp_path.string().c_str());
+}
+
+TEST(Config, RejectsLoopClosureNonPositiveSearchRadius) {
+  const auto tmp_path = std::filesystem::temp_directory_path() / "uw_config_test_lc_radius_bad.yaml";
+  {
+    std::ofstream out(tmp_path);
+    out << "loop_closure:\n  candidate_search_radius_m: 0.0\n";
+  }
+  EXPECT_THROW(uw::runtime::LoadPlatformDefaultsConfig(tmp_path.string()), std::runtime_error);
+  std::remove(tmp_path.string().c_str());
+}
+
+TEST(Config, RejectsLoopClosureMinLandmarksForPoseBelowThree) {
+  const auto tmp_path = std::filesystem::temp_directory_path() / "uw_config_test_lc_minlm_bad.yaml";
+  {
+    std::ofstream out(tmp_path);
+    out << "loop_closure:\n  min_landmarks_for_pose: 2\n";
+  }
+  EXPECT_THROW(uw::runtime::LoadPlatformDefaultsConfig(tmp_path.string()), std::runtime_error);
+  std::remove(tmp_path.string().c_str());
+}
+
+TEST(Config, RejectsLoopClosureUnknownKey) {
+  const auto tmp_path = std::filesystem::temp_directory_path() / "uw_config_test_lc_unknown.yaml";
+  {
+    std::ofstream out(tmp_path);
+    out << "loop_closure:\n  bogus_key: 1\n";
+  }
+  EXPECT_THROW(uw::runtime::LoadPlatformDefaultsConfig(tmp_path.string()), std::runtime_error);
+  std::remove(tmp_path.string().c_str());
+}
+
 TEST(Config, ParsesRelativePoseSqrtInformationCapsIndependently) {
   const auto tmp_path = std::filesystem::temp_directory_path() / "uw_config_test_relpose_caps.yaml";
   {

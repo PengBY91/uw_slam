@@ -19,6 +19,17 @@ namespace uw::estimation {
 // (FactorBuildContext), not as graph variables here.
 class PoseGraphProblem {
  public:
+  // Per-residual-block robust loss policy, attached at AddResidualBlock
+  // (mirroring Ceres's own separation of LossFunction from CostFunction —
+  // ResidualBlock::Evaluate() itself stays pure math, see
+  // measurement_api/residual_block.hpp). kNone (the default) preserves
+  // today's behavior exactly: GaussNewtonSolver::EvaluateAll only applies
+  // the Huber reweighting for kHuber bindings, so every pre-existing
+  // factor stays bit-identical. Deliberately proto-free (no
+  // uw::domain::RobustPolicyHint dependency here) to match
+  // ResidualBlock's own convention.
+  enum class RobustPolicy { kNone, kHuber };
+
   // Registers a keyframe if not already present (no-op if it already
   // exists). `fixed` keyframes are excluded from the optimization —
   // used to remove gauge freedom by anchoring one keyframe per window.
@@ -33,7 +44,8 @@ class PoseGraphProblem {
   // `involved_keyframes` order MUST match the residual block's
   // ParameterBlockSizes() order.
   void AddResidualBlock(std::unique_ptr<uw::measurement_api::ResidualBlock> block,
-                        std::vector<std::string> involved_keyframes);
+                        std::vector<std::string> involved_keyframes,
+                        RobustPolicy robust_policy = RobustPolicy::kNone);
 
   const std::vector<std::string>& KeyframeOrder() const { return order_; }
   std::size_t NumKeyframes() const { return order_.size(); }
@@ -63,6 +75,7 @@ class PoseGraphProblem {
   struct ResidualBinding {
     uw::measurement_api::ResidualBlock* block;
     const std::vector<std::string>* involved_keyframes;
+    RobustPolicy robust_policy;
   };
   std::vector<ResidualBinding> ResidualBindings() const;
 
@@ -74,6 +87,7 @@ class PoseGraphProblem {
   struct Binding {
     std::unique_ptr<uw::measurement_api::ResidualBlock> block;
     std::vector<std::string> involved_keyframes;
+    RobustPolicy robust_policy = RobustPolicy::kNone;
   };
 
   std::unordered_map<std::string, Keyframe> keyframes_;
