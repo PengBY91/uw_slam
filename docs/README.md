@@ -41,7 +41,8 @@
 
 | 任务 | 首选文档 | 补充材料 |
 |---|---|---|
-| 新贡献者第一次读代码、搞清楚整条调用链 | [新人上手指南](./uw-slam-newcomer-guide.md) | [代码库参考](./uw-slam-codebase-reference-2026-08-18.md) |
+| 新贡献者第一次读代码、搞清楚整条调用链 | [新人上手指南](./uw-slam-newcomer-guide.md) | [两条主线代码走读](./uw-slam-two-mainlines-walkthrough-2026-08-26.md) |
+| 按执行顺序逐阶段读离线管线/在线辅助的代码块与机制 | [两条主线代码走读](./uw-slam-two-mainlines-walkthrough-2026-08-26.md) | [代码库参考](./uw-slam-codebase-reference-2026-08-18.md) |
 | 查找类型、接口、算法或 CMake target | [代码库参考](./uw-slam-codebase-reference-2026-08-18.md) | [根 README](../README.md) |
 | 理解核心消息与接口、依赖 DAG、状态机与 Gate | [长期架构设计](./acoustic-optic-slam-platform-architecture-2026-08-17.md) | [代码库参考](./uw-slam-codebase-reference-2026-08-18.md) |
 | 配置或复现实验 | [配置说明](../configs/README.md) | [根 README](../README.md#运行端到端-demo) |
@@ -58,8 +59,9 @@
 
 | 文档 | 状态 | 权威范围 | 最后核对 |
 |---|---|---|---|
-| [根 README](../README.md) | 当前入口 | 项目定位、快速开始、已验证能力与限制 | `8df083b` + 当前工作树，2026-08-22 |
+| [根 README](../README.md) | 当前入口 | 项目定位、快速开始、已验证能力与限制 | 当前工作树，2026-08-26 |
 | [新人上手指南](./uw-slam-newcomer-guide.md) | 当前说明 | 调用链、目录职责速查、常见误解边界 | `8df083b` + 当前工作树，2026-08-22 |
+| [两条主线代码走读](./uw-slam-two-mainlines-walkthrough-2026-08-26.md) | 当前事实 | 离线 SLAM 管线与 ROV 在线辅助两条主线的代码块、阶段逻辑与设计原因 | `80d4464` + 当前工作树，2026-08-26 |
 | [代码库参考](./uw-slam-codebase-reference-2026-08-18.md) | 当前事实 | 当前类型、函数、参数、数据流、测试与工具 | `8df083b` + 当前工作树，2026-08-22 |
 | [长期架构设计](./acoustic-optic-slam-platform-architecture-2026-08-17.md) | 已批准设计 | 长期目标、模块边界、不变量与阶段决策 | 状态映射核对至 2026-08-22 |
 | [Pipeline 工程方案](./holoocean-to-acoustic-optic-slam-pipeline-2026-08-05.md) | 演进中/历史参考 | 第一阶段 baseline、方案演进与代码审计修订 | 状态说明核对至 2026-08-22 |
