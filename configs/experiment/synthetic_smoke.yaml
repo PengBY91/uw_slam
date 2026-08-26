@@ -29,11 +29,14 @@ output:
   write_run_manifest: true
 
 # P0 非放空 gate（见 docs/uw-slam-production-readiness-and-roadmap-2026-08-21.md
-# 5.5/7）：实测 ATE rmse≈0.0666m、12/12 matched poses（README「跨 seed 有波动」，
-# 阈值留了约2倍余量而不是卡实测值，避免正常波动导致 CI flaky）。
+# 5.5/7）：实测 ATE rmse≈0.0999m、12/12 matched poses（2026-08-26，
+# apps/synth_bag_gen.cpp 给 pose/sonar/landmark 噪声拆分独立 RNG 流之后的新
+# 基线——拆流前的 0.0666m 依赖的是三路噪声共享一个 mt19937_64、彼此消耗顺序
+# 意外耦合产生的某一次具体实现，不是这个 seed 的稳定值，见 README「跨 seed
+# 有波动」；阈值留了约2倍余量而不是卡实测值，避免正常波动导致 CI flaky）。
 gates:
   require_converged: true
-  max_ate_rmse_m: 0.15
+  max_ate_rmse_m: 0.2
   min_matched_ate_poses: 10
   require_nonempty_map: true
   # min_acoustic_optic_accepted/min_acoustic_optic_map_points stay disabled

@@ -29,9 +29,16 @@ output:
   write_run_manifest: true
 
 # P0 非放空 gate（见 docs/uw-slam-production-readiness-and-roadmap-2026-08-21.md
-# 5.5/7）：实测 ATE rmse≈0.0608m、11/11 matched poses，阈值留了约2倍余量。
+# 5.5/7）：实测 ATE rmse≈0.1013m、11/11 matched poses（2026-08-26，
+# apps/synth_bag_gen.cpp 拆分 pose/sonar/landmark 独立 RNG 流之后的新基线，
+# 同一次拆流修复也顺带修了 estimation/gauss_newton_solver.cpp 一个真实存在的
+# bug：`cost_change_tolerance` 之前是绝对值 1e-12，跟这类问题量级的
+# EvaluateAll/LDLT 浮点噪声下限基本重合，会让本已收敛的问题在最后一两次迭代
+# 里被随机判成"stalled"——这个 experiment 修 RNG 前刚好卡在能报 converged
+# 的那一侧，修完 RNG 后刚好翻到 stalled 那一侧，两个问题一起修才稳定；见该
+# 文件 Solve() 里改成相对容差后的注释），阈值留了约2倍余量。
 gates:
   require_converged: true
-  max_ate_rmse_m: 0.15
+  max_ate_rmse_m: 0.2
   min_matched_ate_poses: 9
   require_nonempty_map: true

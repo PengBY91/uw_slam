@@ -205,10 +205,13 @@ build/bin/replay_demo \
 cat /tmp/demo_trajectory.tum
 ```
 
-在默认合成场景中，求解器通常在 6–7 次迭代内收敛，ATE RMSE 约为
-0.06–0.07 m；不同 seed 会产生波动，这不是验收阈值。声呐只有距离而没有仰角，
-且当前版本不联合优化路标，首次观测的 elevation 误差会影响 x/y 估计。算法与
-误差来源详见[代码库参考文档](./docs/uw-slam-codebase-reference-2026-08-18.md)。
+在默认合成场景中，求解器通常在 4–7 次迭代内收敛，ATE RMSE 约为
+0.08–0.10 m（2026-08-26 起；此前记录的 0.06–0.07 m 是 `synth_bag_gen` 三路
+噪声共享一个 RNG、彼此消耗顺序意外耦合产生的某次具体实现，见下方「已经踩过的
+坑」，拆成独立流后这是新基线）；不同 seed 会产生波动，这不是验收阈值。声呐只
+有距离而没有仰角，且当前版本不联合优化路标，首次观测的 elevation 误差会影响
+x/y 估计。算法与误差来源详见[代码库参考文档](./docs/uw-slam-codebase-reference-2026-08-18.md)
+（该文档记录的具体数字是拆流前的旧基线，未逐一回填）。
 
 命令行参数会覆盖 `--experiment` 中的同名配置，适合快速做单变量试验。
 
@@ -218,7 +221,7 @@ cat /tmp/demo_trajectory.tum
 的 `estimator_mode: stereo_landmark_vo` 变体——相对位姿因子改由
 `stereo_landmark_vo_frontend` 从合成的左右相机帧实时计算，而不是从 bag 里读取
 `synth_bag_gen` 写入的 ground-truth+noise 证据；ATE 量级与默认桩相当（约
-0.06 m）。
+0.10 m）。
 
 ### 3. 声光融合 Demo
 
@@ -247,11 +250,14 @@ build/bin/replay_demo --bag /tmp/loop.mcap \
 ```
 
 场景是一整圈回到起点的合成轨迹（同一批 landmark 会被真正重访）。实测（production
-默认参数，2026-08-25）：关闭回环 ATE rmse≈1.261 m（48/48 matched）；开启后只找到
-1 条回环边，ATE≈1.259 m——纯 VO 死推算一整圈的漂移本来就是米级，回环 v1 的位姿
-邻近检索（`candidate_search_radius_m=3.0`）在漂移这么大的死推算下很难找到候选，
-这本身是 v1 边界而不是 bug。手工放宽搜索半径反而让 ATE 恶化到 9.24 m（Harris 角点
-跟合成高亮图案不是同一套外观假设，错误匹配数量多到 Huber 压不住），完整记录见
+默认参数，2026-08-26 起，`synth_bag_gen` 拆分独立 RNG 流之后的新基线）：关闭回环
+ATE rmse≈0.4805 m（48/48 matched）；开启后找到 2 条回环边，ATE≈0.4754 m——改善依然
+很小，纯 VO 死推算一整圈的漂移本来就比短弧场景大得多，回环 v1 的位姿邻近检索
+（`candidate_search_radius_m=3.0`）在这个量级的死推算漂移下能找到的候选依然有限，
+这本身是 v1 边界而不是 bug（此前记录的 1.261m/1 条边是拆流前旧噪声实现下的具体
+数字，方向性结论不变）。手工放宽搜索半径反而让 ATE 恶化到 9.24 m（Harris 角点
+跟合成高亮图案不是同一套外观假设，错误匹配数量多到 Huber 压不住——这个对照实验
+数字是旧基线下测的，未重新验证），完整记录见
 `configs/experiment/synthetic_loop_closure_vo_enabled.yaml` 头部注释和
 [配置说明](./configs/README.md) 的「回环闭合对比 demo」一节。回环闭合要求
 `estimator_mode: stereo_landmark_vo` 且 rig 带相机，默认关闭。

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <iostream>
 #include <limits>
 #include <unordered_map>
 
@@ -177,7 +178,25 @@ GaussNewtonSolver::Summary GaussNewtonSolver::Solve(PoseGraphProblem& problem,
     summary.iterations = iter + 1;
     if (!step_accepted) break;  // damping exhausted: stall, report honestly
 
-    if (std::abs(cost_at_linearization - current_cost) < options.cost_change_tolerance) {
+    // Scaled by cost magnitude, not a bare absolute difference: an absolute
+    // 1e-12 threshold sits right at (or below) the floating-point noise
+    // floor of EvaluateAll/LDLT for costs in the tens-to-hundreds range (a
+    // normal magnitude once a problem has more than a couple of keyframes),
+    // so the last iteration or two before real convergence become a race
+    // between "diff crosses the threshold" and "roundoff noise makes no
+    // trial step look like an improvement anymore" -- whichever wins is
+    // effectively arbitrary, so the exact same well-converged problem can
+    // report `converged` or `stalled` depending on unrelated bit-level
+    // noise in how it got there (observed directly: separating
+    // apps/synth_bag_gen.cpp's noise RNG streams changed nothing about the
+    // solved problem's quality, cost still flattened to 12+ significant
+    // figures by iteration 4-5, but shifted which side of this race the
+    // last iteration landed on, flipping a real replay_demo run from
+    // converged to stalled). Scaling by cost keeps the same effective
+    // precision for small problems (scale clamped to >= 1) while staying
+    // comfortably above the roundoff floor for larger ones.
+    const double tolerance_scale = std::max(1.0, std::abs(cost_at_linearization));
+    if (std::abs(cost_at_linearization - current_cost) < options.cost_change_tolerance * tolerance_scale) {
       summary.converged = true;
       break;
     }

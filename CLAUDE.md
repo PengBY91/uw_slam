@@ -95,9 +95,10 @@ holoocean/`）→ lint。**端到端 demo 也值得实际跑一遍**，不要只
 ```bash
 build/bin/synth_bag_gen --experiment configs/experiment/synthetic_smoke.yaml --out /tmp/synthetic.mcap
 build/bin/replay_demo --bag /tmp/synthetic.mcap --experiment configs/experiment/synthetic_smoke.yaml --out /tmp/demo
-# 期望：6~7 次迭代内收敛，ATE rmse ~0.06-0.07m（跨 seed 有波动；不是 ~3cm 了，
+# 期望：4~7 次迭代内收敛，ATE rmse ~0.08-0.10m（跨 seed 有波动；不是 ~3cm 了，
 # 见 README「运行端到端 demo」一节——sonar_range_factor 的路标关联换成真实
-# SubmapManager 在线发现之后，v1 没有联合路标估计的 elevation 误差会摊到 x/y 上）。
+# SubmapManager 在线发现之后，v1 没有联合路标估计的 elevation 误差会摊到 x/y 上；
+# 2026-08-26 前的记录是 ~0.06-0.07m，见本文件「已经踩过的坑」里的 RNG 拆流条目）。
 # 换成 configs/experiment/synthetic_smoke_vo.yaml 可以跑 estimator_mode:
 # stereo_landmark_vo 变体（相对位姿从左右相机帧实时算，而不是从桩读取），
 # ATE 量级相当。
@@ -106,7 +107,7 @@ build/bin/replay_demo --bag /tmp/synthetic.mcap --experiment configs/experiment/
 build/bin/synth_bag_gen --experiment configs/experiment/synthetic_loop_closure_vo.yaml --out /tmp/loop.mcap
 build/bin/replay_demo --bag /tmp/loop.mcap --experiment configs/experiment/synthetic_loop_closure_vo.yaml --out /tmp/loop_off
 build/bin/replay_demo --bag /tmp/loop.mcap --experiment configs/experiment/synthetic_loop_closure_vo_enabled.yaml --out /tmp/loop_on
-# 期望（production 默认参数）：off ≈1.26m ATE，on ≈1.26m + 1 条回环边——改善小是
+# 期望（production 默认参数）：off ≈0.48m ATE，on ≈0.48m + 2 条回环边——改善小是
 # v1 位姿邻近检索的边界，不是回归；见 synthetic_loop_closure_vo_enabled.yaml 头注释。
 ```
 
@@ -246,6 +247,35 @@ ctest --test-dir build -R integration.acoustic_optic_scenario_matrix_determinism
   `tools/run_quality_checks.sh` 因此只跑 `address`（ASan+UBSan）不跑 `thread`——要
   让 TSan 真正可信，得从源码重新编译一套开 `-fsanitize=thread` 的
   protobuf/gtest，目前没有这么做。
+- **`apps/synth_bag_gen.cpp` 曾经用同一个 `std::mt19937_64` 给三种不相关的噪声
+  （pose/sonar range-bearing/visual landmark jitter）共用一条流**：每个 keyframe
+  循环里，sonar 噪声抽取次数等于"这一帧在量程内的 `sonar_targets_world` 条数"，
+  这个数字一变（比如 `synthetic_smoke.yaml` 的 3 个目标 vs
+  `acoustic_optic_demo.yaml` 只放 1 个目标去凑相机窄视场），后续所有 keyframe 的
+  pose 噪声抽样就跟着错位——同一个 `seed: 42`，实际烘焙进 bag 的相对位姿噪声序列
+  却完全不同。表现为两个只差 scenario 文件里目标数量的 experiment，ATE 出现几倍
+  的差异，很容易被误读成"某个 factor/frontend 行为有问题"（这次具体是被误读成
+  "声光融合让 ATE 变差"，实际两者毫无因果关系——去掉 `sonar_range_v1`
+  factor_builder 重跑，cost 轨迹逐位不变，证明那次差异纯粹是噪声实现不同）。修法
+  是给每种噪声用途各开一条独立的 `std::mt19937_64`（`MakeStreamRng(seed, salt)`,
+  每个用途一个不同的固定 salt），互不干扰。这次拆流换了新的噪声实现，
+  `synthetic_smoke*`/`synthetic_loop_closure_vo*` 几个 experiment 头部注释和
+  README 里记的具体 ATE 数字（2026-08-26 之前）都是旧噪声实现下的值，已回填新
+  基线；`docs/` 下几份归档参考文档里的历史数字没有逐一回填，读到旧数字不代表
+  回归。
+- **`estimation/gauss_newton_solver.cpp` 的 `cost_change_tolerance` 曾经是绝对值
+  `1e-12`，跟这个量级问题（cost 几十到几百）的 `EvaluateAll`/`LDLT` 浮点噪声下限
+  基本重合**：真正收敛后的最后一两次迭代里，"cost 变化跌破容差"和"数值噪声让任何
+  trial step 都不再像是改进"是在赛跑，谁先发生基本看运气，会让同一个、实质上已经
+  收敛到 12+ 位有效数字的问题被随机报成 `converged` 或 `stalled`（`require_converged`
+  默认开，`stalled` 会让 replay_demo 直接 gate failure）。上面那次 RNG 拆流修复
+  正好把 `configs/experiment/synthetic_smoke_vo.yaml` 这次具体的随机噪声实现从
+  "险胜"的一侧推到了"险负"的一侧，实跑 demo 才发现——单测没有覆盖到这种量级的
+  cost。修法是把容差改成相对值（`cost_change_tolerance * max(1.0, |cost|)`），默认值
+  也从 `1e-12` 调到 `1e-9`，离浮点噪声下限留出安全边际。加新 experiment 或改
+  `synth_bag_gen` 的噪声参数时，如果 demo 报 `stalled` 但 ATE/cost 看起来其实已经
+  很稳定，先怀疑这类"容差比浮点噪声还紧"的假阴性，别急着当成真实的求解器/前端
+  鲁棒性问题。
 
 ## 目录速查
 

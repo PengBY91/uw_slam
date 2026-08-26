@@ -4,15 +4,19 @@
 # 的效果验证——不只是单测，是这个仓库 CLAUDE.md 里明确要求的"实跑 demo"步骤。
 #
 # 实测（production 默认参数：candidate_search_radius_m=3.0、
-# min_keyframe_index_gap=15、huber_delta=1.5，2026-08-25）：只找到 1 条回环边
-# （48 个 keyframe 里，大多数候选对之间在死推算漂移下已经不在 3m 搜索半径内——
-# 这正是 LoopClosureFrontend 头部注释里写的"位姿邻近检索"v1 边界，不是 bug），
-# ATE rmse≈1.259m（对比基线 1.261m，改善很小）；求解器 3 次迭代后 stall（未
-# 收敛）而不是发散——Huber 把这一条边按残差降权，图整体仍然是稳定、有限的解，
-# 只是没在 max_inner_retries 预算内收敛到容差内，所以下面 require_converged
-# 关掉，而不是掩盖成"收敛"。
+# min_keyframe_index_gap=15、huber_delta=1.5，2026-08-26，apps/synth_bag_gen.cpp
+# 拆分独立 RNG 流之后的新基线）：找到 2 条回环边（旧基线 2026-08-25 记录的是 1
+# 条——这条圈形轨迹本身漂移比旧噪声实现小很多，见 synthetic_loop_closure_vo.yaml
+# 头部注释，所以更多候选对落进了同一个 3m 搜索半径，不是 LoopClosureFrontend
+# 本身变了），ATE rmse≈0.4754m（对比基线 0.4805m，改善依然很小——即使多了一条
+# 边，产生的效果规模没变）；求解器仍然 4 次迭代后 stall（未收敛）而不是发散——
+# Huber 把这两条边按残差降权，图整体仍然是稳定、有限的解，只是没在
+# max_inner_retries 预算内收敛到容差内，所以下面 require_converged 关掉，而
+# 不是掩盖成"收敛"。
 #
-# 额外做过的对照实验（未进 git，纯手工验证，不要照抄进这份配置）：把
+# 额外做过的对照实验（未进 git，纯手工验证，不要照抄进这份配置；数字是
+# 2026-08-25 RNG 拆流修复之前测的旧基线下的相对趋势，没有用新基线重新测过，
+# 但方向性的结论——放宽半径引入更多错误匹配、Huber 压不住——跟噪声实现无关）：把
 # candidate_search_radius_m 放宽到 8~20、max_loop_edges_per_keyframe 放宽到
 # 5~10 后，回环边数从 1 涨到 2~34 条，但 ATE 不是变好而是从 1.26m 恶化到
 # 9.24m——synth_bag_gen 的合成 landmark 是给 bright_blob 检测器调的"每 id 唯一

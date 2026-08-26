@@ -22,7 +22,13 @@ struct GaussNewtonOptions {
   double lambda_up_factor = 5.0;
   double lambda_down_factor = 3.0;
   int max_inner_retries = 8;
-  double cost_change_tolerance = 1e-12;
+  // Relative, not absolute: Solve() compares against
+  // cost_change_tolerance * max(1.0, |cost|). See Solve()'s own comment at
+  // the convergence check for why an absolute 1e-12 (this field's value
+  // until 2026-08-26) sat right at the LDLT/EvaluateAll roundoff floor for
+  // ordinary (tens-to-hundreds) cost magnitudes and could flip a
+  // well-converged problem to a reported "stalled" on pure numerical noise.
+  double cost_change_tolerance = 1e-9;
   // Huber threshold on a residual block's WHITENED norm ||r|| (residuals
   // are already sqrt-information-scaled by the factor_builder, so this is
   // directly comparable to Ceres's own HuberLoss(a) parameter). Only

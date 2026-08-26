@@ -113,6 +113,23 @@ std::vector<Eigen::Vector3d> BuildSonarTargets(const ScenarioOptions& opt) {
 
 std::string KeyframeId(int i) { return "kf" + std::to_string(i); }
 
+// Derives an independent RNG stream from the scenario's top-level seed for
+// one specific noise purpose, via a distinguishing salt (arbitrary splitmix64
+// constants, chosen only to differ from each other). This is what keeps
+// per-target sonar noise draws (whose count varies with how many
+// sonar_targets_world entries are in range at each keyframe) from desyncing
+// the pose-noise stream: each purpose gets its own std::mt19937_64 seeded
+// once from {seed, salt}, so how many draws one stream consumes never
+// shifts what another stream produces. Before this, all three purposes
+// shared one rng, and scenario/acoustic_optic_demo.yaml's single sonar
+// target (vs. synthetic_smoke.yaml's three) silently changed the "seed 42"
+// relative-pose noise actually baked into the bag.
+std::mt19937_64 MakeStreamRng(uint64_t seed, uint64_t salt) {
+  std::seed_seq seq{static_cast<uint32_t>(seed), static_cast<uint32_t>(seed >> 32),
+                     static_cast<uint32_t>(salt), static_cast<uint32_t>(salt >> 32)};
+  return std::mt19937_64(seq);
+}
+
 // --- Optional per-keyframe stereo images, only emitted when --experiment
 // loads a rig with cameras (see main()'s `rig` capture below). Mirrors
 // apps/acoustic_optic_scenarios.cpp's proven
@@ -343,7 +360,9 @@ int main(int argc, char** argv) {
     }
   }
 
-  std::mt19937_64 rng(opt.seed);
+  std::mt19937_64 pose_rng = MakeStreamRng(opt.seed, 0x9E3779B97F4A7C15ULL);
+  std::mt19937_64 sonar_rng = MakeStreamRng(opt.seed, 0xC2B2AE3D27D4EB4FULL);
+  std::mt19937_64 landmark_rng = MakeStreamRng(opt.seed, 0x165667B19E3779F9ULL);
   std::normal_distribution<double> pose_noise(0.0, opt.relative_pose_noise_m);
   std::normal_distribution<double> range_noise(0.0, opt.sonar_range_noise_m);
   std::normal_distribution<double> bearing_noise(0.0, opt.sonar_bearing_noise_rad);
@@ -357,12 +376,11 @@ int main(int argc, char** argv) {
   // empty sensor_id as an invalid timestamp header.
   sonar_frame_spec.sensor_id = "sonar0";
   sonar_frame_spec.provenance = "synth_bag_gen_v1";
-  // Only meaningful when a camera rig is loaded (see `rig` above); drawn
-  // here, after `rng` exists but before the per-keyframe loop below, so it
-  // consumes a fixed slice of the seeded stream without perturbing the
-  // per-keyframe pose/range/bearing draws that follow.
+  // Only meaningful when a camera rig is loaded (see `rig` above); drawn from
+  // its own stream (landmark_rng), so whether or how much of it gets
+  // consumed can never perturb the pose/sonar streams above.
   const std::vector<Eigen::Vector3d> visual_landmarks =
-      rig.has_value() ? BuildVisualLandmarks(opt, rng) : std::vector<Eigen::Vector3d>{};
+      rig.has_value() ? BuildVisualLandmarks(opt, landmark_rng) : std::vector<Eigen::Vector3d>{};
 
   uw::runtime::McapProtobufWriter writer;
   if (!writer.Open(opt.out_path)) {
@@ -405,7 +423,7 @@ int main(int argc, char** argv) {
       const Pose3 true_relative = trajectory[i - 1].Inverse() * trajectory[i];
       Pose3 noisy_relative = true_relative;
       noisy_relative.translation +=
-          Eigen::Vector3d(pose_noise(rng), pose_noise(rng), pose_noise(rng));
+          Eigen::Vector3d(pose_noise(pose_rng), pose_noise(pose_rng), pose_noise(pose_rng));
 
       uw::domain::RelativePoseMeasurement measurement;
       measurement.mutable_from_keyframe()->set_value(KeyframeId(i - 1));
@@ -432,8 +450,8 @@ int main(int argc, char** argv) {
       const double range = local.norm();
       if (range > 12.0) continue;  // out of sonar range for this keyframe
       const double bearing = std::atan2(local.y(), local.x());
-      const double noisy_range = range + range_noise(rng);
-      const double noisy_bearing = bearing + bearing_noise(rng);
+      const double noisy_range = range + range_noise(sonar_rng);
+      const double noisy_bearing = bearing + bearing_noise(sonar_rng);
       sonar_frame_spec.observation_id = kf_id;
       sonar_frame_spec.timestamp_ns = t_ns;
       auto rendered = uw::runtime::RenderSyntheticSonarFrame(

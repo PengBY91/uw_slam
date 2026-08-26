@@ -3,10 +3,14 @@
 # 的默认值）。跟 synthetic_loop_closure_vo_enabled.yaml 除 defaults 外完全
 # 一样，两者的 ATE 差就是 loop_closure 带来的改善——见该文件的头部注释。
 #
-# 实测（production 默认参数，2026-08-25）：9 次迭代收敛，ATE rmse≈1.261m
-# （48/48 matched）。一整圈纯 VO 死推算（x/y/yaw 全程是 gauge freedom，只有
-# z 有 depth 绝对参考）比 synthetic_smoke_vo.yaml 那段 80 度短弧（ATE≈0.06m）
-# 漂移大得多——这正是"没有回环闭合"的典型后果，不是这份新场景的 bug。
+# 实测（production 默认参数，2026-08-26，apps/synth_bag_gen.cpp 拆分独立 RNG
+# 流 + estimation/gauss_newton_solver.cpp 相对收敛容差两个修复之后的新基线）：
+# 8 次迭代收敛，ATE rmse≈0.4805m（48/48 matched）——比旧基线（2026-08-25 记录
+# 的 1.261m）小得多，纯粹是换了噪声实现后这条圈形轨迹本身漂移更小，不代表回环
+# 闭合/求解器行为发生了变化。一整圈纯 VO 死推算（x/y/yaw 全程是 gauge
+# freedom，只有 z 有 depth 绝对参考）仍然比 synthetic_smoke_vo.yaml 那段 80 度
+# 短弧（ATE≈0.10m）漂移大得多——这正是"没有回环闭合"的典型后果，不是这份新
+# 场景的 bug。
 
 rig: rig/example_auv.yaml
 scenario: scenario/synthetic_loop_closure.yaml
@@ -28,8 +32,10 @@ output:
   trajectory_format: tum
   write_run_manifest: true
 
-# 阈值相对实测 ATE≈1.261m 留了约 1.6 倍余量（跟仓库其余 experiment 的惯例
-# 一致），不是 0.1-0.2m 量级——见头部注释。
+# 阈值没有跟着新基线（ATE≈0.4805m）收紧到 1m 以内：这份 experiment 换个
+# seed/换个噪声实现就可能让圈形轨迹漂移量级明显不同（见头部注释），2.0m 是
+# 按"回环闭合场景可能比短弧场景漂移大得多"留的宽松余量，不是照 0.1-0.2m 量级
+# experiment 的惯例卡 2 倍。
 gates:
   require_converged: true
   max_ate_rmse_m: 2.0
