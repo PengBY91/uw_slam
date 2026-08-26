@@ -58,6 +58,10 @@ std::pair<uw::domain::ImageFrame, uw::domain::ImageFrame> MakeStereoPair(
                         const std::string& frame) {
     image.mutable_header()->mutable_sensor_id()->set_value(sensor_id);
     image.mutable_header()->mutable_sensor_frame()->set_value(frame);
+    image.mutable_header()->mutable_capture_time();  // give capture_time proto presence at its
+                                                       // zero default -- CorrectedTime() (runtime/
+                                                       // acoustic_optic_synchronizer.cpp) requires
+                                                       // has_capture_time(), not just a readable value
     image.mutable_header()->set_clock_domain(uw::domain::CLOCK_DOMAIN_SIMULATION);
     image.mutable_header()->set_validity(uw::domain::ObservationHeader::VALIDITY_OK);
     image.mutable_header()->set_provenance("acoustic_optic_scenario_matrix_v1");
