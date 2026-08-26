@@ -11,6 +11,17 @@
 允许把后两者的具体实现移植进来（已经移植了两处，见下）。当前是"骨架 + 每层至少
 一条真实可跑的端到端链路"阶段，不是生产系统。
 
+仓库现在有两条并行主线，共用同一套 proto 消息模型和 `PipelineInputPort` 事件入口：
+
+1. **离线 SLAM 管线**（`synth_bag_gen`/`replay_demo`，成熟度最高）：声光前端 →
+   因子图（GN/LM 默认、Ceres 候选、可选回环闭合）→ 轨迹/地图/评测。
+2. **ROV 在线驾驶辅助**（实时闭环，进行中）：HoloOcean ROS2 话题 →
+   `holoocean_realtime_node` → `LiveEventSource`（四车道有界队列）→
+   `OnlineAssistPipeline`（视觉/声呐目标跟踪融合）→ HMI + 飞手命令回注。规范性
+   需求在 `docs/specifications/` 三份规格里，逐条追溯表在
+   `docs/traceability/rov-realtime-closed-loop.csv`；这条线的代码写完了但**没在真实
+   HoloOcean/UE5 上跑过**（本机没装仿真器），别把"有实现+有单测"当成"闭环验证过"。
+
 ## 硬性规则
 
 - **不要修改 `external_repos/` 下的任何子目录**（`SVIn/`、`sonar_camera_
@@ -27,12 +38,17 @@
   和 ROS2 Jazzy 装在系统 apt 里，都在这个仓库目录之外，不受 `.gitignore`/版本
   控制影响。
 - **依赖只能单向**：`domain → core → {frontends, factor_builders, estimation,
-  mapping, runtime, evaluation, adapters} → application → apps`，ROS2 隔离在
-  `adapters/ros2/`；`apps/` 只做参数解析和进程入口，用例编排放在 `application`。
-  `include/`、`src/` 下任何生产代码都不能 include ROS/HoloOcean/第三方 vendor
-  头，也不能再用旧的 `uw/...` 手写头路径——这是 `tools/lint/
-  check_layer_dependencies.py`（`tools/lint/check_no_ros_in_core.sh` 是它的
-  兼容入口）强制检查的不变量，改完代码顺手跑一下。
+  mapping, runtime, evaluation, adapters, opencv_adapters} → application → apps`，
+  ROS2 隔离在 `adapters/ros2/`，OpenCV 隔离在 `adapters/opencv/`（lint 角色名
+  `opencv_adapters`，注意它的源码直接住在 `adapters/opencv/{include,src}` 而不是顶层
+  `include/`/`src/`），Ceres 在 `adapters/ceres/`，nanoflann 在
+  `adapters/spatial_index/`；`apps/` 只做参数解析和进程入口，用例编排放在
+  `application`。`include/`、`src/` 下任何生产代码都不能 include ROS/HoloOcean/
+  OpenCV/Ceres/第三方 vendor 头，也不能再用旧的 `uw/...` 手写头路径——这是
+  `tools/lint/check_layer_dependencies.py`（`tools/lint/check_no_ros_in_core.sh`
+  是它的兼容入口）强制检查的不变量，改完代码顺手跑一下。`estimation`/`mapping`
+  层见到的求解器/空间索引都是纯虚接口（`Solver`、`SurfelSpatialIndex`），具体第三方
+  实现在 adapters 层、由 `application` 注入——给这两层加功能时保持这个方向。
 - **移植第三方代码前先读 `NOTICE`**。仓库整体是 GPLv3（因为移植了 SVIn 的 GPLv3
   代码），移植文件必须保留原始版权头，新移植内容要在 `NOTICE` 里补一节说明来源、
   移植了什么、刻意没移植什么。目前已移植两处：
@@ -59,12 +75,18 @@
 export PATH="$HOME/miniconda3/envs/uw_slam_build/bin:$PATH"
 cmake -S . -B build -DCMAKE_PREFIX_PATH="$HOME/miniconda3/envs/uw_slam_build"
 cmake --build build -j"$(nproc)"
-ctest --test-dir build --output-on-failure   # 当前工作树 275 个 case；会变化，以实跑为准
+ctest --test-dir build --output-on-failure   # 用例数随代码变化，以实跑为准
 
-(cd adapters/holoocean && .venv/bin/pytest -q)  # 当前 50 个 case；先按 README 安装 dev extra
+(cd adapters/holoocean && .venv/bin/pytest -q)  # 先按 adapters/holoocean/README.md 装 dev extra + 生成 schema_pb2
+(cd adapters/datasets && .venv/bin/pytest -q)   # EuRoC 转换器离线单测（碰了才需要跑）
 
 tools/lint/check_no_ros_in_core.sh           # 依赖不变量检查（兼容入口，实际跑 tools/lint/check_layer_dependencies.py）
 ```
+
+可选构建开关：`-DUW_BUILD_ROS2=ON`（ROS2 节点）、`-DUW_BUILD_CERES_SOLVER=ON`
+（Ceres 求解器适配器，依赖较重所以默认关）、`-DUW_SANITIZER=address|thread`、
+`-DUW_COVERAGE=ON`。ROV 实时闭环范围另有需求追溯检查
+`tools/lint/check_realtime_traceability.py`（碰了规格或 traceability CSV 才需要跑）。
 
 改完代码后按这个顺序验证：编译 → C++ 测试 → Python 测试（如果碰了 `adapters/
 holoocean/`）→ lint。**端到端 demo 也值得实际跑一遍**，不要只信单元测试——下面
@@ -79,6 +101,13 @@ build/bin/replay_demo --bag /tmp/synthetic.mcap --experiment configs/experiment/
 # 换成 configs/experiment/synthetic_smoke_vo.yaml 可以跑 estimator_mode:
 # stereo_landmark_vo 变体（相对位姿从左右相机帧实时算，而不是从桩读取），
 # ATE 量级相当。
+
+# 回环闭合对比（一整圈场景；两份 experiment 只差 defaults 里 loop_closure 开关）：
+build/bin/synth_bag_gen --experiment configs/experiment/synthetic_loop_closure_vo.yaml --out /tmp/loop.mcap
+build/bin/replay_demo --bag /tmp/loop.mcap --experiment configs/experiment/synthetic_loop_closure_vo.yaml --out /tmp/loop_off
+build/bin/replay_demo --bag /tmp/loop.mcap --experiment configs/experiment/synthetic_loop_closure_vo_enabled.yaml --out /tmp/loop_on
+# 期望（production 默认参数）：off ≈1.26m ATE，on ≈1.26m + 1 条回环边——改善小是
+# v1 位姿邻近检索的边界，不是回归；见 synthetic_loop_closure_vo_enabled.yaml 头注释。
 ```
 
 `integration.acoustic_optic_scenario_matrix_determinism` 不只比较同 seed 输出：它也保留
@@ -103,10 +132,12 @@ ctest --test-dir build -R integration.acoustic_optic_scenario_matrix_determinism
   列表——这两个 target 是按架构层合并的（所有 frontend 共用 `frontends` target，
   所有 factor builder 共用 `factor_builders` target），不要为新实现单独建
   target 或 `CMakeLists.txt`，也不要改动其他已有实现的代码或接口。
-- 求解器（`include/estimation`/`src/estimation`）目前是 Eigen 手写的
-  Gauss-Newton/LM，`Solver` 接口留了替换口子（后续换 Ceres/GTSAM 属于架构文档第
-  20 节明确记录的延后决策）——不要因为"手写的不够好"就顺手去重构成别的库，除非
-  用户明确要这么做。
+- 求解器（`include/estimation`/`src/estimation`）默认是 Eigen 手写的
+  Gauss-Newton/LM（`gauss_newton_v1`）。`adapters/ceres/` 的 `ceres_v1` 适配器
+  已经实现、可经 `estimation.solver` 切换（需 `-DUW_BUILD_CERES_SOLVER=ON` 编译），
+  但**默认值仍未换**——"该不该换默认"是架构文档第 20 节明确记录的延后决策，要靠
+  `tools/bench/solver_benchmark.sh` 的实测数据关闭，不要因为"手写的不够好"就顺手
+  切默认或重构成别的库，除非用户明确要这么做。
 - YAML 配置分层（`defaults → rig → scenario → experiment`，见
   `include/runtime/config.hpp`）：`experiment/*.yaml` 里的 `rig`/
   `scenario`/`defaults` 三个 key 是相对 `configs/` 目录（不是相对 experiment 文件
@@ -116,8 +147,17 @@ ctest --test-dir build -R integration.acoustic_optic_scenario_matrix_determinism
   `FusedDepthMeasurement` 和关联记录中的 `depth_m` 则是相机 optical frame 的
   **正向前**距离。字段同名但坐标与符号语义不同，不要直接混用。
 - `ValidateExperimentConfigSelections()` 会拒绝未知的 frontend/map backend/estimator/
-  detector 标识符。`estimator_mode` 和 `landmark_detector` 已真正分支；sonar/optical
-  frontend 与 map backend 当前只有一个被接受的实现，fail-fast 不等于已有多后端切换。
+  detector/solver 标识符。真正驱动分支的选择器有三个：`estimator_mode`
+  （相对位姿来源）、`frontends.landmark_detector`（VO 检测器双模）、
+  `estimation.solver`（GN vs Ceres）。sonar/optical frontend 与 map backend 当前
+  只有一个被接受的实现，fail-fast 不等于已有多后端切换——`SurfelMap` 虽然存在
+  （声光地图桥在用），但它不是 `map_backend` 的第二个可选值。
+- 回环闭合（`frontends/loop_closure_frontend.hpp`）由 `defaults` 层
+  `loop_closure.enabled` 控制、默认关，要求 `estimator_mode: stereo_landmark_vo` +
+  带 rig 相机。它**固定用 HarrisCornerDetector**（真实图像假设），跟
+  `synth_bag_gen` 给 bright_blob 调的合成高亮图案不是一套外观假设——放宽
+  `candidate_search_radius_m` 在合成场景上会把错误匹配放进来、ATE 反而恶化，这是
+  v1 默认值刻意保守的原因，不要当 bug 修。
 
 ## 已经踩过的坑（省得重新踩一遍)
 
@@ -184,6 +224,15 @@ ctest --test-dir build -R integration.acoustic_optic_scenario_matrix_determinism
   plumb-bob 0/4/5 个系数和 MONO8/RGB8/BGR8，在 `StereoGeometry` 的平行基线前提下
   去除镜头畸变；不处理任意相机相对旋转。它尚未接入 `replay_demo`，因为对现有真实
   bag 的双线性重采样会削弱细纹理、让 VO 跟踪从 50/50 降到 8/50，后续需要联合调参。
+  `replay_demo` 现在用的是 `opencv_adapters` 的一般双目 rectification
+  （`adapters/opencv/`），不依赖这个原语。
+- **真实标定的非 y 轴基线会让 `cv::stereoRectify` 把主点搬离图像中心**：真实
+  HoloOcean 机体的基线有 15-17% 的 x/z 分量（`configs/rig/example_auv_real_camera.yaml`），
+  行对齐约束要求施加真实旋转，left 相机主点从 `cx≈256` 搬到 `cx≈170`（`alpha=-1`
+  复核过分毫不差，与裁切策略无关）。VO 的角点/匹配/RANSAC 在主点大幅偏移的
+  rectified 图上表现崩掉（ATE 4.32m、30 迭代 stalled，见 README「真实数据」一节）。
+  教训：**合成数据近乎平行基线验证过的视觉前端，不能默认在"需要真实旋转对齐"的
+  rig 上直接可用**——这是单元测试发现不了的，只有实跑真实数据才发现。
 - **ThreadSanitizer（`-DUW_SANITIZER=thread`）在本机沙箱里有两层坑**：(1) 不先关
   ASLR 会直接 `FATAL: ThreadSanitizer: unexpected memory mapping`——连二进制都跑不
   起来，跟代码无关；构建（`gtest_discover_tests` 会在构建期跑一次二进制枚举用例）
@@ -202,15 +251,36 @@ ctest --test-dir build -R integration.acoustic_optic_scenario_matrix_determinism
 
 不复述 `README.md` 已有的表格，只列会话中容易忘记具体在哪的：
 
-- 规范化 Protobuf 消息定义：`schemas/proto/uw/domain/*.proto`
+- 规范化 Protobuf 消息定义：`schemas/proto/uw/domain/*.proto`（目标检测/航迹/
+  操作员辅助状态都在 `target.proto`）
+- 规范 topic 词表（离线 bag + 审计依据）：`include/runtime/canonical_topics.hpp`
 - Pose3、相机/去畸变与声呐 beam 模型：`include/sensor_models/`
-- Frontend/FactorBuilder/ResidualBlock 抽象接口：`include/measurement_api/`
+- Frontend/FactorBuilder/ResidualBlock/目标检测前端抽象：`include/measurement_api/`
+  （`frontend.hpp` + `target_frontend.hpp`）
 - 分层配置加载：`include/runtime/config.hpp` + `src/runtime/config.cpp`
 - RunManifest：`include/runtime/run_manifest.hpp`
+- 实时事件入口：`include/runtime/live_event_source.hpp`（四车道有界队列）+
+  `include/runtime/event_source.hpp`（MCAP/内存/实时共用的 EventSource 契约）
+- 在线辅助编排：`include/application/online_assist_pipeline.hpp`；回放编排：
+  `include/application/replay_pipeline.hpp`
+- 回环闭合前端：`include/frontends/loop_closure_frontend.hpp`
+- 目标关联/跟踪：`include/frontends/{target_associator,target_tracker,target_fusion_components,
+  sonar_target_extractor}.hpp`
+- Ceres 求解器适配器：`adapters/ceres/`；nanoflann 空间索引：`adapters/spatial_index/`；
+  OpenCV 视觉辅助/HMI/双目 rectify：`adapters/opencv/`
+- HoloOcean 实时会话/故障注入/评分/gate：`adapters/holoocean/uw_holoocean_adapter/
+  {realtime_ros_session,fault_injector,task_scorer,realtime_gate,run_report}.py`；
+  实时场景/任务 manifest：`adapters/holoocean/scenarios/`
+- EuRoC 等公共数据集转换：`adapters/datasets/uw_dataset_adapter/`
+- 求解器基准脚本：`tools/bench/solver_benchmark.sh`
 - 集中式 CMake（library/application/test target 图）：`cmake/Dependencies.cmake`、
   `cmake/Libraries.cmake`、`cmake/Applications.cmake`、`cmake/Tests.cmake`
 - 移植代码出处总账：`/NOTICE`
 - lint 脚本：`tools/lint/check_no_ros_in_core.sh`（兼容入口）/
-  `tools/lint/check_layer_dependencies.py`（实际实现）
+  `tools/lint/check_layer_dependencies.py`（实际实现）；
+  ROV 需求追溯：`tools/lint/check_realtime_traceability.py`
+- ROV 在线系统三份规范：`docs/specifications/`；逐条追溯表：
+  `docs/traceability/rov-realtime-closed-loop.csv`
 - 确定性回放测试：`tests/integration/determinism_test.sh`
 - 声光场景矩阵 gate：`tests/integration/acoustic_optic_scenario_matrix_determinism_test.sh`
+- 实时冒烟（C++，不需要仿真器）：`tests/integration/{live_ingress,online_assist}_smoke_test.sh`
