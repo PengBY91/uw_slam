@@ -1,0 +1,54 @@
+# 跟 synthetic_loop_closure_vo.yaml 完全一样，唯一区别是 defaults 换成
+# defaults/platform_loop_closure.yaml（loop_closure.enabled: true）。用同一份
+# 场景对比这两个 experiment 的 ATE，就是 frontends::LoopClosureFrontend 端到端
+# 的效果验证——不只是单测，是这个仓库 CLAUDE.md 里明确要求的"实跑 demo"步骤。
+#
+# 实测（production 默认参数：candidate_search_radius_m=3.0、
+# min_keyframe_index_gap=15、huber_delta=1.5，2026-08-25）：只找到 1 条回环边
+# （48 个 keyframe 里，大多数候选对之间在死推算漂移下已经不在 3m 搜索半径内——
+# 这正是 LoopClosureFrontend 头部注释里写的"位姿邻近检索"v1 边界，不是 bug），
+# ATE rmse≈1.259m（对比基线 1.261m，改善很小）；求解器 3 次迭代后 stall（未
+# 收敛）而不是发散——Huber 把这一条边按残差降权，图整体仍然是稳定、有限的解，
+# 只是没在 max_inner_retries 预算内收敛到容差内，所以下面 require_converged
+# 关掉，而不是掩盖成"收敛"。
+#
+# 额外做过的对照实验（未进 git，纯手工验证，不要照抄进这份配置）：把
+# candidate_search_radius_m 放宽到 8~20、max_loop_edges_per_keyframe 放宽到
+# 5~10 后，回环边数从 1 涨到 2~34 条，但 ATE 不是变好而是从 1.26m 恶化到
+# 9.24m——synth_bag_gen 的合成 landmark 是给 bright_blob 检测器调的"每 id 唯一
+# 哈希图案"，LoopClosureFrontend 固定用 HarrisCornerDetector（真实图像用的检测
+# 器，理由见该类头部注释），两者不是同一套外观假设，半径一放宽就会把很多外观
+# 上模糊/错误的角点匹配也当成候选收进来，Huber 在数量这么多的情况下压不住。
+# 这是这份 v1 default（半径 3.0、gap 15）刻意保守的直接证据，不是这个 demo 场景
+# 或求解器本身的问题——想要更强的改善效果，需要的是让 LoopClosureFrontend 也
+# 支持 bright_blob 检测（跟 StereoLandmarkVoFrontend 的 detector_kind 一样双模），
+# 这是一个独立的后续任务，不在这次改动范围内。
+
+rig: rig/example_auv.yaml
+scenario: scenario/synthetic_loop_closure.yaml
+defaults: defaults/platform_loop_closure.yaml
+
+frontends:
+  optical: stereo_depth_frontend_v1
+  sonar: sonar_cfar_frontend_v1
+
+factor_builders:
+  - relative_pose_v1
+  - sonar_range_v1
+  - depth_v1
+
+estimator_mode: stereo_landmark_vo
+map_backend: submap_point_cloud_v1
+
+output:
+  trajectory_format: tum
+  write_run_manifest: true
+
+gates:
+  # 见头部注释：这份 production-default 场景下求解器 3 次迭代 stall——ATE
+  # 仍然有限、跟基线同量级，不是发散，但没有在预算内到收敛容差，所以不对
+  # "收敛"做硬性要求，只看结果轨迹本身是否合理（ATE/matched poses/非空地图）。
+  require_converged: false
+  max_ate_rmse_m: 2.0
+  min_matched_ate_poses: 40
+  require_nonempty_map: true

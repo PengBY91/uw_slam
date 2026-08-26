@@ -1,0 +1,68 @@
+# 跟 platform.yaml 完全一样，唯一区别是显式打开 loop_closure（其余字段沿用
+# LoopClosureConfig 的结构体默认值，见 include/runtime/config.hpp）。独立成
+# 一份文件而不是往 platform.yaml 里加，是因为 platform.yaml 是本仓库其余所有
+# experiment 的共享默认值——loop_closure 默认关闭这件事本身就是保证其余
+# experiment 零行为变化的机制，不应该被一次性的对比实验改掉。
+#
+# 配合 configs/scenario/synthetic_loop_closure.yaml（整整一圈、回到起点的合成
+# 轨迹）使用，见 configs/experiment/synthetic_loop_closure_vo_enabled.yaml。
+
+estimation:
+  solver: gauss_newton_v1        # 第一版图优化库未定，见架构文档第 20 节延后决策
+  max_iterations: 30
+  initial_lambda: 1.0e-3
+  warmup_seconds: 0.0
+
+reliability:
+  default_sqrt_information:
+    relative_pose:
+      translation: 20.0
+      rotation: 20.0
+    sonar_range: 15.0
+    depth: 20.0
+
+frontends:
+  sonar_cfar:
+    training_cells: 16
+    guard_cells: 4
+    probability_false_alarm: 0.01
+    detector_threshold: 50
+    dbscan_eps_m: 0.20
+    dbscan_min_samples: 2
+    default_range_sigma_m: 0.05
+    default_bearing_sigma_rad: 0.01
+  target_association:
+    max_corrected_time_delta_s: 0.05
+    max_bearing_mahalanobis_sq: 9.0
+    max_range_mahalanobis_sq: 9.0
+    max_motion_bearing_delta_rad: 0.25
+    max_motion_rate_rad_s: 1.5
+    max_bearing_variance_rad2: 0.25
+    max_range_variance_m2: 4.0
+  target_tracker:
+    association_mahalanobis_sq: 16.0
+    confirm_hits: 2
+    degraded_misses: 3
+    stale_after_s: 0.5
+    max_prediction_dt_s: 0.5
+    bearing_acceleration_noise: 0.05
+    range_acceleration_noise: 0.5
+    merge_bearing_threshold_rad: 0.03
+    merge_range_threshold_m: 0.30
+
+online_assist:
+  dense:
+    enabled: false
+    budget_ms: 100.0
+  vehicle_state_stale_after_s: 0.5
+  modality_stale_after_s: 1.0
+
+runtime:
+  lanes:
+    localization: { priority: highest, queue_capacity: 64, overflow_policy: reject }
+    correction:   { priority: high,    queue_capacity: 32, overflow_policy: drop_oldest }
+    mapping:      { priority: medium,  queue_capacity: 16, overflow_policy: drop_oldest }
+    evidence:     { priority: low,     queue_capacity: 256, overflow_policy: drop_oldest }
+
+loop_closure:
+  enabled: true

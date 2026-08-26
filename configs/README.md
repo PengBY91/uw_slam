@@ -100,3 +100,22 @@ manifest）仍然照常写出，只影响退出码，方便失败时仍能排查
   为了让实验"变绿"而放宽关联判定或伪造 acceptance。控制台汇总（`acoustic-optic: ... accepted,
   ... map evidence points added (N optical-only, M acoustic-optic)`）和 gate 失败信息都会打印
   这两类点数，方便区分"完全没有地图内容"和"有地图内容但没有真正的声光融合"。
+
+## 回环闭合对比 demo（`frontends::LoopClosureFrontend`）
+
+`scenario/synthetic_loop_closure.yaml` 跟 `scenario/synthetic_smoke.yaml` 结构完全一样，唯一区别
+是 `arc_radians` 覆盖整整一圈（`2*pi`）而不是 80 度短弧——`apps/synth_bag_gen.cpp` 的合成
+landmark 云是按世界坐标生成一次、每个 keyframe 复用同一份（不是逐帧重新生成），所以真正转一圈
+回到起点时会看到同一批 landmark，是一次真正的视觉重访，不只是位置数值上接近。
+
+`configs/experiment/synthetic_loop_closure_vo.yaml`（`loop_closure` 关闭，`defaults/
+platform.yaml`）和 `synthetic_loop_closure_vo_enabled.yaml`（`loop_closure` 开启，`defaults/
+platform_loop_closure.yaml`）除 `defaults:` 外完全一样，用同一份 bag 对比两者的 ATE 就是端到端
+效果验证——两份文件头部注释记录了实测数字和一个重要发现：production 默认参数
+（`candidate_search_radius_m=3.0`、`min_keyframe_index_gap=15`）在这个场景下只找到 1 条回环边，
+ATE 改善很小；手工把搜索半径放宽到 8~20 后回环边数涨到 2~34 条，但 ATE 反而从 1.26m 恶化到
+9.24m——`LoopClosureFrontend` 固定用 `HarrisCornerDetector`（不像 `stereo_landmark_vo_frontend`
+那样有 `bright_blob`/`harris_corner` 双模选择），跟 `synth_bag_gen` 给 `bright_blob` 调的合成
+高亮图案不是同一套外观假设，半径放宽后会把很多外观模糊/错误的角点匹配当成候选收进来，Huber
+在数量多的时候压不住——这是 v1 default 刻意保守（而不是随便定）的直接证据，见
+`synthetic_loop_closure_vo_enabled.yaml` 头部注释的完整记录。

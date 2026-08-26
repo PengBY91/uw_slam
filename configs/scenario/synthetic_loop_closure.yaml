@@ -1,0 +1,32 @@
+# 跟 synthetic_smoke.yaml 结构完全一样，唯一区别是 arc_radians 覆盖一整圈
+# （2*pi），让轨迹的最后一段回到起点附近——这是给
+# frontends::LoopClosureFrontend 用的场景：apps/synth_bag_gen.cpp 的合成视觉
+# landmark 云是"生成一次、按世界坐标固定"的（不是每个 keyframe 重新生成），
+# 所以真正沿圆弧转一整圈回到起点时，起点附近那批 landmark 会再次进入相机视野，
+# 呈现和第一次经过时同样的合成图案——这是一次真正的"视觉重访"，不只是位置数值
+# 上接近而已。见 configs/experiment/synthetic_loop_closure_vo.yaml 和
+# synthetic_loop_closure_vo_enabled.yaml：同一份场景，分别用
+# defaults/platform.yaml（loop_closure 关闭）和
+# defaults/platform_loop_closure.yaml（loop_closure 开启）跑，用来对比
+# ATE 有没有改善。
+#
+# num_keyframes=48 保持跟 synthetic_smoke.yaml 相近的角密度（~7.5度/keyframe
+# vs 原来 ~6.7度/keyframe），也让最后一个 keyframe 到起点的 keyframe 序号差
+# （47）远超 loop_closure.min_keyframe_index_gap 的默认值 15，不会被时间邻近
+# 门槛误伤。
+
+seed: 42
+num_keyframes: 48
+radius_m: 8.0
+arc_radians: 6.283185307179586  # 2*pi：整整一圈，最后一个 keyframe 回到起点姿态
+depth_m: 12.0
+
+noise:
+  relative_pose_noise_m: 0.02
+  sonar_range_noise_m: 0.03
+  sonar_bearing_noise_rad: 0.01
+
+sonar_targets_world:
+  - [2.0, 3.0, -13.0]
+  - [6.0, 6.0, -11.5]
+  - [-1.0, 8.0, -12.5]

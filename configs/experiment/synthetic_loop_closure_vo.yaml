@@ -1,0 +1,37 @@
+# 基线：configs/scenario/synthetic_loop_closure.yaml（整整一圈、回到起点的
+# 合成轨迹）+ stereo_landmark_vo + loop_closure 关闭（defaults/platform.yaml
+# 的默认值）。跟 synthetic_loop_closure_vo_enabled.yaml 除 defaults 外完全
+# 一样，两者的 ATE 差就是 loop_closure 带来的改善——见该文件的头部注释。
+#
+# 实测（production 默认参数，2026-08-25）：9 次迭代收敛，ATE rmse≈1.261m
+# （48/48 matched）。一整圈纯 VO 死推算（x/y/yaw 全程是 gauge freedom，只有
+# z 有 depth 绝对参考）比 synthetic_smoke_vo.yaml 那段 80 度短弧（ATE≈0.06m）
+# 漂移大得多——这正是"没有回环闭合"的典型后果，不是这份新场景的 bug。
+
+rig: rig/example_auv.yaml
+scenario: scenario/synthetic_loop_closure.yaml
+defaults: defaults/platform.yaml
+
+frontends:
+  optical: stereo_depth_frontend_v1
+  sonar: sonar_cfar_frontend_v1
+
+factor_builders:
+  - relative_pose_v1
+  - sonar_range_v1
+  - depth_v1
+
+estimator_mode: stereo_landmark_vo
+map_backend: submap_point_cloud_v1
+
+output:
+  trajectory_format: tum
+  write_run_manifest: true
+
+# 阈值相对实测 ATE≈1.261m 留了约 1.6 倍余量（跟仓库其余 experiment 的惯例
+# 一致），不是 0.1-0.2m 量级——见头部注释。
+gates:
+  require_converged: true
+  max_ate_rmse_m: 2.0
+  min_matched_ate_poses: 40
+  require_nonempty_map: true
