@@ -497,6 +497,80 @@ TEST(OnlineAssistPipeline, AllModalitiesSilentReportsAllUnavailable) {
   EXPECT_EQ(latest->system_health().status(), uw::domain::HealthReport::STATUS_UNAVAILABLE);
 }
 
+// docs/rov-realtime-closed-loop-code-review-2026-08-27.md finding C1: every
+// OnVehicleState call used to call PublishNow() unconditionally, driving a
+// full HMI render + JSON rebuild on every single message -- up to ~145/sec
+// at overload. min_publish_interval_s throttles the actual publish while
+// internal tracking state keeps updating on every event regardless.
+TEST(OnlineAssistPipeline, PublishIsThrottledButPublishedStateStaysCurrent) {
+  FakeClock clock;
+  LatestAssistSink sink;
+  FakeVisualAssistFrontend visual;
+  FakeSonarFrontend sonar;
+  auto deps = TestPipelineDependencies(clock, sink, visual, sonar, /*dense_provider=*/nullptr,
+                                       /*dense_enabled=*/false);
+  deps.pipeline.min_publish_interval_s = 0.1;
+  OnlineAssistPipeline pipeline(std::move(deps));
+
+  // 50 vehicle-state events 10ms apart (0.5s total) -- ten times the
+  // throttle's own cadence -- must NOT produce 50 publishes.
+  double t = 0.0;
+  for (int i = 0; i < 50; ++i) {
+    clock.Set(t);
+    pipeline.OnVehicleState(MakeVehicleStateEvent(t, static_cast<uint64_t>(i + 1)));
+    t += 0.01;
+  }
+
+  const auto published = pipeline.Diagnostics().published_count;
+  EXPECT_GE(published, 4u);   // ~0.5s / 0.1s interval, plus the always-published first call
+  EXPECT_LE(published, 10u);  // must be far fewer than the 50 events fed
+
+  // The throttle only gates the publish call, not internal bookkeeping --
+  // the most recent capture time must still be reflected once something
+  // does publish (verified here via Flush(), which always force-publishes).
+  pipeline.Flush();
+  const auto latest = sink.Latest();
+  ASSERT_TRUE(latest.has_value());
+  EXPECT_NEAR(latest->data_age_ms(), 0.0, 1.0);
+}
+
+TEST(OnlineAssistPipeline, PublishThrottlingCanBeDisabledViaZeroInterval) {
+  FakeClock clock;
+  LatestAssistSink sink;
+  FakeVisualAssistFrontend visual;
+  FakeSonarFrontend sonar;
+  auto deps = TestPipelineDependencies(clock, sink, visual, sonar, /*dense_provider=*/nullptr,
+                                       /*dense_enabled=*/false);
+  deps.pipeline.min_publish_interval_s = 0.0;
+  OnlineAssistPipeline pipeline(std::move(deps));
+
+  double t = 0.0;
+  for (int i = 0; i < 20; ++i) {
+    clock.Set(t);
+    pipeline.OnVehicleState(MakeVehicleStateEvent(t, static_cast<uint64_t>(i + 1)));
+    t += 0.01;
+  }
+
+  EXPECT_EQ(pipeline.Diagnostics().published_count, 20u);
+}
+
+TEST(OnlineAssistPipeline, FlushAlwaysPublishesRegardlessOfThrottleWindow) {
+  FakeClock clock;
+  LatestAssistSink sink;
+  FakeVisualAssistFrontend visual;
+  FakeSonarFrontend sonar;
+  auto deps = TestPipelineDependencies(clock, sink, visual, sonar, /*dense_provider=*/nullptr,
+                                       /*dense_enabled=*/false);
+  deps.pipeline.min_publish_interval_s = 10.0;  // effectively "never throttle-elapses" for this test
+  OnlineAssistPipeline pipeline(std::move(deps));
+
+  clock.Set(0.0);
+  pipeline.OnVehicleState(MakeVehicleStateEvent(0.0, 1));  // first call always publishes
+  const auto after_first = pipeline.Diagnostics().published_count;
+  pipeline.Flush();  // zero elapsed wall time since the first publish -- must still publish
+  EXPECT_EQ(pipeline.Diagnostics().published_count, after_first + 1);
+}
+
 TEST(OnlineAssistPipeline, CalibrationChangeResetsAndRecovers) {
   FakeClock clock;
   LatestAssistSink sink;

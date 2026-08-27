@@ -39,6 +39,7 @@ from uw_holoocean_adapter.holoocean_driver import HoloOceanSession, RawSensorFra
 from uw_holoocean_adapter.pilot_command_model import PilotCommandModel
 from uw_holoocean_adapter.scenario_randomization import ScenarioRandomization, SonarDegradation, VisualDegradation
 from uw_holoocean_adapter.sensor_perturbation import perturb_sonar, perturb_stereo_pair
+from uw_holoocean_adapter.coordinates import pose_sensor_to_pose
 from uw_holoocean_adapter.ros_message_conversion import (
     RosMessageTypes,
     StateNoise,
@@ -47,6 +48,7 @@ from uw_holoocean_adapter.ros_message_conversion import (
     holoocean_camera_to_ros_image,
     holoocean_sonar_to_imaging_sonar_msg,
     sim_time_to_clock_msg,
+    truth_pose_to_odometry,
     vehicle_state_to_odometry,
 )
 from uw_holoocean_adapter.scenario_manifest import RealtimeScenarioManifest, load_realtime_manifest
@@ -58,6 +60,7 @@ _SONAR_KEY = "ImagingSonar"
 _ORIENTATION_KEY = "VehicleOrientation"
 _IMU_KEY = "IMUSensor"
 _DEPTH_KEY = "DepthSensor"
+_POSE_SENSOR_KEY = "PoseSensor"
 
 _THRUSTER_COUNT = 8
 
@@ -179,6 +182,18 @@ def build_realtime_messages(
 
     if fault_injector is not None:
         messages = fault_injector.apply(frame.sim_time_s, messages)
+
+    # Ground truth is appended AFTER fault injection, not before -- it must
+    # never be dropped/duplicated/reordered/delayed like an algorithm-facing
+    # topic, and no `per_topic` fault profile should even be able to target
+    # it by construction (SIM-ARCH-002/SYS-ARCH-003: only TaskScorer may see
+    # this topic, and only as genuine, undistorted truth).
+    if _POSE_SENSOR_KEY in sensors:
+        truth_pose = pose_sensor_to_pose(np.asarray(sensors[_POSE_SENSOR_KEY]))
+        messages.append((
+            topics.scoring_truth,
+            truth_pose_to_odometry(truth_pose, frame.sim_time_s, message_types),
+        ))
 
     return messages
 
@@ -361,6 +376,7 @@ def main() -> None:
             (topics.imaging_sonar, "ImagingSonar"),
             (topics.vehicle_state, "Odometry"),
             (topics.clock, "Clock"),
+            (topics.scoring_truth, "Odometry"),
         )
     }
     node.create_subscription(

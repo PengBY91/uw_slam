@@ -105,6 +105,24 @@ std::string HashActiveConfig(const SonarCfarFrontendParams& params) {
   return encoded;
 }
 
+// A cluster's centroid bearing/range is the mean of its member detections;
+// treating those detections as roughly uniformly spread across the
+// cluster's own angular/range extent (a standard, conservative convention
+// for "how uncertain is this mean estimate given the spread of what it was
+// averaged from") gives std = extent / sqrt(12) -- the variance of a
+// continuous uniform distribution over that width. default_*_sigma acts as
+// a floor for narrow/single-beam clusters, where extent alone would
+// understate the sensor's own base resolution. Without this, every
+// detection reported the same fixed sigma regardless of beam width or
+// cluster spread -- see docs/rov-realtime-closed-loop-code-review-2026-08-
+// 27.md finding D3: an overconfident (too-tight) sigma makes TargetAssociator::
+// Fuse() over-trust sonar relative to vision when the two disagree.
+constexpr double kUniformStdDenominator = 3.4641016151377544;  // sqrt(12.0)
+
+double ExtentAdaptiveSigma(double extent, double default_sigma) {
+  return std::max(default_sigma, extent / kUniformStdDenominator);
+}
+
 double Percentile(const std::deque<double>& samples, double quantile) {
   std::vector<double> values(samples.begin(), samples.end());
   if (values.empty()) return 0.0;
@@ -232,11 +250,15 @@ uw::domain::HypothesisSet SonarCfarFrontend::ProcessSonarFrame(const uw::domain:
     }
     const auto n = static_cast<double>(indices.size());
 
+    const double range_extent_m = max_range - min_range;
+    const double angular_extent_rad = max_bearing - min_bearing;
+
     uw::domain::SonarRangeBearing measurement;
     measurement.set_range_m(sum_range / n);
     measurement.set_bearing_rad(sum_bearing / n);
-    measurement.set_range_sigma_m(params_.default_range_sigma_m);
-    measurement.set_bearing_sigma_rad(params_.default_bearing_sigma_rad);
+    measurement.set_range_sigma_m(ExtentAdaptiveSigma(range_extent_m, params_.default_range_sigma_m));
+    measurement.set_bearing_sigma_rad(
+        ExtentAdaptiveSigma(angular_extent_rad, params_.default_bearing_sigma_rad));
     *measurement.mutable_sonar_frame() = frame.header().sensor_frame();
 
     uw::domain::EvidenceId evidence_id;
@@ -248,8 +270,8 @@ uw::domain::HypothesisSet SonarCfarFrontend::ProcessSonarFrame(const uw::domain:
     const double likelihood = n;
     auto evidence = uw::domain::MakeEvidence<uw::domain::SonarRangeBearing>(
         evidence_id, sources, measurement, /*noise_scale=*/1.0 / n, "sonar_cfar_frontend_v1");
-    (*evidence.mutable_quality_features())["angular_extent_rad"] = max_bearing - min_bearing;
-    (*evidence.mutable_quality_features())["range_extent_m"] = max_range - min_range;
+    (*evidence.mutable_quality_features())["angular_extent_rad"] = angular_extent_rad;
+    (*evidence.mutable_quality_features())["range_extent_m"] = range_extent_m;
     (*evidence.mutable_quality_features())["intensity_score"] = sum_intensity / n;
     (*evidence.mutable_quality_features())["cfar_score"] = likelihood;
     (*evidence.mutable_quality_features())["cluster_size"] = n;

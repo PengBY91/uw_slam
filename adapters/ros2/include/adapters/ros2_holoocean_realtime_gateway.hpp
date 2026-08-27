@@ -49,6 +49,20 @@ struct HoloOceanRealtimeGatewayOptions {
   std::string agent_name = "auv0";
   std::string calibration_version = "holoocean_realtime_v1";
   HoloOceanSonarCalibration sonar_calibration;
+  // Empty by default -- see HoloOceanRealtimeSinkConfig's doc comment
+  // (include/adapters/holoocean_realtime_sink.hpp) for what that means:
+  // BuildIdentityRig's placeholder rig is used, loudly. Set via the
+  // `rig_config_path` ROS2 parameter to a real calibrated rig YAML (same
+  // format apps/replay_demo already consumes, e.g.
+  // configs/rig/example_auv_real_camera.yaml) before treating a run as
+  // real-machine acceptance evidence.
+  std::string rig_config_path;
+  // Same emptiness/failure policy as rig_config_path, for sonar CFAR/
+  // clustering + target association/tracker + degradation-timing
+  // parameters. Set via the `platform_config_path` ROS2 parameter, e.g.
+  // configs/defaults/platform.yaml (same format apps/replay_demo already
+  // consumes for its `defaults` layer).
+  std::string platform_config_path;
 };
 
 // Minimal, identity-extrinsic RigCalibrationSnapshot for the four algorithm

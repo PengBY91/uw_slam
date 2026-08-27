@@ -136,6 +136,7 @@ add_library(adapters STATIC
   src/adapters/svin_bridge_local_odometry_provider.cpp
   src/adapters/holoocean_ros_bridge_sonar_frame_provider.cpp
   src/adapters/holoocean_live_conversion.cpp
+  src/adapters/sim_wall_clock_estimator.cpp
 )
 add_library(uw::adapters ALIAS adapters)
 target_include_directories(adapters PUBLIC "${PROJECT_SOURCE_DIR}/include")

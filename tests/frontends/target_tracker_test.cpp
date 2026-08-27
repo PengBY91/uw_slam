@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <limits>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -333,6 +334,77 @@ TEST(TargetTracker, ThreeMissesDegradeAndLaterQueryStalesWithoutAnotherUpdate) {
             uw::domain::TARGET_TRACK_STATUS_STALE);
 }
 
+// docs/rov-realtime-closed-loop-code-review-2026-08-27.md finding C2:
+// TargetTracker never evicted stale tracks -- a track that goes STALE
+// (marked via Tracks()) stayed in tracks_ forever, growing memory and
+// per-publish Predict() cost without bound over a long run. retention_
+// after_s (default 5.0s, must exceed stale_after_s) now actually erases it.
+TEST(TargetTracker, TrackIsEvictedAfterRetentionWindowElapsesWithNoHit) {
+  auto params = Params();
+  params.stale_after_s = 0.5;
+  params.retention_after_s = 2.0;
+  uw::frontends::TargetTracker tracker(params);
+
+  ASSERT_TRUE(tracker.Update({Measurement("a", 0.0, 0.0, 4.0)}, 0.0));
+  ASSERT_TRUE(tracker.Update({Measurement("b", 0.1, 0.0, 4.0)}, 0.1));
+  ASSERT_EQ(tracker.Tracks(0.1).size(), 1u);
+
+  // Well past stale_after_s (0.5s) but not yet past retention_after_s
+  // (2.0s) -- STALE, but still present.
+  ASSERT_TRUE(tracker.Update({}, 1.5));
+  const auto still_stale = tracker.Tracks(1.5);
+  ASSERT_EQ(still_stale.size(), 1u);
+  EXPECT_EQ(still_stale[0].status, uw::domain::TARGET_TRACK_STATUS_STALE);
+
+  // Past retention_after_s (2.0s since the last hit at 0.1s) -- gone.
+  ASSERT_TRUE(tracker.Update({}, 2.6));
+  EXPECT_TRUE(tracker.Tracks(2.6).empty());
+}
+
+TEST(TargetTracker, EvictionDoesNotAffectTracksStillWithinRetentionWindow) {
+  auto params = Params();
+  params.stale_after_s = 0.5;
+  params.retention_after_s = 2.0;
+  uw::frontends::TargetTracker tracker(params);
+
+  ASSERT_TRUE(tracker.Update({Measurement("a", 0.0, 0.0, 4.0)}, 0.0));
+  ASSERT_TRUE(tracker.Update({Measurement("b", 0.1, 0.0, 4.0)}, 0.1));
+  ASSERT_TRUE(tracker.Update({}, 1.9));  // 1.8s since last hit -- inside the 2.0s window
+  EXPECT_EQ(tracker.Tracks(1.9).size(), 1u);
+}
+
+TEST(TargetTracker, EvictionAlsoAppliesOnBatchesWithFreshDetections) {
+  // Eviction is exercised via the non-empty-detections branch too, not just
+  // the empty-batch/miss path -- a second, unrelated track's own detections
+  // must not keep an unrelated, long-idle track alive.
+  auto params = Params();
+  params.stale_after_s = 0.5;
+  params.retention_after_s = 2.0;
+  uw::frontends::TargetTracker tracker(params);
+
+  ASSERT_TRUE(tracker.Update({Measurement("a", 0.0, 0.0, 4.0)}, 0.0));
+  ASSERT_TRUE(tracker.Update({Measurement("b", 0.1, 0.0, 4.0)}, 0.1));
+  ASSERT_EQ(tracker.Tracks(0.1).size(), 1u);
+
+  // A fresh detection far from the first track's bearing births a second,
+  // unrelated track at t=3.0 -- well past the first track's retention
+  // window (0.1 + 2.0 = 2.1).
+  ASSERT_TRUE(tracker.Update({Measurement("c", 3.0, 2.5, 8.0)}, 3.0));
+  const auto tracks = tracker.Tracks(3.0);
+  ASSERT_EQ(tracks.size(), 1u);
+  EXPECT_EQ(tracks[0].track_id, "track_2");
+}
+
+TEST(TargetTracker, RejectsRetentionAfterSNotExceedingStaleAfterS) {
+  auto params = Params();
+  params.stale_after_s = 1.0;
+  params.retention_after_s = 1.0;  // must be strictly greater, not equal
+  EXPECT_THROW(uw::frontends::TargetTracker tracker(params), std::invalid_argument);
+
+  params.retention_after_s = 0.5;  // less than stale_after_s
+  EXPECT_THROW(uw::frontends::TargetTracker tracker2(params), std::invalid_argument);
+}
+
 TEST(TargetTracker, UnmatchedDetectionsBirthMonotonicIdsAndCrossingTracksStayDistinct) {
   uw::frontends::TargetTracker tracker(Params());
   ASSERT_TRUE(tracker.Update(
@@ -417,6 +489,7 @@ TEST(TargetTracker, LongPredictionUsesWholeElapsedTimeIndependentOfEmptyFrequenc
   params.max_prediction_dt_s = 0.5;
   params.degraded_misses = 100;
   params.stale_after_s = 10.0;
+  params.retention_after_s = 20.0;  // must exceed stale_after_s; this test predicts out to t=5.1s
   uw::frontends::TargetTracker direct(params);
   uw::frontends::TargetTracker stepped(params);
   for (auto* tracker : {&direct, &stepped}) {

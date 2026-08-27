@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 
+from uw_holoocean_adapter.coordinates import Pose
 from uw_holoocean_adapter.ros_message_conversion import (
     RosMessageTypes,
     StateNoise,
@@ -8,6 +9,7 @@ from uw_holoocean_adapter.ros_message_conversion import (
     holoocean_camera_to_ros_image,
     holoocean_sonar_to_imaging_sonar_msg,
     sim_time_to_clock_msg,
+    truth_pose_to_odometry,
     vehicle_state_to_odometry,
 )
 
@@ -129,6 +131,17 @@ def test_algorithm_publishers_never_include_ground_truth_topic():
     topics = build_topic_map()
     assert topics.scoring_truth == "/uw/sim/ground_truth"
     assert topics.scoring_truth not in topics.algorithm_inputs
+
+
+def test_truth_pose_to_odometry_carries_full_undistorted_pose():
+    pose = Pose(translation=np.array([1.0, -2.0, 3.0]), quaternion_xyzw=np.array([0.0, 0.0, 0.0, 1.0]))
+    msg = truth_pose_to_odometry(pose, capture_time_s=2.5, message_types=fake_message_types())
+    assert msg.pose.pose.position.x == pytest.approx(1.0)
+    assert msg.pose.pose.position.y == pytest.approx(-2.0)
+    assert msg.pose.pose.position.z == pytest.approx(3.0)
+    assert msg.pose.pose.orientation.w == pytest.approx(1.0)
+    assert msg.header.stamp.sec == 2
+    assert msg.header.stamp.nanosec == pytest.approx(500_000_000, abs=1)
 
 
 def test_topic_map_excludes_pilot_camera_and_clock_from_algorithm_inputs():

@@ -21,7 +21,7 @@ from typing import Any
 
 import numpy as np
 
-from uw_holoocean_adapter.coordinates import Pose, matrix_to_quaternion
+from uw_holoocean_adapter.coordinates import Pose, matrix_to_quaternion, pose_sensor_to_pose
 
 _TRUTH_TOPIC = "/uw/sim/ground_truth"
 
@@ -153,6 +153,25 @@ def vehicle_state_to_odometry(
     msg.twist.twist.angular.x = float(noisy_angular_velocity[0])
     msg.twist.twist.angular.y = float(noisy_angular_velocity[1])
     msg.twist.twist.angular.z = float(noisy_angular_velocity[2])
+    return msg
+
+
+def truth_pose_to_odometry(pose: Pose, capture_time_s: float, message_types):
+    """Builds the ground-truth `nav_msgs/Odometry` published on
+    `TopicMap.scoring_truth` ONLY -- the raw, noise-free `PoseSensor` pose
+    (full x/y/z + orientation), unlike `vehicle_state_to_odometry`'s noisy,
+    z-only, algorithm-facing message. Only `TaskScorer` may subscribe this
+    topic (see `build_topic_map`'s docstring and `scenario_manifest.py`'s
+    `algorithm_topics` deny-list, which SIM-ARCH-002/SYS-ARCH-003 require)."""
+    msg = message_types.Odometry()
+    _stamp_from_seconds(msg.header.stamp, capture_time_s)
+    msg.pose.pose.position.x = float(pose.translation[0])
+    msg.pose.pose.position.y = float(pose.translation[1])
+    msg.pose.pose.position.z = float(pose.translation[2])
+    msg.pose.pose.orientation.x = float(pose.quaternion_xyzw[0])
+    msg.pose.pose.orientation.y = float(pose.quaternion_xyzw[1])
+    msg.pose.pose.orientation.z = float(pose.quaternion_xyzw[2])
+    msg.pose.pose.orientation.w = float(pose.quaternion_xyzw[3])
     return msg
 
 

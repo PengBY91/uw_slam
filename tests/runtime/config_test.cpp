@@ -154,6 +154,7 @@ TEST(Config, OnlineAssistDefaultsWhenSectionAbsent) {
   EXPECT_DOUBLE_EQ(config.online_assist.dense.budget_ms, 100.0);
   EXPECT_DOUBLE_EQ(config.online_assist.vehicle_state_stale_after_s, 0.5);
   EXPECT_DOUBLE_EQ(config.online_assist.modality_stale_after_s, 1.0);
+  EXPECT_DOUBLE_EQ(config.online_assist.min_publish_interval_s, 0.1);
 }
 
 TEST(Config, ParsesOnlineAssistOverrides) {
@@ -165,13 +166,27 @@ TEST(Config, ParsesOnlineAssistOverrides) {
            "    enabled: true\n"
            "    budget_ms: 75.0\n"
            "  vehicle_state_stale_after_s: 0.25\n"
-           "  modality_stale_after_s: 2.0\n";
+           "  modality_stale_after_s: 2.0\n"
+           "  min_publish_interval_s: 0.05\n";
   }
   const auto config = uw::runtime::LoadPlatformDefaultsConfig(tmp_path.string());
   EXPECT_TRUE(config.online_assist.dense.enabled);
   EXPECT_DOUBLE_EQ(config.online_assist.dense.budget_ms, 75.0);
   EXPECT_DOUBLE_EQ(config.online_assist.vehicle_state_stale_after_s, 0.25);
   EXPECT_DOUBLE_EQ(config.online_assist.modality_stale_after_s, 2.0);
+  EXPECT_DOUBLE_EQ(config.online_assist.min_publish_interval_s, 0.05);
+  std::remove(tmp_path.string().c_str());
+}
+
+TEST(Config, RejectsNegativeMinPublishInterval) {
+  const auto tmp_path =
+      std::filesystem::temp_directory_path() / "uw_config_test_online_assist_publish_interval.yaml";
+  {
+    std::ofstream out(tmp_path);
+    out << "online_assist:\n"
+           "  min_publish_interval_s: -0.1\n";
+  }
+  EXPECT_THROW(uw::runtime::LoadPlatformDefaultsConfig(tmp_path.string()), std::runtime_error);
   std::remove(tmp_path.string().c_str());
 }
 

@@ -169,7 +169,7 @@ class OnlineAssistPipeline::Impl {
   bool OnMapEvidence(const uw::runtime::CanonicalEvent&) { return true; }
 
   bool Flush() {
-    PublishNow();
+    PublishNow(/*force=*/true);
     return true;
   }
 
@@ -186,7 +186,9 @@ class OnlineAssistPipeline::Impl {
     pending_dense_depth_capture_s_.reset();
     recovering_ = true;
     ++diagnostics_.calibration_reset_count;
-    PublishNow();
+    // The "recovering" state transition must be visible to the operator
+    // immediately, not delayed by min_publish_interval_s's throttle.
+    PublishNow(/*force=*/true);
   }
 
   OnlineAssistPipelineDiagnostics Diagnostics() const { return diagnostics_; }
@@ -377,8 +379,23 @@ class OnlineAssistPipeline::Impl {
     return {uw::domain::HealthReport::STATUS_HEALTHY, "", true};
   }
 
-  void PublishNow() {
+  // Every OnImageFrame/OnSonarFrame/OnVehicleState/OnHealthReport call
+  // reaches here unconditionally -- at overload (camera 1.25x + sonar 20Hz
+  // + state 100Hz) that's up to ~145 calls/sec. Without throttling, each
+  // one drove a full HMI overlay render + JSON status rebuild in
+  // AssistOutputSink::Publish, none of which is free -- see
+  // docs/rov-realtime-closed-loop-code-review-2026-08-27.md finding C1.
+  // Internal tracking state (fusion_, pending_*, last_*_capture_s_) is
+  // still updated by the caller before this runs regardless of throttling;
+  // only the actual publish to `sink_` is rate-limited.
+  void PublishNow(bool force = false) {
     const double wall_s = uw::domain::ToSeconds(now_());
+    if (!force && pipeline_config_.min_publish_interval_s > 0.0 && last_publish_wall_s_.has_value() &&
+        (wall_s - *last_publish_wall_s_) < pipeline_config_.min_publish_interval_s) {
+      return;
+    }
+    last_publish_wall_s_ = wall_s;
+
     const auto decision = ComputeDegradation(wall_s);
 
     uw::domain::OperatorAssistState state;
@@ -452,6 +469,7 @@ class OnlineAssistPipeline::Impl {
   std::optional<double> last_visual_capture_s_;
   std::optional<double> last_sonar_capture_s_;
   std::optional<double> last_vehicle_state_capture_s_;
+  std::optional<double> last_publish_wall_s_;
 
   std::optional<uw::domain::HealthReport> last_visual_health_;
   std::optional<uw::domain::HealthReport> last_sonar_health_;

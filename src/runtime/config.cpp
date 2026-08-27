@@ -200,7 +200,8 @@ PlatformDefaultsConfig LoadPlatformDefaultsConfig(const std::string& path) {
                       {"association_mahalanobis_sq", "confirm_hits", "degraded_misses",
                        "stale_after_s", "max_prediction_dt_s",
                        "bearing_acceleration_noise", "range_acceleration_noise",
-                       "merge_bearing_threshold_rad", "merge_range_threshold_m"},
+                       "merge_bearing_threshold_rad", "merge_range_threshold_m",
+                       "retention_after_s"},
                       "frontends.target_tracker");
     auto& out = config.target_tracker;
     out.association_mahalanobis_sq = GetOr<double>(
@@ -218,6 +219,7 @@ PlatformDefaultsConfig LoadPlatformDefaultsConfig(const std::string& path) {
         tracker, "merge_bearing_threshold_rad", out.merge_bearing_threshold_rad);
     out.merge_range_threshold_m = GetOr<double>(
         tracker, "merge_range_threshold_m", out.merge_range_threshold_m);
+    out.retention_after_s = GetOr<double>(tracker, "retention_after_s", out.retention_after_s);
     if (out.confirm_hits < 1 || out.degraded_misses < 1) {
       throw std::runtime_error(
           "frontends.target_tracker confirm_hits/degraded_misses must be positive");
@@ -229,20 +231,26 @@ PlatformDefaultsConfig LoadPlatformDefaultsConfig(const std::string& path) {
         {"bearing_acceleration_noise", out.bearing_acceleration_noise},
         {"range_acceleration_noise", out.range_acceleration_noise},
         {"merge_bearing_threshold_rad", out.merge_bearing_threshold_rad},
-        {"merge_range_threshold_m", out.merge_range_threshold_m}};
+        {"merge_range_threshold_m", out.merge_range_threshold_m},
+        {"retention_after_s", out.retention_after_s}};
     for (const auto& [name, value] : positive) {
       if (!std::isfinite(value) || value <= 0.0) {
         throw std::runtime_error(std::string("frontends.target_tracker.") + name +
                                  " must be finite and positive");
       }
     }
+    if (out.retention_after_s <= out.stale_after_s) {
+      throw std::runtime_error(
+          "frontends.target_tracker.retention_after_s must be greater than stale_after_s");
+    }
   }
 
   if (root["online_assist"]) {
     const auto online_assist = root["online_assist"];
-    RejectUnknownKeys(online_assist,
-                      {"dense", "vehicle_state_stale_after_s", "modality_stale_after_s"},
-                      "online_assist");
+    RejectUnknownKeys(
+        online_assist,
+        {"dense", "vehicle_state_stale_after_s", "modality_stale_after_s", "min_publish_interval_s"},
+        "online_assist");
     auto& out = config.online_assist;
     if (online_assist["dense"]) {
       const auto dense = online_assist["dense"];
@@ -263,6 +271,11 @@ PlatformDefaultsConfig LoadPlatformDefaultsConfig(const std::string& path) {
         GetOr<double>(online_assist, "modality_stale_after_s", out.modality_stale_after_s);
     if (!std::isfinite(out.modality_stale_after_s) || out.modality_stale_after_s <= 0.0) {
       throw std::runtime_error("online_assist.modality_stale_after_s must be finite and positive");
+    }
+    out.min_publish_interval_s =
+        GetOr<double>(online_assist, "min_publish_interval_s", out.min_publish_interval_s);
+    if (!std::isfinite(out.min_publish_interval_s) || out.min_publish_interval_s < 0.0) {
+      throw std::runtime_error("online_assist.min_publish_interval_s must be finite and non-negative");
     }
   }
 

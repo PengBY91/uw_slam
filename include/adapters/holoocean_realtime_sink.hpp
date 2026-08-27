@@ -52,6 +52,43 @@ class HoloOceanRealtimeOutput {
   virtual void PublishStatus(std::string json_status) = 0;
 };
 
+// How the sink resolves its RigCalibrationSnapshot and algorithm parameters
+// (sonar CFAR/clustering, target association/tracker gates, degradation
+// timing). The `ros2` lint role (adapters/ros2/) may only depend on
+// {adapters, measurement_api, sensor_models, domain, domain_proto} -- NOT
+// `runtime`, where the YAML loaders (uw::runtime::LoadRigConfig,
+// LoadPlatformDefaultsConfig) live -- so the ROS2-owned translation unit
+// cannot load either YAML file itself. It passes paths instead; the
+// application-role .cpp behind this header does the actual loading.
+//
+// See docs/rov-realtime-closed-loop-code-review-2026-08-27.md findings B1
+// (rig) and D2 (platform defaults): the gateway used to always wire in a
+// placeholder identity-extrinsic rig (FUS-CAL-001 forbids that reaching
+// real-machine acceptance) AND always default-construct
+// VisualAssistParams/SonarCfarFrontendParams/target association/tracker
+// config in C++ instead of reading them from version-controlled YAML
+// (FUS-AC-002 requires the latter). For both `rig_config_path` and
+// `platform_config_path`: empty means the corresponding `fallback_*` is
+// used as-is and a loud warning is logged -- acceptable for a dev/smoke run
+// with no calibration/tuning file on hand, never for a run meant to produce
+// acceptance evidence. A non-empty path that fails to load (missing file,
+// malformed YAML) is a hard error (throws) rather than a silent fallback --
+// an operator who explicitly asked for real config and got a broken one
+// should find out immediately, not get an unnoticed placeholder instead.
+//
+// `platform_config_path`'s visual-detector parameters
+// (opencv_adapters::VisualAssistParams) are NOT part of this: no YAML
+// schema for that frontend exists anywhere in this repo yet (it is
+// default-constructed even in the offline pipeline), and that detector's
+// suitability is itself an open question (see finding D1) -- inventing a
+// config schema for a likely-to-be-replaced HSV-threshold placeholder was
+// judged not worth doing ahead of that larger decision.
+struct HoloOceanRealtimeSinkConfig {
+  std::string rig_config_path;
+  uw::domain::RigCalibrationSnapshot fallback_rig;
+  std::string platform_config_path;
+};
+
 // Builds the real production sink: internally owns a LiveEventSource, a
 // real OnlineAssistPipeline (OpenCvVisualAssistFrontend + SonarCfarFrontend,
 // dense depth disabled -- matching every other app in this repo), a
@@ -61,6 +98,6 @@ class HoloOceanRealtimeOutput {
 // depend on everything this needs); this header itself stays free of
 // application/runtime/opencv_adapters includes.
 std::unique_ptr<HoloOceanRealtimeSink> MakeOnlineAssistRealtimeSink(
-    HoloOceanRealtimeOutput& output, uw::domain::RigCalibrationSnapshot rig);
+    HoloOceanRealtimeOutput& output, HoloOceanRealtimeSinkConfig config);
 
 }  // namespace uw::adapters

@@ -164,67 +164,91 @@ def _require(condition: bool, field: str, message: str) -> None:
         raise GateFailure(f"{field}: {message}")
 
 
+def _get_required(report: Dict[str, Any], field: str) -> Any:
+    """Same role as `report[field]`, but a missing field raises the same
+    `GateFailure` every other check in this function raises -- a run report
+    that never populated a required field (e.g. the gateway telemetry
+    collector work docs/rov-realtime-closed-loop-code-review-2026-08-27.md
+    finding A2 tracks) is itself a gate failure, not a crash. See that
+    finding for why this mattered: `run_gate()` used to return a 4-field
+    stub dict here, and evaluate_gate's first `report[...]` lookup raised an
+    uncaught `KeyError` instead of a clean, field-named `GateFailure`."""
+    if field not in report:
+        raise GateFailure(f"{field}: missing from run report -- telemetry was never collected for this field")
+    return report[field]
+
+
 def evaluate_gate(report: Dict[str, Any], gate: GateSpec) -> None:
     """Raises `GateFailure` on the first violated bound; returns None (does
     not return a report/summary object) when every bound is satisfied --
     same "raises on failure, silent on success" contract as the plan's own
     shown example test."""
+    result_age_p95_ms = _get_required(report, "result_age_p95_ms")
     _require(
-        report["result_age_p95_ms"] <= gate.result_age_p95_ms_max,
+        result_age_p95_ms <= gate.result_age_p95_ms_max,
         "result_age_p95_ms",
-        f"{report['result_age_p95_ms']} exceeds the {gate.profile} bound of {gate.result_age_p95_ms_max} ms",
+        f"{result_age_p95_ms} exceeds the {gate.profile} bound of {gate.result_age_p95_ms_max} ms",
     )
+    state_age_p95_ms = _get_required(report, "state_age_p95_ms")
     _require(
-        report["state_age_p95_ms"] <= gate.state_age_p95_ms_max,
+        state_age_p95_ms <= gate.state_age_p95_ms_max,
         "state_age_p95_ms",
-        f"{report['state_age_p95_ms']} exceeds the {gate.profile} bound of {gate.state_age_p95_ms_max} ms",
+        f"{state_age_p95_ms} exceeds the {gate.profile} bound of {gate.state_age_p95_ms_max} ms",
     )
+    rtf_p95 = _get_required(report, "rtf_p95")
     _require(
-        report["rtf_p95"] >= gate.rtf_p95_min,
+        rtf_p95 >= gate.rtf_p95_min,
         "rtf_p95",
-        f"{report['rtf_p95']} is below the required {gate.rtf_p95_min}",
+        f"{rtf_p95} is below the required {gate.rtf_p95_min}",
     )
+    deadline_miss_fraction = _get_required(report, "deadline_miss_fraction")
     _require(
-        report["deadline_miss_fraction"] <= gate.deadline_miss_fraction_max,
+        deadline_miss_fraction <= gate.deadline_miss_fraction_max,
         "deadline_miss_fraction",
-        f"{report['deadline_miss_fraction']} exceeds the {gate.profile} bound of {gate.deadline_miss_fraction_max}",
+        f"{deadline_miss_fraction} exceeds the {gate.profile} bound of {gate.deadline_miss_fraction_max}",
     )
+    queue_high_watermark = _get_required(report, "queue_high_watermark")
     _require(
-        report["queue_high_watermark"] >= 0 and report.get("queue_capacity_violations", 0) == 0,
+        queue_high_watermark >= 0 and report.get("queue_capacity_violations", 0) == 0,
         "queue_capacity_violations",
         f"{report.get('queue_capacity_violations', 0)} capacity violations observed, must be 0",
     )
+    recovery_duration_s_max = _get_required(report, "recovery_duration_s_max")
     _require(
-        report["recovery_duration_s_max"] <= gate.recovery_duration_s_max,
+        recovery_duration_s_max <= gate.recovery_duration_s_max,
         "recovery_duration_s_max",
-        f"{report['recovery_duration_s_max']}s exceeds the {gate.recovery_duration_s_max}s bound",
+        f"{recovery_duration_s_max}s exceeds the {gate.recovery_duration_s_max}s bound",
     )
-    _require(report["sonar_detection_count"] > 0, "sonar_detection_count", "must be nonzero")
-    _require(report["visual_detection_count"] > 0, "visual_detection_count", "must be nonzero")
-    _require(report["fused_track_count"] > 0, "fused_track_count", "must be nonzero")
+    _require(_get_required(report, "sonar_detection_count") > 0, "sonar_detection_count", "must be nonzero")
+    _require(_get_required(report, "visual_detection_count") > 0, "visual_detection_count", "must be nonzero")
+    _require(_get_required(report, "fused_track_count") > 0, "fused_track_count", "must be nonzero")
+    duration_s = _get_required(report, "duration_s")
     _require(
-        report["duration_s"] >= gate.min_duration_s,
+        duration_s >= gate.min_duration_s,
         "duration_s",
-        f"{report['duration_s']}s is shorter than the required {gate.min_duration_s}s",
+        f"{duration_s}s is shorter than the required {gate.min_duration_s}s",
     )
+    rss_growth_after_warmup_mib = _get_required(report, "rss_growth_after_warmup_mib")
     _require(
-        report["rss_growth_after_warmup_mib"] <= gate.rss_growth_after_warmup_mib_max,
+        rss_growth_after_warmup_mib <= gate.rss_growth_after_warmup_mib_max,
         "rss_growth_after_warmup_mib",
-        f"{report['rss_growth_after_warmup_mib']} MiB exceeds the {gate.rss_growth_after_warmup_mib_max} MiB bound",
+        f"{rss_growth_after_warmup_mib} MiB exceeds the {gate.rss_growth_after_warmup_mib_max} MiB bound",
     )
     if gate.require_headroom_gate:
+        cpu_headroom_fraction_avg = _get_required(report, "cpu_headroom_fraction_avg")
         _require(
-            report["cpu_headroom_fraction_avg"] >= gate.cpu_gpu_headroom_min_fraction,
+            cpu_headroom_fraction_avg >= gate.cpu_gpu_headroom_min_fraction,
             "cpu_headroom_fraction_avg",
-            f"{report['cpu_headroom_fraction_avg']} is below the required {gate.cpu_gpu_headroom_min_fraction}",
+            f"{cpu_headroom_fraction_avg} is below the required {gate.cpu_gpu_headroom_min_fraction}",
         )
+        gpu_headroom_fraction_avg = _get_required(report, "gpu_headroom_fraction_avg")
         _require(
-            report["gpu_headroom_fraction_avg"] >= gate.cpu_gpu_headroom_min_fraction,
+            gpu_headroom_fraction_avg >= gate.cpu_gpu_headroom_min_fraction,
             "gpu_headroom_fraction_avg",
-            f"{report['gpu_headroom_fraction_avg']} is below the required {gate.cpu_gpu_headroom_min_fraction}",
+            f"{gpu_headroom_fraction_avg} is below the required {gate.cpu_gpu_headroom_min_fraction}",
         )
     _require(
-        report["guidance_marked_stale_when_overdue"] is True,
+        _get_required(report, "guidance_marked_stale_when_overdue") is True,
         "guidance_marked_stale_when_overdue",
         f"guidance older than {_STALE_GUIDANCE_AFTER_S * 1000:.0f}ms must be marked stale, was not observed to be",
     )

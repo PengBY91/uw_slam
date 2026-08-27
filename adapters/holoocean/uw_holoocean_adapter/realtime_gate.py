@@ -29,12 +29,13 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import math
 import multiprocessing
 import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import yaml
 
@@ -50,6 +51,13 @@ from uw_holoocean_adapter.run_report import (
 
 _DEFAULT_GATEWAY_BINARY = "build_ros2/bin/holoocean_realtime_node"
 _DEFAULT_SCENARIO = "adapters/holoocean/scenarios/blue_rov_aid_sv1213_base.json"
+
+# SIM-ACC-003/SYS-ACC-004/SYS-ACC-005: a 10-seed nominal campaign must reach
+# 8/10, a 10-seed disturbed/perturbed campaign must reach 7/10. `minimum`/
+# `overload` are single continuous soak runs, not seed campaigns -- every
+# seed run (there's normally exactly one) must pass, same as before this
+# fraction concept existed.
+_REQUIRED_SUCCESS_FRACTION = {"nominal": 0.8, "disturbed": 0.7}
 
 
 class RealtimeGateError(Exception):
@@ -86,6 +94,13 @@ def load_profile(path: str) -> GateProfile:
         gate=str(data.get("gate", data["profile"])),
         soak=bool(data.get("soak", False)),
     )
+
+
+def required_passes(gate_profile: str, seed_count: int) -> int:
+    """How many of `seed_count` seed runs must PASS for the campaign as a
+    whole to pass, per SIM-ACC-003/SYS-ACC-004/SYS-ACC-005."""
+    required_fraction = _REQUIRED_SUCCESS_FRACTION.get(gate_profile, 1.0)
+    return math.ceil(required_fraction * seed_count)
 
 
 def _gate_spec_for(profile: GateProfile, min_duration_s: float):
@@ -152,37 +167,28 @@ class ProcessGroup:
                 process.join(timeout=timeout_s)
 
 
-def _run_scripted_pilot_process(task_path: str) -> None:
+def _run_scripted_pilot_process(scenario_path: str, task_path: str) -> None:
     # Runs entirely within its own forked process (see module docstring for
-    # why this isn't a second CLI module). Not meaningfully exercisable
-    # without a live /uw/hmi/status publisher and /uw/pilot/thrusters
-    # subscriber -- both are ROS2 topics this module has no ROS2 access to
-    # publish/subscribe without rclpy, which is out of scope for this pure
-    # supervision layer (the real ROS2 wiring belongs to Task 4's gateway
-    # and a future ROS2-aware pilot bridge, not this process-supervision
-    # module). This target exists so the four-process shape is real and
-    # testable (poll/terminate), even though its body is a placeholder
-    # until that ROS2 bridge exists.
+    # why this isn't a second CLI module). Delegates to pilot_ros_bridge's
+    # real rclpy node -- subscribes /uw/hmi/status, publishes
+    # /uw/pilot/thrusters -- see docs/rov-realtime-closed-loop-code-review-
+    # 2026-08-27.md finding A3 for why this used to be an inert placeholder.
+    from uw_holoocean_adapter.pilot_ros_bridge import run_scripted_pilot_bridge
     from uw_holoocean_adapter.scenario_manifest import load_realtime_manifest as _load
-    from uw_holoocean_adapter.scripted_pilot import ScriptedPilot
 
-    manifest = _load(_DEFAULT_SCENARIO, task_path)
-    ScriptedPilot(manifest.task)
-    while True:
-        time.sleep(1.0)
+    manifest = _load(scenario_path, task_path)
+    run_scripted_pilot_bridge(manifest.task)
 
 
-def _run_scorer_process(task_path: str, seed: int, out_path: str) -> None:
+def _run_scorer_process(scenario_path: str, task_path: str, seed: int, out_path: str) -> None:
+    # See _run_scripted_pilot_process's comment -- same real-ROS2-bridge
+    # status now, via scorer_ros_bridge (subscribes /uw/sim/ground_truth +
+    # /uw/hmi/status, periodically writes its report to out_path).
     from uw_holoocean_adapter.scenario_manifest import load_realtime_manifest as _load
-    from uw_holoocean_adapter.task_scorer import TaskScorer
+    from uw_holoocean_adapter.scorer_ros_bridge import run_scorer_bridge
 
-    manifest = _load(_DEFAULT_SCENARIO, task_path)
-    scorer = TaskScorer(manifest.task, seed=seed)
-    # See _run_scripted_pilot_process's comment -- same placeholder-body
-    # status until a real ROS2 truth/status subscriber bridge exists.
-    while True:
-        time.sleep(1.0)
-        Path(out_path).write_text(json.dumps(scorer.report().as_dict()), encoding="utf-8")
+    manifest = _load(scenario_path, task_path)
+    run_scorer_bridge(manifest.task, seed, out_path)
 
 
 def run_gate(
@@ -237,8 +243,8 @@ def run_gate(
             ]
         )
         group.start_subprocess([str(gateway_path)])
-        group.start_process(_run_scripted_pilot_process, args=(task_path,))
-        group.start_process(_run_scorer_process, args=(task_path, seed, scorer_out))
+        group.start_process(_run_scripted_pilot_process, args=(scenario_path, task_path))
+        group.start_process(_run_scorer_process, args=(scenario_path, task_path, seed, scorer_out))
 
         deadline = time.monotonic() + duration_s
         while time.monotonic() < deadline:
@@ -249,12 +255,32 @@ def run_gate(
     finally:
         group.stop()
 
-    return {
+    report: Dict[str, Any] = {
         "profile": profile.profile,
         "seed": seed,
         "task_id": Path(task_path).stem,
         "duration_s": duration_s,
     }
+    # scorer_ros_bridge.run_scorer_bridge writes this file at least once a
+    # second and once more on shutdown -- read back whatever it last wrote
+    # rather than leaving `task_score` unset, which is the one field of the
+    # ~20 evaluate_gate() needs that a pure-Python process can honestly
+    # produce end to end today. The gateway-side telemetry (result/state
+    # age percentiles, RTF, queue stats, RSS/CPU/GPU headroom, deadline
+    # misses, detection counts, recovery duration, staleness marking) is a
+    # separate, still-open C++ instrumentation effort -- see
+    # docs/rov-realtime-closed-loop-code-review-2026-08-27.md finding A2's
+    # "still open" note for exactly what's missing and why it wasn't rushed
+    # here; evaluate_gate now fails cleanly (GateFailure naming the missing
+    # field) rather than crashing on it, which is the honest state to leave
+    # this in until that instrumentation lands.
+    scorer_path = Path(scorer_out)
+    if scorer_path.is_file():
+        try:
+            report["task_score"] = json.loads(scorer_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            pass  # scorer process may have been killed mid-write; leave task_score unset
+    return report
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -300,8 +326,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"seed={seed}: PASSED")
         passed += 1
 
-    print(f"{passed}/{len(seeds)} seeds passed the {profile.gate} gate")
-    return 0 if passed == len(seeds) else 1
+    needed = required_passes(profile.gate, len(seeds))
+    print(f"{passed}/{len(seeds)} seeds passed the {profile.gate} gate (required: {needed}/{len(seeds)})")
+    return 0 if passed >= needed else 1
 
 
 if __name__ == "__main__":

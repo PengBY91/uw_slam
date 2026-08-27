@@ -225,6 +225,83 @@ TEST(LiveEventSource, CameraDropOldestKeepsTheTwoNewestEvents) {
   EXPECT_EQ(stats.mapping.dropped_oldest_count, 1u);
 }
 
+// docs/rov-realtime-closed-loop-code-review-2026-08-27.md findings B3/C3:
+// lanes had capacity + overflow policy but no max-residence-time dimension
+// -- a message already past the system's own data-age budget would still
+// be fully handed to the (potentially expensive) consumer before being
+// discarded downstream. max_residence_s now drops it at pop time instead.
+TEST(LiveEventSource, DropsStaleMappingEventBeforeDeliveryButKeepsFreshOne) {
+  FakeClocks clocks;
+  auto config = clocks.Config();
+  config.mapping = {8, OverflowPolicy::kDropOldest, 0.5};  // 500ms residence budget
+  LiveEventSource source(config);
+
+  ASSERT_EQ(source.Submit(MakeImageEvent(1, 1)), LiveSubmitStatus::kAccepted);
+  clocks.AdvanceMs(600);  // event 1 is now 600ms old -- past the 500ms budget
+  ASSERT_EQ(source.Submit(MakeImageEvent(2, 2)), LiveSubmitStatus::kAccepted);  // ingressed fresh
+  source.Close();
+
+  std::vector<uint64_t> delivered;
+  const auto report = source.Run([&](const CanonicalEvent& event) {
+    delivered.push_back(event.source_sequence);
+    return true;
+  });
+  EXPECT_EQ(report.status, EventSourceStatus::kCompleted);
+  EXPECT_EQ(delivered, (std::vector<uint64_t>{2}));
+  EXPECT_EQ(source.Stats().stale_dropped_count, 1u);
+  // Folded into dropped_frame_count alongside overflow-time drops -- both
+  // mean "this lane lost a message", just at different points in its life.
+  EXPECT_EQ(source.HealthReports()[2].dropped_frame_count(), 1u);
+}
+
+TEST(LiveEventSource, EventWithinResidenceBudgetIsNeverDropped) {
+  FakeClocks clocks;
+  auto config = clocks.Config();
+  config.mapping = {8, OverflowPolicy::kDropOldest, 0.5};
+  LiveEventSource source(config);
+
+  ASSERT_EQ(source.Submit(MakeImageEvent(1, 1)), LiveSubmitStatus::kAccepted);
+  clocks.AdvanceMs(100);  // comfortably inside the 500ms budget
+  source.Close();
+
+  std::vector<uint64_t> delivered;
+  source.Run([&](const CanonicalEvent& event) {
+    delivered.push_back(event.source_sequence);
+    return true;
+  });
+  EXPECT_EQ(delivered, (std::vector<uint64_t>{1}));
+  EXPECT_EQ(source.Stats().stale_dropped_count, 0u);
+}
+
+TEST(LiveEventSource, UnboundedLaneNeverStaleDropsRegardlessOfAge) {
+  // localization defaults to no residence budget (nullopt) -- see
+  // LiveSourceConfig's own doc comment for why (kReject already provides
+  // explicit backpressure for this lane; cheap-to-process besides).
+  FakeClocks clocks;
+  LiveEventSource source(clocks.Config());
+
+  ASSERT_EQ(source.Submit(MakeVehicleEvent(1, 1)), LiveSubmitStatus::kAccepted);
+  clocks.AdvanceMs(60'000);  // one minute old -- still must be delivered
+  source.Close();
+
+  std::vector<uint64_t> delivered;
+  source.Run([&](const CanonicalEvent& event) {
+    delivered.push_back(event.source_sequence);
+    return true;
+  });
+  EXPECT_EQ(delivered, (std::vector<uint64_t>{1}));
+  EXPECT_EQ(source.Stats().stale_dropped_count, 0u);
+}
+
+TEST(LiveEventSource, RejectsNonPositiveMaxResidenceAtConstruction) {
+  auto config = LiveSourceConfig::ForTest();
+  config.mapping = {8, OverflowPolicy::kDropOldest, 0.0};
+  EXPECT_THROW(LiveEventSource source(config), std::invalid_argument);
+
+  config.mapping.max_residence_s = -1.0;
+  EXPECT_THROW(LiveEventSource source2(config), std::invalid_argument);
+}
+
 TEST(LiveEventSource, VehicleStateOverflowIsRejected) {
   auto config = LiveSourceConfig::ForTest();
   config.localization = {1, OverflowPolicy::kReject};

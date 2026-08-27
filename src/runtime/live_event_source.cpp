@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <limits>
 #include <stdexcept>
 #include <utility>
@@ -103,10 +104,17 @@ LiveEventSource::LiveEventSource(LiveSourceConfig config)
       correction_(config.correction.capacity, config.correction.overflow_policy),
       mapping_(config.mapping.capacity, config.mapping.overflow_policy),
       evidence_(config.evidence.capacity, config.evidence.overflow_policy),
+      max_residence_s_by_lane_{config.localization.max_residence_s, config.correction.max_residence_s,
+                               config.mapping.max_residence_s, config.evidence.max_residence_s},
       monotonic_now_(std::move(config.monotonic_now)),
       wall_now_(std::move(config.wall_now)) {
   if (!monotonic_now_ || !wall_now_) {
     throw std::invalid_argument("live-source clock callbacks must be provided");
+  }
+  for (const auto& budget : max_residence_s_by_lane_) {
+    if (budget.has_value() && (!std::isfinite(*budget) || *budget <= 0.0)) {
+      throw std::invalid_argument("LaneQueueConfig::max_residence_s must be finite and positive");
+    }
   }
 }
 
@@ -237,6 +245,26 @@ EventSourceReport LiveEventSource::Run(const EventConsumer& consumer) {
     }
     lock.unlock();
     const MonotonicTime pop_time = monotonic_now_();
+
+    // Dropped BEFORE the (potentially expensive) consumer callback runs,
+    // per FUS-Q-004 -- but only after PopNextLocked already committed to
+    // this item under lock, same as every other path here: a concurrently-
+    // arriving higher-priority event must never preempt an item this class
+    // already selected for delivery, staleness-dropped or not (see
+    // LiveEventSourceHealth.DequeuesBeforeSamplingClocksWhenAHigherPriority
+    // EventArrivesConcurrently, which pins down that exact ordering).
+    const auto max_residence_s = MaxResidenceSForLane(popped->lane);
+    if (max_residence_s.has_value()) {
+      const double age_s =
+          std::chrono::duration<double>(pop_time - popped->ingress_time).count();
+      if (age_s > *max_residence_s) {
+        lock.lock();
+        ++stats_.stale_dropped_count;
+        ++stale_dropped_counts_[LaneIndex(popped->lane)];
+        continue;
+      }
+    }
+
     const auto processed_time = wall_now_();
     const double residence_ms = std::max(
         0.0, std::chrono::duration<double, std::milli>(pop_time - popped->ingress_time)
@@ -285,7 +313,8 @@ std::array<uw::domain::HealthReport, 4> LiveEventSource::HealthReports() const {
     report.set_queue_depth(SaturatingUint32(queue_stats.current_depth));
     report.set_queue_high_watermark(SaturatingUint32(queue_stats.high_watermark));
     report.set_dropped_frame_count(queue_stats.dropped_oldest_count +
-                                   queue_stats.dropped_newest_count);
+                                   queue_stats.dropped_newest_count +
+                                   stale_dropped_counts_[index]);
     report.set_rejected_frame_count(rejected_frame_counts_[index]);
     report.set_sequence_gap_count(sequence_gap_counts_[index]);
     report.set_latency_p50_ms(latency.p50_ms);
@@ -324,25 +353,31 @@ PushResult LiveEventSource::PushLocked(Lane lane, QueuedEvent event) {
   throw std::logic_error("unknown live-source lane");
 }
 
+std::optional<LiveEventSource::QueuedEvent> LiveEventSource::TryPopLocked(Lane lane) {
+  switch (lane) {
+    case Lane::kLocalization:
+      return localization_.TryPop();
+    case Lane::kCorrection:
+      return correction_.TryPop();
+    case Lane::kMapping:
+      return mapping_.TryPop();
+    case Lane::kEvidence:
+      return evidence_.TryPop();
+  }
+  throw std::logic_error("unknown live-source lane");
+}
+
+std::optional<double> LiveEventSource::MaxResidenceSForLane(Lane lane) const {
+  // No lock needed: max_residence_s_by_lane_ is populated once at
+  // construction and never mutated afterward.
+  return max_residence_s_by_lane_[LaneIndex(lane)];
+}
+
 std::optional<LiveEventSource::PoppedEvent> LiveEventSource::PopNextLocked() {
   for (std::size_t offset = 0; offset < kWeightedSchedule.size(); ++offset) {
     const std::size_t index = (schedule_cursor_ + offset) % kWeightedSchedule.size();
     const Lane lane = kWeightedSchedule[index];
-    std::optional<QueuedEvent> event;
-    switch (lane) {
-      case Lane::kLocalization:
-        event = localization_.TryPop();
-        break;
-      case Lane::kCorrection:
-        event = correction_.TryPop();
-        break;
-      case Lane::kMapping:
-        event = mapping_.TryPop();
-        break;
-      case Lane::kEvidence:
-        event = evidence_.TryPop();
-        break;
-    }
+    std::optional<QueuedEvent> event = TryPopLocked(lane);
     if (event.has_value()) {
       schedule_cursor_ = (index + 1) % kWeightedSchedule.size();
       --queued_count_;

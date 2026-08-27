@@ -109,6 +109,7 @@ add_executable(adapters_tests
   tests/adapters/svin_bridge_test.cpp
   tests/adapters/holoocean_ros_bridge_sonar_frame_provider_test.cpp
   tests/adapters/holoocean_live_conversion_test.cpp
+  tests/adapters/sim_wall_clock_estimator_test.cpp
   tests/adapters/opencv_stereo_rectifier_test.cpp
   tests/adapters/opencv_visual_assist_frontend_test.cpp
   tests/adapters/operator_overlay_renderer_test.cpp

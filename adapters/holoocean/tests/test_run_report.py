@@ -46,6 +46,16 @@ def valid_overload_report():
     )
 
 
+def test_incomplete_report_raises_gate_failure_not_key_error():
+    # docs/rov-realtime-closed-loop-code-review-2026-08-27.md finding A2:
+    # run_gate() used to return a report missing ~20 required fields, and
+    # evaluate_gate's first plain report[...] lookup crashed with an
+    # uncaught KeyError instead of a named, catchable GateFailure.
+    incomplete = {"profile": "nominal", "seed": 1, "task_id": "t", "duration_s": 1.0}
+    with pytest.raises(GateFailure, match="result_age_p95_ms"):
+        evaluate_gate(incomplete, nominal_gate())
+
+
 def test_nominal_gate_rejects_old_results_and_memory_growth():
     report = valid_nominal_report()
     report["result_age_p95_ms"] = 251.0

@@ -13,7 +13,7 @@ namespace {
 
 uw::domain::SonarFrame MakeSyntheticFrame(int num_ranges, int num_beams, double range_resolution,
                                            int target_row, int target_col, uint8_t background = 5,
-                                           uint8_t foreground = 200) {
+                                           uint8_t foreground = 200, int column_half_width = 1) {
   uw::domain::SonarFrame frame;
   frame.mutable_header()->mutable_sensor_frame()->set_value("sonar_link");
   frame.mutable_header()->mutable_observation_id()->set_value("obs_1");
@@ -38,7 +38,7 @@ uw::domain::SonarFrame MakeSyntheticFrame(int num_ranges, int num_beams, double 
   // point total — DBSCAN (min_samples=2) can never cluster a lone point.
   // Real targets have finite angular extent, so spreading across columns
   // here matches physical reality, not just what the pipeline needs.
-  for (int dc = -1; dc <= 1; ++dc) {
+  for (int dc = -column_half_width; dc <= column_half_width; ++dc) {
     const int c = target_col + dc;
     if (c < 0 || c >= num_beams) continue;
     if (target_row >= 0 && target_row < num_ranges) {
@@ -92,6 +92,62 @@ TEST(SonarCfarFrontend, DetectsSyntheticTargetNearExpectedRangeBearing) {
   const double expected_bearing = frame.azimuth_angles(kTargetCol);
   EXPECT_NEAR(first.range_m(), expected_range, kRangeResolution * 2);
   EXPECT_NEAR(first.bearing_rad(), expected_bearing, 0.05);
+}
+
+// docs/rov-realtime-closed-loop-code-review-2026-08-27.md finding D3: every
+// detection used to report the same fixed default_bearing_sigma_rad/
+// default_range_sigma_m regardless of cluster spread, over-trusting sonar
+// relative to vision in TargetAssociator::Fuse() whenever a cluster was
+// genuinely more spread out (coarser beam resolution, low SNR) than the
+// default assumed.
+TEST(SonarCfarFrontend, WiderClusterReportsLargerSigmaThanDefault) {
+  constexpr int kNumRanges = 64;
+  constexpr int kNumBeams = 32;
+  constexpr double kRangeResolution = 0.1;
+  constexpr int kTargetRow = 40;
+  constexpr int kTargetCol = 16;
+
+  // 7 columns wide (half_width=3) vs the narrow 3-column baseline --
+  // clearly more angular spread than a tight, well-resolved detection.
+  const auto frame = MakeSyntheticFrame(kNumRanges, kNumBeams, kRangeResolution, kTargetRow,
+                                        kTargetCol, /*background=*/5, /*foreground=*/200,
+                                        /*column_half_width=*/3);
+
+  auto params = TestCfarParams();  // default_bearing_sigma_rad=0.01, default_range_sigma_m=0.05
+  SonarCfarFrontend frontend(params);
+  const auto hypotheses = frontend.ProcessSonarFrame(frame);
+
+  ASSERT_GT(hypotheses.candidates_size(), 0);
+  const auto& measurement =
+      uw::domain::GetPayload<uw::domain::SonarRangeBearing>(hypotheses.candidates(0));
+  EXPECT_GT(measurement.bearing_sigma_rad(), params.default_bearing_sigma_rad);
+}
+
+TEST(SonarCfarFrontend, WiderClusterReportsLargerSigmaThanNarrowerCluster) {
+  constexpr int kNumRanges = 64;
+  constexpr int kNumBeams = 32;
+  constexpr double kRangeResolution = 0.1;
+  constexpr int kTargetRow = 40;
+  constexpr int kTargetCol = 16;
+
+  const auto narrow_frame = MakeSyntheticFrame(kNumRanges, kNumBeams, kRangeResolution, kTargetRow,
+                                               kTargetCol, 5, 200, /*column_half_width=*/1);
+  const auto wide_frame = MakeSyntheticFrame(kNumRanges, kNumBeams, kRangeResolution, kTargetRow,
+                                             kTargetCol, 5, 200, /*column_half_width=*/4);
+
+  auto params = TestCfarParams();
+  SonarCfarFrontend narrow_frontend(params);
+  SonarCfarFrontend wide_frontend(params);
+  const auto narrow_hypotheses = narrow_frontend.ProcessSonarFrame(narrow_frame);
+  const auto wide_hypotheses = wide_frontend.ProcessSonarFrame(wide_frame);
+
+  ASSERT_GT(narrow_hypotheses.candidates_size(), 0);
+  ASSERT_GT(wide_hypotheses.candidates_size(), 0);
+  const auto& narrow =
+      uw::domain::GetPayload<uw::domain::SonarRangeBearing>(narrow_hypotheses.candidates(0));
+  const auto& wide =
+      uw::domain::GetPayload<uw::domain::SonarRangeBearing>(wide_hypotheses.candidates(0));
+  EXPECT_GT(wide.bearing_sigma_rad(), narrow.bearing_sigma_rad());
 }
 
 TEST(SonarCfarFrontend, RejectsNonAscendingAzimuth) {

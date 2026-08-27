@@ -23,6 +23,17 @@ struct TargetTrackerParams {
   double range_acceleration_noise = 0.5;
   double merge_bearing_threshold_rad = 0.03;
   double merge_range_threshold_m = 0.30;
+  // A track that has gone this long without a hit is erased from tracks_
+  // entirely, not just marked STALE. Deliberately much larger than
+  // stale_after_s: a track that reappears shortly after going stale should
+  // still resume its existing ID rather than immediately getting a fresh
+  // one, so this needs real slack, not just "a moment longer than stale".
+  // Without this, a single unconfirmed spurious detection (a false CFAR
+  // hit, transient visual noise) that never merges into a real track would
+  // sit in tracks_ forever, growing memory and per-publish Predict() cost
+  // without bound over a multi-hour run -- see
+  // docs/rov-realtime-closed-loop-code-review-2026-08-27.md finding C2.
+  double retention_after_s = 5.0;
 };
 
 struct TrackedTarget {
@@ -62,7 +73,8 @@ class TargetTracker {
             config.bearing_acceleration_noise,
             config.range_acceleration_noise,
             config.merge_bearing_threshold_rad,
-            config.merge_range_threshold_m}) {}
+            config.merge_range_threshold_m,
+            config.retention_after_s}) {}
 
   // A batch is atomic: invalid/non-finite/out-of-order input returns false
   // and does not mutate IDs, tracks, or the monotonic time watermark.
@@ -72,6 +84,11 @@ class TargetTracker {
 
  private:
   struct Track;
+  // Erases any track whose last_capture_time_s is more than
+  // retention_after_s behind reference_time_s. Called at the end of every
+  // Update() branch with that branch's own natural reference time.
+  void PruneExpired(double reference_time_s);
+
   TargetTrackerParams params_;
   uint64_t next_track_id_ = 1;
   std::optional<double> last_update_time_s_;

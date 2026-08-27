@@ -110,6 +110,9 @@ struct TargetTrackerConfig {
   double range_acceleration_noise = 0.5;
   double merge_bearing_threshold_rad = 0.03;
   double merge_range_threshold_m = 0.30;
+  // See frontends::TargetTrackerParams::retention_after_s's own doc
+  // comment -- a track idle this long is erased, not just marked STALE.
+  double retention_after_s = 5.0;
 };
 
 // Gates OnlineAssistPipeline's local dense stereo depth completion (block
@@ -132,6 +135,19 @@ struct OnlineAssistPipelineConfig {
   OnlineAssistDenseConfig dense;
   double vehicle_state_stale_after_s = 0.5;
   double modality_stale_after_s = 1.0;
+  // Minimum wall-clock gap between two HMI publishes (state render + JSON
+  // status serialization). Every OnImageFrame/OnSonarFrame/OnVehicleState/
+  // OnHealthReport call still updates internal tracking state immediately
+  // regardless of this gate -- only the (comparatively expensive) publish
+  // to AssistOutputSink is throttled. Without this, the highest-rate input
+  // (vehicle state, up to 100 Hz overload) drove a full HMI overlay
+  // render + JSON rebuild on every single message -- see
+  // docs/rov-realtime-closed-loop-code-review-2026-08-27.md finding C1.
+  // Default 0.1s (10 Hz) matches FUS-RT-003's nominal target/HMI update
+  // rate; Flush() and UpdateRig()'s "recovering" transition always publish
+  // regardless of this gate (a shutdown flush or a calibration-change
+  // state transition must never be silently delayed by throttling).
+  double min_publish_interval_s = 0.1;
 };
 
 struct VisualOdometryConfig {

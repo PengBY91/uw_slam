@@ -21,16 +21,49 @@
 
 #include "adapters/opencv_visual_assist_frontend.hpp"
 #include "adapters/operator_overlay_renderer.hpp"
+#include "adapters/sim_wall_clock_estimator.hpp"
 #include "application/assist_output_sink.hpp"
 #include "application/event_pump.hpp"
 #include "application/online_assist_pipeline.hpp"
 #include "application/pipeline_input_port.hpp"
+#include "application/replay_pipeline.hpp"
 #include "frontends/sonar_cfar_frontend.hpp"
 #include "runtime/canonical_topics.hpp"
+#include "runtime/config.hpp"
 #include "runtime/live_event_source.hpp"
 
 namespace uw::adapters {
 namespace {
+
+uw::domain::RigCalibrationSnapshot ResolveRig(const HoloOceanRealtimeSinkConfig& config) {
+  if (config.rig_config_path.empty()) {
+    std::cerr << "holoocean_realtime_sink: WARNING no rig_config_path parameter given -- using "
+                 "a placeholder identity-extrinsic rig. Every bearing/range projection is "
+                 "geometrically wrong until a real calibrated rig is supplied; this run must "
+                 "not be treated as real-machine acceptance evidence (FUS-CAL-001).\n";
+    return config.fallback_rig;
+  }
+  // Deliberately NOT caught here: an operator who explicitly set
+  // rig_config_path and got a load failure should see the node fail to
+  // start, not silently fall back to the (wrong) placeholder rig above.
+  return uw::runtime::LoadRigConfig(config.rig_config_path);
+}
+
+// Same policy as ResolveRig above, for sonar CFAR/clustering + target
+// association/tracker + degradation-timing parameters (FUS-AC-002): empty
+// path -> hardcoded struct defaults + loud warning; set-but-broken path ->
+// hard error, not a silent fallback.
+uw::runtime::PlatformDefaultsConfig ResolvePlatformDefaults(const HoloOceanRealtimeSinkConfig& config) {
+  if (config.platform_config_path.empty()) {
+    std::cerr << "holoocean_realtime_sink: WARNING no platform_config_path parameter given -- "
+                 "using hardcoded C++ defaults for sonar CFAR/clustering, target association/"
+                 "tracker gates and degradation timing instead of a versioned config file "
+                 "(FUS-AC-002). Editing configs/defaults/platform.yaml has no effect on this "
+                 "run until platform_config_path is set.\n";
+    return uw::runtime::PlatformDefaultsConfig{};
+  }
+  return uw::runtime::LoadPlatformDefaultsConfig(config.platform_config_path);
+}
 
 int64_t SteadyNowNs() {
   const auto count = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -188,19 +221,30 @@ class ForwardingPort final : public uw::application::PipelineInputPort {
 
 class OnlineAssistRealtimeSink final : public HoloOceanRealtimeSink {
  public:
-  OnlineAssistRealtimeSink(HoloOceanRealtimeOutput& output, uw::domain::RigCalibrationSnapshot rig)
-      : source_(uw::runtime::LiveSourceConfig{}),
+  OnlineAssistRealtimeSink(HoloOceanRealtimeOutput& output, HoloOceanRealtimeSinkConfig config)
+      : platform_defaults_(ResolvePlatformDefaults(config)),
+        source_(uw::runtime::LiveSourceConfig{}),
         visual_frontend_((uw::opencv_adapters::VisualAssistParams{})),
-        sonar_frontend_((uw::frontends::SonarCfarFrontendParams{})),
+        sonar_frontend_(uw::application::BuildSonarCfarFrontendParams(platform_defaults_.sonar_frontend)),
         output_sink_(output) {
     uw::application::OnlineAssistPipelineDependencies deps;
-    deps.rig = std::move(rig);
+    deps.rig = ResolveRig(config);
     deps.visual_frontend = &visual_frontend_;
     deps.sonar_frontend = &sonar_frontend_;
     deps.dense_depth_provider = nullptr;  // dense stays disabled -- matches every app in this repo so far
+    deps.target_association = platform_defaults_.target_association;
+    deps.target_tracker = platform_defaults_.target_tracker;
+    deps.pipeline = platform_defaults_.online_assist;
     deps.pipeline.dense.enabled = false;
     deps.sink = &output_sink_;
-    deps.now = [] { return uw::domain::ToStamp(std::chrono::system_clock::now()); };
+    // capture_time on every sensor header arriving through this sink is
+    // CLOCK_DOMAIN_SIMULATION (see holoocean_live_conversion.cpp), not wall
+    // time -- wiring `now` straight to system_clock::now() here would make
+    // every staleness/degradation check compare a ~0s sim timestamp against
+    // a ~1.7e9s Unix timestamp and report itself permanently unavailable
+    // from the first tick. sim_clock_ bridges the two domains; see
+    // include/adapters/sim_wall_clock_estimator.hpp.
+    deps.now = [this] { return sim_clock_.EstimateNow(); };
     pipeline_ = std::make_unique<uw::application::OnlineAssistPipeline>(std::move(deps));
     port_ = std::make_unique<ForwardingPort>(*pipeline_);
 
@@ -259,6 +303,12 @@ class OnlineAssistRealtimeSink final : public HoloOceanRealtimeSink {
  private:
   template <typename Payload>
   void Submit(const char* topic, Payload payload) {
+    // Anchors sim_clock_ using this message's own capture_time before it is
+    // moved into the queue -- ingestion time is exactly when we can pair a
+    // fresh (sim capture, wall receipt) sample, and doing it here (not on
+    // the pump thread that later processes the event) keeps the anchor as
+    // current as possible.
+    sim_clock_.Observe(payload.header());
     const auto status = source_.Submit(
         {topic, static_cast<uint64_t>(SteadyNowNs()), ++source_sequence_, std::move(payload)});
     if (status == uw::runtime::LiveSubmitStatus::kClosed) {
@@ -269,6 +319,11 @@ class OnlineAssistRealtimeSink final : public HoloOceanRealtimeSink {
     }
   }
 
+  uw::adapters::SimWallClockEstimator sim_clock_;
+  // Declared before sonar_frontend_ (member init order follows declaration
+  // order, not initializer-list order) -- sonar_frontend_'s initializer
+  // reads platform_defaults_.sonar_frontend.
+  uw::runtime::PlatformDefaultsConfig platform_defaults_;
   uw::runtime::LiveEventSource source_;
   uw::opencv_adapters::OpenCvVisualAssistFrontend visual_frontend_;
   uw::frontends::SonarCfarFrontend sonar_frontend_;
@@ -283,8 +338,8 @@ class OnlineAssistRealtimeSink final : public HoloOceanRealtimeSink {
 }  // namespace
 
 std::unique_ptr<HoloOceanRealtimeSink> MakeOnlineAssistRealtimeSink(
-    HoloOceanRealtimeOutput& output, uw::domain::RigCalibrationSnapshot rig) {
-  return std::make_unique<OnlineAssistRealtimeSink>(output, std::move(rig));
+    HoloOceanRealtimeOutput& output, HoloOceanRealtimeSinkConfig config) {
+  return std::make_unique<OnlineAssistRealtimeSink>(output, std::move(config));
 }
 
 }  // namespace uw::adapters

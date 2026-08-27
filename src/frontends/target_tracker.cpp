@@ -43,7 +43,9 @@ bool ValidParams(const TargetTrackerParams& params) {
          FinitePositive(params.bearing_acceleration_noise) &&
          FinitePositive(params.range_acceleration_noise) &&
          FinitePositive(params.merge_bearing_threshold_rad) &&
-         FinitePositive(params.merge_range_threshold_m);
+         FinitePositive(params.merge_range_threshold_m) &&
+         FinitePositive(params.retention_after_s) &&
+         params.retention_after_s > params.stale_after_s;
 }
 
 bool ValidCovariance(const Eigen::Matrix2d& covariance, bool has_range) {
@@ -417,6 +419,15 @@ TargetTracker::TargetTracker(TargetTrackerParams params) : params_(params) {
 
 TargetTracker::~TargetTracker() = default;
 
+void TargetTracker::PruneExpired(double reference_time_s) {
+  tracks_.erase(std::remove_if(tracks_.begin(), tracks_.end(),
+                               [&](const Track& track) {
+                                 return reference_time_s - track.target.last_capture_time_s >
+                                        params_.retention_after_s;
+                               }),
+               tracks_.end());
+}
+
 bool TargetTracker::Update(const std::vector<TargetMeasurement>& detections,
                            double now_s) {
   if (!ValidStampSeconds(now_s) ||
@@ -458,6 +469,7 @@ bool TargetTracker::Update(const std::vector<TargetMeasurement>& detections,
         track.target.status = uw::domain::TARGET_TRACK_STATUS_DEGRADED;
       }
     }
+    PruneExpired(now_s);
     last_update_time_s_ = now_s;
     return true;
   }
@@ -628,6 +640,7 @@ bool TargetTracker::Update(const std::vector<TargetMeasurement>& detections,
     accepted_observation_ids_.insert(batch_observation_ids.begin(),
                                      batch_observation_ids.end());
   }
+  PruneExpired(batch_capture_time_s);
   std::sort(tracks_.begin(), tracks_.end(), [](const auto& lhs, const auto& rhs) {
     return lhs.target.numeric_id < rhs.target.numeric_id;
   });

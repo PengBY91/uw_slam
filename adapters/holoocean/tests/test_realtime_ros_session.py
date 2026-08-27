@@ -27,6 +27,34 @@ def test_only_publishes_sensors_present_this_tick():
     assert topics.clock in published_topics
 
 
+def test_pose_sensor_present_publishes_ground_truth_topic():
+    identity_pose = np.eye(4)
+    identity_pose[:3, 3] = [1.0, 2.0, 3.0]
+    frame = RawSensorFrame(
+        sim_time_s=1.0, receive_time_s=1.0,
+        sensors={"LeftCamera": _camera_frame(), "PoseSensor": identity_pose},
+    )
+    topics = build_topic_map()
+    messages = build_realtime_messages(
+        frame, topics, fake_message_types(), rng=np.random.default_rng(1),
+    )
+    truth_messages = [msg for topic, msg in messages if topic == topics.scoring_truth]
+    assert len(truth_messages) == 1
+    assert truth_messages[0].pose.pose.position.x == pytest.approx(1.0)
+    assert truth_messages[0].pose.pose.position.y == pytest.approx(2.0)
+    assert truth_messages[0].pose.pose.position.z == pytest.approx(3.0)
+
+
+def test_pose_sensor_absent_publishes_no_ground_truth_topic():
+    frame = RawSensorFrame(sim_time_s=1.0, receive_time_s=1.0, sensors={"LeftCamera": _camera_frame()})
+    topics = build_topic_map()
+    messages = build_realtime_messages(
+        frame, topics, fake_message_types(), rng=np.random.default_rng(1),
+    )
+    published_topics = {topic for topic, _ in messages}
+    assert topics.scoring_truth not in published_topics
+
+
 def test_vehicle_state_requires_all_three_source_sensors():
     frame = RawSensorFrame(
         sim_time_s=1.0, receive_time_s=1.0,
