@@ -632,3 +632,101 @@ TEST(OnlineAssistPipeline, CalibrationChangeResetsAndRecovers) {
   EXPECT_TRUE(recovered->guidance_valid());
   EXPECT_NE(recovered->system_health().reason_code(), "recovering");
 }
+
+// docs/rov-realtime-closed-loop-code-review-2026-08-27.md finding B5:
+// FUS-HEALTH-002's "recovery must not silently reuse pre-fault cached
+// state" was only ever enforced on a calibration-version change
+// (UpdateRig). A plain sensor dropout+recovery had no equivalent -- this
+// extends the SAME recovering_ gate to visual/sonar modality recovery,
+// without the full associator/tracker reset UpdateRig does (a modality
+// blip doesn't invalidate rig geometry the way a calibration change does).
+//
+// This checks modality_recovery_count rather than trying to catch
+// sink.Latest() showing STATUS_RECOVERING at some exact intermediate tick:
+// TargetTracker's hits counter never resets on a miss/staleness (only
+// consecutive_misses does), and neither Predict() nor the stale/retention
+// pruning in finding C2 ever run for a modality that receives literally no
+// frames (they're driven by TargetTracker::Update(), only reachable via
+// FlushAssociation(), only called from RunVisualDetection/
+// RunSonarDetection) -- so a track that was CONFIRMED before a total
+// silence gap can legitimately re-associate and reconfirm on the very
+// first post-gap detection (one call, same tick) with these fixture
+// frontends, which always report a fixed boresight bearing. That is not a
+// bug: recovering_ still did its job (gating guidance on that first,
+// immediately-reconfirmed hit rather than trusting it unconditionally);
+// it is just not reliably observable as a separate published tick from
+// outside. The counter is what reliably proves the trigger itself fired.
+TEST(OnlineAssistPipeline, ModalityDropoutRecoveryIncrementsRecoveryCounter) {
+  FakeClock clock;
+  LatestAssistSink sink;
+  FakeVisualAssistFrontend visual;
+  FakeSonarFrontend sonar;
+  OnlineAssistPipeline pipeline(TestPipelineDependencies(clock, sink, visual, sonar,
+                                                         /*dense_provider=*/nullptr,
+                                                         /*dense_enabled=*/false));
+
+  FeedSynchronizedVehicleStereoSonar(pipeline, clock, 2.0);
+  ASSERT_TRUE(sink.Latest().has_value());
+  ASSERT_EQ(sink.Latest()->target_tracks().tracks_size(), 1);
+  EXPECT_TRUE(sink.Latest()->guidance_valid());
+  EXPECT_EQ(pipeline.Diagnostics().modality_recovery_count, 0u);
+
+  // Both visual and sonar go silent for well over modality_stale_after_s
+  // (1.0s) -- vehicle state keeps flowing throughout so vehicle_state_stale
+  // doesn't mask what this test is checking.
+  double t = 2.0;
+  uint64_t sequence = 100000;
+  for (int i = 0; i < 100; ++i) {  // 2.0s of state-only silence
+    clock.Set(t);
+    pipeline.OnVehicleState(MakeVehicleStateEvent(t, sequence));
+    ++sequence;
+    t += 0.02;
+  }
+
+  // Resume both modalities together -- each independently exceeded its own
+  // stale threshold, so both triggers should fire (visual via
+  // RunVisualDetection, sonar via RunSonarDetection).
+  clock.Set(t);
+  pipeline.OnVehicleState(MakeVehicleStateEvent(t, sequence));
+  pipeline.OnImageFrame(
+      MakeImageEvent("camera_left", "camera_left_link", uw::runtime::kTopicCameraLeft, t, sequence));
+  pipeline.OnImageFrame(
+      MakeImageEvent("camera_right", "camera_right_link", uw::runtime::kTopicCameraRight, t, sequence));
+  pipeline.OnSonarFrame(MakeSonarEvent(t, sequence));
+
+  EXPECT_EQ(pipeline.Diagnostics().modality_recovery_count, 2u);
+
+  // The system must not be left permanently gated off by this -- guidance
+  // resumes once the (in this fixture, immediately) reconfirmed track
+  // publishes.
+  pipeline.Flush();
+  const auto recovered = sink.Latest();
+  ASSERT_TRUE(recovered.has_value());
+  EXPECT_TRUE(recovered->guidance_valid());
+}
+
+TEST(OnlineAssistPipeline, ShortModalityGapBelowStaleThresholdDoesNotEnterRecovering) {
+  FakeClock clock;
+  LatestAssistSink sink;
+  FakeVisualAssistFrontend visual;
+  FakeSonarFrontend sonar;
+  OnlineAssistPipeline pipeline(TestPipelineDependencies(clock, sink, visual, sonar,
+                                                         /*dense_provider=*/nullptr,
+                                                         /*dense_enabled=*/false));
+
+  FeedSynchronizedVehicleStereoSonar(pipeline, clock, 2.0);
+  ASSERT_TRUE(sink.Latest().has_value());
+  EXPECT_TRUE(sink.Latest()->guidance_valid());
+
+  // A gap comfortably under modality_stale_after_s (1.0s) is routine
+  // scheduling jitter, not a dropout -- must never trip recovering_.
+  const double t = 2.3;
+  clock.Set(t);
+  pipeline.OnSonarFrame(MakeSonarEvent(t, 99999));
+
+  EXPECT_EQ(pipeline.Diagnostics().modality_recovery_count, 0u);
+  const auto latest = sink.Latest();
+  ASSERT_TRUE(latest.has_value());
+  EXPECT_NE(latest->system_health().status(), uw::domain::HealthReport::STATUS_RECOVERING);
+  EXPECT_NE(latest->system_health().reason_code(), "recovering");
+}

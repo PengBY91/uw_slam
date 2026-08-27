@@ -347,7 +347,45 @@
   时间表"——特定时间窗口内切到扰动参数值再切回，通过重启渲染管线的轻量参数而非改变整个
   场景来模拟"故障期"）。
 
-### B5. 一般性传感器掉线恢复缺显式重确认状态
+### B5. 一般性传感器掉线恢复缺显式重确认状态 [已修复 2026-08-27]
+
+> 修复方式：新增私有方法 `MarkRecoveringIfModalityWasDropped(last_capture_s,
+> new_capture_s)`，在 `RunVisualDetection`/`RunSonarDetection` 开头调用——
+> 比较这次检测的 capture time 和该模态**上一次**检测的 capture time
+> 之间的间隔，超过 `modality_stale_after_s` 就复用 `UpdateRig()` 已有的
+> `recovering_` 标志位。**刻意没有**像标定变化那样做
+> `fusion_.emplace(...)`/`pending_*.clear()` 全量重置——模态短暂中断不会
+> 让 rig 几何失效，也不该连带清掉另一个模态还在正常跟踪的航迹；
+> `FlushAssociation()` 里已有的"任一航迹重新变成 CONFIRMED 才清除
+> recovering_"逻辑本身就是 FUS-HEALTH-002 要的"重新确认"闸门，不需要
+> 额外清缓存。用的是 capture-time 间隔（同一模态两次检测之间的采集时间
+> 差），不是 wall-clock staleness，这样和排队/处理延迟无关，只反映
+> "这个模态自己的采集节奏真的断过"。
+>
+> **写测试时才发现的真实边界情况**：`TargetTracker` 的 `hits` 计数器
+> 只会累加、永远不会因为 miss/STALE 被清零，而且 `Predict()`/C2 的
+> 过期裁剪都只在 `TargetTracker::Update()` 里跑，`Update()` 只有
+> `FlushAssociation()` 会调用，`FlushAssociation()` 只有
+> `RunVisualDetection`/`RunSonarDetection` 会调用——如果某个模态完全
+> 停止收帧（不是"收到帧但没检测到目标"），它的航迹会在停摆期间被
+> 完全冻结（既不被裁剪也不被判 STALE），一旦恢复、只要第一条新检测
+> 还是重新关联上这条冻结的老航迹（这次用的测试替身传感器固定在
+> boresight 0.0 输出，几乎必然关联上），就会在**同一个 tick 内**
+> 触发又立刻清除 recovering_——外部通过 `sink.Latest()` 根本看不到
+> 中间态。这不是 bug（recovering_ 确实起了闸门作用，只是这次清除得快），
+> 但让"断言某个具体 tick 一定处于 recovering 状态"的测试变得不可靠。
+> 改成给 `OnlineAssistPipelineDiagnostics` 新增
+> `modality_recovery_count` 计数器，直接、稳定地验证触发条件本身是否
+> 命中，不用去赌 tracker 重新确认的时机。
+>
+> 新增 2 个单测（`ModalityDropoutRecoveryIncrementsRecoveryCounter`
+> 验证真实掉线恢复会让计数器 +2（视觉+声呐各触发一次）且系统最终恢复
+> `guidance_valid`；`ShortModalityGapBelowStaleThresholdDoesNotEnterRecovering`
+> 验证正常调度抖动不会误触发，计数器保持 0）。`application_tests`
+> （新增后 14 例 OnlineAssistPipeline 用例）、完整 CTest 572 例全绿，
+> ROS2 网关重新编译通过。
+
+### B5（原始记录，供追溯）. 一般性传感器掉线恢复缺显式重确认状态
 
 - **证据**：`UpdateRig()`（`online_assist_pipeline.cpp:176-190`）在标定版本变化时会设置
   `recovering_=true`，要求新的 CONFIRMED 航迹出现后才恢复正常状态；但普通的"传感器车道从
@@ -357,7 +395,40 @@
 - **解决思路**：复用已有的 `recovering_` 机制，只是把触发条件从"仅标定变化"扩展到"任意
   传感器车道从 stale→live 的转换"。
 
-### B6. 追溯表个别行引用不实
+### B6. 追溯表个别行引用不实 [已修复 2026-08-27]
+
+> 修复方式：`tools/lint/_build_realtime_traceability_csv.py` 里改了 4 行
+> `ROWS`/`_fus_state` 映射，重新跑该脚本生成 CSV：
+> - **FUS-CAL-001**：原引用是 `apps/online_assist_smoke.cpp (BuildRig)`
+>   （实现文件不是测试）。改成 `tests/frontends/target_associator_test.cpp`
+>   里 `FailsClosedForInvalidCovarianceCalibrationAndFrame`/
+>   `RejectsCyclicOrMultiParentRigInsteadOfChoosingAPath` 两个真正测试
+>   "rig 帧树不可达/成环/多父节点时 fail-closed"的用例，状态升级为
+>   `verified`。
+> - **FUS-CAL-002**：同样问题，改引用
+>   `AppliesRigClockOffsetsAndKeepsUnmatchedSingleSensorMeasurements`
+>   （真正验证了 `time_offset_seconds` 被使用），但如实注明
+>   `calibration_version`/`time_offset_provenance` 本身没有被独立断言过，
+>   状态维持 `implemented` 不虚报为 `verified`。
+> - **FUS-OUT-002**：原引用 `tests/application/*` 是个 glob，不是具体测试；
+>   而且原来点的 `latest_assist_sink.hpp` 其实只是测试用的替身 sink，真正
+>   在线路径的 replace-latest 实现是 `holoocean_realtime_sink.cpp` 的
+>   `RealtimeAssistOutputSink` + ROS2 侧 `rclcpp::QoS(1)`——这两者都没有
+>   直接测试。新增 `tests/application/latest_assist_sink_test.cpp`（3 例，
+>   真正验证"发布两次只留最新一次"）给替身 sink 补上真测试，module 字段
+>   如实写清楚 ROS2 侧实现"未直接测试",不掩盖这个已知的证据缺口。
+> - **SIM-SON-002**：原来的 scenario 字段虚标成"全部四档负载都覆盖"，但
+>   实际上 `blue_rov_aid_sv1213_base.json` 只写死了一个 10Hz（标称档），
+>   压根没有 5Hz 最低档/20Hz 过载档的独立场景文件。改成如实标注只有
+>   `rov_realtime_nominal` 一档，并在 module 字段里明确写"no separate
+>   5Hz-minimum/20Hz-overload scenario variant exists yet"。
+>
+> 跑了 `tools/lint/check_realtime_traceability.py` 确认改完还是全绿（CI
+> 门槛：只检查 `verified` 行的 evidence_path 是真实存在的文件，不检查
+> 引用是否真正对应该需求——这次是手工核对着改的，不是脚本能自动保证的）。
+> `application_tests` 新增 3 例、完整 CTest 570 例全绿。
+
+### B6（原始记录，供追溯）. 追溯表个别行引用不实
 
 - **证据**：`FUS-CAL-001/002`、`FUS-OUT-002`、`SIM-SON-002` 这几行的"test"列引用的是实现
   文件或跑题的测试，不是真正验证该行为的测试。

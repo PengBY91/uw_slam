@@ -196,6 +196,7 @@ class OnlineAssistPipeline::Impl {
  private:
   void RunVisualDetection(const uw::domain::ImageFrame& left_image) {
     const double capture_s = uw::domain::ToSeconds(left_image.header().capture_time());
+    MarkRecoveringIfModalityWasDropped(last_visual_capture_s_, capture_s);
     last_visual_capture_s_ = capture_s;
     const auto* intrinsics = FindCamera(rig_, left_image.header().sensor_id().value());
     if (!intrinsics) return;
@@ -240,6 +241,7 @@ class OnlineAssistPipeline::Impl {
 
   void RunSonarDetection(const uw::domain::SonarFrame& sonar) {
     const double capture_s = uw::domain::ToSeconds(sonar.header().capture_time());
+    MarkRecoveringIfModalityWasDropped(last_sonar_capture_s_, capture_s);
     last_sonar_capture_s_ = capture_s;
 
     const auto hypotheses = sonar_frontend_->ProcessSonarFrame(sonar);
@@ -256,6 +258,33 @@ class OnlineAssistPipeline::Impl {
   bool SonarRecentlyLive(double capture_s) const {
     return last_sonar_capture_s_.has_value() &&
           (capture_s - *last_sonar_capture_s_) <= pipeline_config_.modality_stale_after_s;
+  }
+
+  // FUS-HEALTH-002: recovery from a sensor dropout must not silently reuse
+  // pre-fault cached state as if the stream had never broken -- a track
+  // must go through reconfirmation (or an explicit recovering status)
+  // before guidance is trusted again. Previously this only ever happened
+  // on a calibration-version change (UpdateRig, which forces a full
+  // associator/tracker reset because the rig geometry itself changed); a
+  // plain single-modality dropout+recovery had no equivalent, relying
+  // implicitly on Kalman covariance growth during the gap instead of an
+  // explicit gate. This sets the SAME recovering_ flag UpdateRig uses, but
+  // deliberately does NOT reset fusion_/pending_*/dense state the way
+  // UpdateRig does -- a modality blip doesn't invalidate rig geometry or
+  // an unrelated modality's still-good tracks, so a full reset would be
+  // needlessly destructive; the reconfirmation gate itself (see
+  // FlushAssociation's any_confirmed check) is what FUS-HEALTH-002 asks
+  // for. Compares capture-time gap, not wall-clock staleness against
+  // "now": this measures whether consecutive detections from this
+  // modality were more than modality_stale_after_s apart in their own
+  // sensor-time cadence, independent of any queueing/processing delay.
+  void MarkRecoveringIfModalityWasDropped(const std::optional<double>& last_capture_s,
+                                          double new_capture_s) {
+    if (last_capture_s.has_value() &&
+        (new_capture_s - *last_capture_s) > pipeline_config_.modality_stale_after_s) {
+      recovering_ = true;
+      ++diagnostics_.modality_recovery_count;
+    }
   }
 
   void FlushAssociation(double now_s) {

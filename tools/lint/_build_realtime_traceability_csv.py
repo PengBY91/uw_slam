@@ -281,8 +281,8 @@ _fus_state("FUS-STATE-001", ARCH, "schemas/proto/uw/domain/state.proto (VehicleS
 _fus_state("FUS-STATE-002", ARCH, "include/adapters/holoocean_live_conversion.hpp (ConvertHoloVehicleState: attitude_valid/depth_valid only, device_health_valid left false rather than fabricated)", "tests/adapters/holoocean_live_conversion_test.cpp", "src/adapters/holoocean_live_conversion.cpp", "verified")
 
 # ---- FUS-CAL ----
-_fus_state("FUS-CAL-001", ARCH, "schemas/proto/uw/domain/calibration.proto (RigCalibrationSnapshot frame_tree)", "tests/contracts/*, apps/online_assist_smoke.cpp (BuildRig)", "schemas/proto/uw/domain/calibration.proto", "implemented")
-_fus_state("FUS-CAL-002", ARCH, "RigCalibrationSnapshot.calibration_version + time_offset_provenance", "apps/online_assist_smoke.cpp, adapters/ros2/src/holoocean_realtime_node.cpp (BuildIdentityRig)", "adapters/ros2/src/holoocean_realtime_node.cpp", "implemented")
+_fus_state("FUS-CAL-001", ARCH, "include/frontends/target_associator.hpp (ResolveRigFrames: fails closed on unreachable/cyclic/multi-parent frame trees instead of guessing a path)", "tests/frontends/target_associator_test.cpp (FailsClosedForInvalidCovarianceCalibrationAndFrame, RejectsCyclicOrMultiParentRigInsteadOfChoosingAPath)", "tests/frontends/target_associator_test.cpp", "verified")
+_fus_state("FUS-CAL-002", ARCH, "schemas/proto/uw/domain/calibration.proto (time_offset_seconds/time_offset_provenance/calibration_version) + include/frontends/target_associator.hpp (applies the per-sensor time offset)", "tests/frontends/target_associator_test.cpp (AppliesRigClockOffsetsAndKeepsUnmatchedSingleSensorMeasurements -- exercises time_offset_seconds; calibration_version/time_offset_provenance themselves are round-tripped by tests/contracts/* but not independently asserted here)", "tests/frontends/target_associator_test.cpp", "implemented")
 _fus_state("FUS-CAL-003", ARCH, "include/application/online_assist_pipeline.hpp (calibration-version-change reset+recovering)", "tests/application/online_assist_pipeline_test.cpp", "tests/application/online_assist_pipeline_test.cpp", "verified")
 
 # ---- FUS-SYNC ----
@@ -326,7 +326,7 @@ _fus_state("FUS-DENSE-004", ARCH, "dense stays default-disabled repo-wide (confi
 
 # ---- FUS-OUT ----
 _fus_state("FUS-OUT-001", ARCH, "schemas/proto/uw/domain/target.proto (OperatorAssistState)", "tests/application/online_assist_pipeline_test.cpp", "schemas/proto/uw/domain/target.proto", "verified")
-_fus_state("FUS-OUT-002", ARCH, "include/application/latest_assist_sink.hpp (replace-latest, mutex-guarded)", "tests/application/*", "include/application/latest_assist_sink.hpp", "implemented")
+_fus_state("FUS-OUT-002", ARCH, "include/application/latest_assist_sink.hpp (replace-latest, mutex-guarded) + src/application/holoocean_realtime_sink.cpp (RealtimeAssistOutputSink: single mutex-guarded slot) + adapters/ros2/src/holoocean_realtime_node.cpp (rclcpp::QoS(1) publishers -- untested directly, no ROS2-level test exists)", "tests/application/latest_assist_sink_test.cpp", "tests/application/latest_assist_sink_test.cpp", "implemented")
 _fus_state("FUS-OUT-003", ARCH, "schemas/proto/uw/domain/target.proto (TargetTrackStatus/HealthReport.Status enums, not raw confidence)", "tests/frontends/target_tracker_test.cpp", "schemas/proto/uw/domain/target.proto", "verified")
 _fus_state("FUS-OUT-004", ARCH, "adapters/ros2/src/holoocean_realtime_node.cpp (PilotCamera subscription independent of overlay compositor)", "n/a (native host needed to prove decoupled failure behavior)", "adapters/ros2/README.md", "gated")
 
@@ -369,7 +369,7 @@ _fus_state("SIM-CAM-003", DISTURBED, "adapters/holoocean/uw_holoocean_adapter/se
 
 # ---- SIM-SON ----
 _fus_state("SIM-SON-001", BOTH_TASKS, "include/adapters/holoocean_live_conversion.hpp (HoloOceanSonarCalibration, manifest-driven not hardcoded)", "tests/adapters/holoocean_live_conversion_test.cpp", "tests/adapters/holoocean_live_conversion_test.cpp", "verified")
-_fus_state("SIM-SON-002", ALL_PROFILES, "adapters/holoocean/uw_holoocean_adapter/realtime_ros_session.py (per-sensor Hz)", "adapters/holoocean/tests/test_realtime_ros_session.py", "adapters/holoocean/uw_holoocean_adapter/realtime_ros_session.py", "implemented")
+_fus_state("SIM-SON-002", NOMINAL, "adapters/holoocean/scenarios/blue_rov_aid_sv1213_base.json (ImagingSonar Hz=10, nominal tier only -- no separate 5Hz-minimum/20Hz-overload scenario variant exists yet) + scenario_manifest.py (Hz must evenly divide ticks_per_sec)", "adapters/holoocean/tests/test_scenario_manifest.py", "adapters/holoocean/tests/test_scenario_manifest.py", "implemented")
 _fus_state("SIM-SON-003", DISTURBED, "adapters/holoocean/uw_holoocean_adapter/sensor_perturbation.py (perturb_sonar)", "adapters/holoocean/tests/test_sensor_perturbation.py", "adapters/holoocean/uw_holoocean_adapter/sensor_perturbation.py", "verified")
 
 # ---- SIM-STATE ----

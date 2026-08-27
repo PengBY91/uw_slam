@@ -96,6 +96,14 @@ struct OnlineAssistPipelineDiagnostics {
   uint64_t dense_attempt_count = 0;
   uint64_t dense_deadline_missed_count = 0;
   uint64_t calibration_reset_count = 0;
+  // Incremented every time a visual or sonar detection arrives after a gap
+  // longer than modality_stale_after_s since that modality's own previous
+  // detection (FUS-HEALTH-002) -- independent of how quickly the
+  // resulting "recovering" state actually clears again (which depends on
+  // tracker reconfirmation timing and isn't reliably observable from
+  // outside), this counter is the one thing that reliably proves the
+  // dropout+recovery trigger itself fired.
+  uint64_t modality_recovery_count = 0;
   // TargetTracker::Update's batch is atomic: it rejects the whole batch
   // (no mutation) on non-finite/out-of-order input or an already-accepted
   // observation_id. That is a silent no-op from FlushAssociation's own
