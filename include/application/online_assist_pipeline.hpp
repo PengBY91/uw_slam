@@ -110,6 +110,24 @@ struct OnlineAssistPipelineDiagnostics {
   // return type, so this counter is the only signal that an association
   // batch was ever dropped this way.
   uint64_t association_reject_count = 0;
+
+  // Cumulative raw frontend output counts (SIM-ACC-002/FUS-ACC-001: an
+  // acceptance run must show non-zero sonar/visual detections and a
+  // non-zero fused track, not just "the process stayed alive"). Counted at
+  // the frontend-output boundary (every element of RunSonarDetection's/
+  // RunVisualDetection's own `targets`), not re-derived from published
+  // track state, so a detection that never ends up associated into any
+  // track is still counted here.
+  uint64_t sonar_detection_count = 0;
+  uint64_t visual_detection_count = 0;
+  // Number of PublishNow() calls whose exported track set contained at
+  // least one track carrying both ASSIST_SOURCE_VISUAL and
+  // ASSIST_SOURCE_SONAR -- an approximate, cheap-to-compute proxy for "a
+  // genuine acoustic-optic fused track was visible," not a count of
+  // distinct fused tracks (the same track re-counts on every publish it
+  // remains fused in). Nonzero is all downstream acceptance gating
+  // actually checks for.
+  uint64_t fused_track_publish_count = 0;
 };
 
 class OnlineAssistPipeline final : public PipelineInputPort {

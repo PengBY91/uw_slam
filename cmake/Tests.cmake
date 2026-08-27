@@ -135,6 +135,7 @@ add_executable(application_tests
   tests/application/online_assist_pipeline_test.cpp
   tests/application/holoocean_status_json_test.cpp
   tests/application/latest_assist_sink_test.cpp
+  tests/application/runtime_metrics_collector_test.cpp
 )
 target_compile_definitions(application_tests PRIVATE UW_REPO_ROOT="${PROJECT_SOURCE_DIR}")
 target_link_libraries(application_tests PRIVATE

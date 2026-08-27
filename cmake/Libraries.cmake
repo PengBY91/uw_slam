@@ -172,6 +172,7 @@ add_library(application STATIC
   src/application/online_assist_pipeline.cpp
   src/application/latest_assist_sink.cpp
   src/application/holoocean_status_json.cpp
+  src/application/runtime_metrics_collector.cpp
   src/application/holoocean_realtime_sink.cpp
 )
 add_library(uw::application ALIAS application)

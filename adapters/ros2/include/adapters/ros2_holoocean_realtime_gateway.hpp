@@ -63,6 +63,13 @@ struct HoloOceanRealtimeGatewayOptions {
   // configs/defaults/platform.yaml (same format apps/replay_demo already
   // consumes for its `defaults` layer).
   std::string platform_config_path;
+  // Forwarded straight into HoloOceanRealtimeSinkConfig -- see that
+  // struct's doc comment (include/adapters/holoocean_realtime_sink.hpp)
+  // for what each does. Set via the `run_report_path`/`deadline_ms` ROS2
+  // parameters; `run_report_path` empty (the default) means no telemetry
+  // report is written.
+  std::string run_report_path;
+  double deadline_ms = 250.0;
 };
 
 // Minimal, identity-extrinsic RigCalibrationSnapshot for the four algorithm

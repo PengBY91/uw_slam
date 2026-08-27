@@ -80,6 +80,9 @@ HoloOceanRealtimeGatewayOptions ReadOptionsFromParameters(rclcpp::Node& node) {
       node.declare_parameter<std::string>("rig_config_path", options.rig_config_path);
   options.platform_config_path =
       node.declare_parameter<std::string>("platform_config_path", options.platform_config_path);
+  options.run_report_path =
+      node.declare_parameter<std::string>("run_report_path", options.run_report_path);
+  options.deadline_ms = node.declare_parameter<double>("deadline_ms", options.deadline_ms);
   auto& sonar = options.sonar_calibration;
   sonar.horizontal_fov_rad = static_cast<float>(
       node.declare_parameter<double>("sonar_horizontal_fov_rad", 2.4434609528));  // 140 deg
@@ -141,9 +144,13 @@ HoloOceanRealtimeGatewayNode::HoloOceanRealtimeGatewayNode()
   overlay_pub_ = create_publisher<sensor_msgs::msg::Image>("/uw/hmi/overlay", rclcpp::QoS(1));
   status_pub_ = create_publisher<std_msgs::msg::String>("/uw/hmi/status", rclcpp::QoS(1));
 
-  sink_ = MakeOnlineAssistRealtimeSink(
-      *this, HoloOceanRealtimeSinkConfig{options_.rig_config_path, BuildIdentityRig(options_),
-                                         options_.platform_config_path});
+  HoloOceanRealtimeSinkConfig sink_config;
+  sink_config.rig_config_path = options_.rig_config_path;
+  sink_config.fallback_rig = BuildIdentityRig(options_);
+  sink_config.platform_config_path = options_.platform_config_path;
+  sink_config.run_report_path = options_.run_report_path;
+  sink_config.deadline_ms = options_.deadline_ms;
+  sink_ = MakeOnlineAssistRealtimeSink(*this, std::move(sink_config));
 
   const auto qos = rclcpp::SensorDataQoS();
   const std::string prefix = "/holoocean/" + options_.agent_name + "/";

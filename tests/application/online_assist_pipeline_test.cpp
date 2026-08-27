@@ -656,6 +656,57 @@ TEST(OnlineAssistPipeline, CalibrationChangeResetsAndRecovers) {
 // immediately-reconfirmed hit rather than trusting it unconditionally);
 // it is just not reliably observable as a separate published tick from
 // outside. The counter is what reliably proves the trigger itself fired.
+// docs/rov-realtime-closed-loop-code-review-2026-08-27.md finding A2:
+// realtime_gate.py's acceptance evidence needs non-zero sonar/visual
+// detection counts and a non-zero fused track count, which nothing
+// tracked cumulatively before -- these three counters are what the C++
+// gateway-side metrics report (still being built out) will read.
+TEST(OnlineAssistPipeline, TracksCumulativeDetectionAndFusedTrackCounts) {
+  FakeClock clock;
+  LatestAssistSink sink;
+  FakeVisualAssistFrontend visual;
+  FakeSonarFrontend sonar;
+  OnlineAssistPipeline pipeline(TestPipelineDependencies(clock, sink, visual, sonar,
+                                                         /*dense_provider=*/nullptr,
+                                                         /*dense_enabled=*/false));
+
+  EXPECT_EQ(pipeline.Diagnostics().sonar_detection_count, 0u);
+  EXPECT_EQ(pipeline.Diagnostics().visual_detection_count, 0u);
+  EXPECT_EQ(pipeline.Diagnostics().fused_track_publish_count, 0u);
+
+  FeedSynchronizedVehicleStereoSonar(pipeline, clock, 2.0);
+
+  const auto diagnostics = pipeline.Diagnostics();
+  // FakeVisualAssistFrontend/FakeSonarFrontend each emit exactly one
+  // detection per call when produce_detection is true (the default) --
+  // 20 Hz stereo and 10 Hz sonar over 2.0s.
+  EXPECT_GT(diagnostics.visual_detection_count, 0u);
+  EXPECT_GT(diagnostics.sonar_detection_count, 0u);
+  // Both fakes report boresight (bearing 0.0), so visual and sonar
+  // detections associate into the same track -- it carries both sources
+  // and should be counted as fused on every publish once confirmed.
+  EXPECT_GT(diagnostics.fused_track_publish_count, 0u);
+}
+
+TEST(OnlineAssistPipeline, DetectionCountsStayZeroWhenFrontendsProduceNothing) {
+  FakeClock clock;
+  LatestAssistSink sink;
+  FakeVisualAssistFrontend visual;
+  FakeSonarFrontend sonar;
+  visual.produce_detection = false;
+  sonar.produce_detection = false;
+  OnlineAssistPipeline pipeline(TestPipelineDependencies(clock, sink, visual, sonar,
+                                                         /*dense_provider=*/nullptr,
+                                                         /*dense_enabled=*/false));
+
+  FeedSynchronizedVehicleStereoSonar(pipeline, clock, 1.0);
+
+  const auto diagnostics = pipeline.Diagnostics();
+  EXPECT_EQ(diagnostics.sonar_detection_count, 0u);
+  EXPECT_EQ(diagnostics.visual_detection_count, 0u);
+  EXPECT_EQ(diagnostics.fused_track_publish_count, 0u);
+}
+
 TEST(OnlineAssistPipeline, ModalityDropoutRecoveryIncrementsRecoveryCounter) {
   FakeClock clock;
   LatestAssistSink sink;

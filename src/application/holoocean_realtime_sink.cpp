@@ -10,11 +10,13 @@
 
 #include <atomic>
 #include <chrono>
+#include <fstream>
 #include <future>
 #include <iostream>
 #include <mutex>
 #include <optional>
 #include <thread>
+#include <type_traits>
 #include <utility>
 
 #include "adapters/opencv_visual_assist_frontend.hpp"
@@ -26,6 +28,7 @@
 #include "application/online_assist_pipeline.hpp"
 #include "application/pipeline_input_port.hpp"
 #include "application/replay_pipeline.hpp"
+#include "application/runtime_metrics_collector.hpp"
 #include "frontends/sonar_cfar_frontend.hpp"
 #include "runtime/canonical_topics.hpp"
 #include "runtime/config.hpp"
@@ -71,6 +74,22 @@ int64_t SteadyNowNs() {
   return count < 0 ? 0 : count;
 }
 
+double WallNowSeconds() {
+  return std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+// RuntimeMetricsConfig::queue_lane_capacities must track source_'s own
+// LaneQueueConfig::capacity fields below (localization/correction/mapping/
+// evidence, LiveEventSource::HealthReports()'s documented fixed order) --
+// source_ is always constructed with LiveSourceConfig{} defaults, so these
+// are hardcoded to match rather than plumbed through twice.
+uw::application::RuntimeMetricsConfig MakeMetricsConfig(const HoloOceanRealtimeSinkConfig& config) {
+  uw::application::RuntimeMetricsConfig metrics_config;
+  metrics_config.deadline_ms = config.deadline_ms;
+  metrics_config.queue_lane_capacities = {64, 32, 16, 256};
+  return metrics_config;
+}
+
 // AssistOutputSink implementation feeding HoloOceanRealtimeOutput. Composes
 // the latest pilot image + latest sonar frame (replace-latest, no
 // unbounded buffering) with the OperatorAssistState via
@@ -78,11 +97,16 @@ int64_t SteadyNowNs() {
 // the ROS2 node itself, publishing sensor_msgs/Image + std_msgs/String.
 class RealtimeAssistOutputSink final : public uw::application::AssistOutputSink {
  public:
-  // `source` outlives this sink: OnlineAssistRealtimeSink declares source_
-  // before output_sink_, so it is already fully constructed here, and both
-  // are destroyed in reverse declaration order (output_sink_ first).
-  RealtimeAssistOutputSink(HoloOceanRealtimeOutput& output, const uw::runtime::LiveEventSource& source)
-      : output_(output), source_(source) {}
+  // `source` and `metrics` outlive this sink: OnlineAssistRealtimeSink
+  // declares source_ and metrics_ before output_sink_, so both are already
+  // fully constructed here, and all three are destroyed in reverse
+  // declaration order (output_sink_ first). `pipeline` is not available yet
+  // at this point (it is a unique_ptr the outer constructor's BODY builds,
+  // after output_sink_ already exists as its own deps.sink) -- SetPipeline
+  // below is called once the outer constructor has it.
+  RealtimeAssistOutputSink(HoloOceanRealtimeOutput& output, const uw::runtime::LiveEventSource& source,
+                            uw::application::RuntimeMetricsCollector& metrics, std::string run_report_path)
+      : output_(output), source_(source), metrics_(metrics), run_report_path_(std::move(run_report_path)) {}
 
   void Publish(const uw::domain::OperatorAssistState& state) override {
     std::optional<uw::domain::ImageFrame> pilot_image;
@@ -96,7 +120,20 @@ class RealtimeAssistOutputSink final : public uw::application::AssistOutputSink 
       const auto overlay = renderer_.Render(*pilot_image, sonar_frame, state);
       if (overlay.has_value()) output_.PublishOverlay(*overlay);
     }
-    output_.PublishStatus(uw::application::BuildOnlineAssistStatusJson(state, source_.HealthReports()));
+    const auto queue_health = source_.HealthReports();
+    output_.PublishStatus(uw::application::BuildOnlineAssistStatusJson(state, queue_health));
+
+    // Publish() is only ever invoked synchronously from within the pump
+    // thread's own OnlineAssistPipeline::PublishNow() (see that class's
+    // sink_->Publish(state) call) -- the same thread that owns/mutates
+    // pipeline_'s diagnostics_, so reading it here via SetPipeline's raw
+    // pointer needs no extra synchronization beyond metrics_'s own mutex.
+    const double wall_now_s = WallNowSeconds();
+    metrics_.ObservePublish(state, wall_now_s);
+    metrics_.ObserveQueueHealth(queue_health);
+    if (pipeline_ != nullptr) metrics_.ObserveDiagnostics(pipeline_->Diagnostics());
+    metrics_.SampleResourceUsage(wall_now_s - process_start_wall_s_);
+    MaybeWriteReport(wall_now_s);
   }
 
   void SetLatestPilotImage(uw::domain::ImageFrame image) {
@@ -109,9 +146,36 @@ class RealtimeAssistOutputSink final : public uw::application::AssistOutputSink 
     latest_sonar_frame_ = std::move(frame);
   }
 
+  void SetPipeline(const uw::application::OnlineAssistPipeline& pipeline) { pipeline_ = &pipeline; }
+
  private:
+  void MaybeWriteReport(double wall_now_s) {
+    if (run_report_path_.empty()) return;
+    // Piggybacks on Publish()'s own throttled cadence (C1's
+    // min_publish_interval_s, default 100ms) rather than a dedicated
+    // writer thread -- see HoloOceanRealtimeSinkConfig::run_report_path's
+    // doc comment. This extra >=1s gate keeps the actual file write (an
+    // fstream open plus full JSON serialize) off the common publish path,
+    // since realtime_gate.py only needs a report fresh to within a second
+    // or two, not one rewritten on every throttled publish.
+    if (last_report_write_wall_s_.has_value() && wall_now_s - *last_report_write_wall_s_ < 1.0) return;
+    last_report_write_wall_s_ = wall_now_s;
+    std::ofstream out(run_report_path_, std::ios::trunc);
+    if (!out.is_open()) {
+      std::cerr << "holoocean_realtime_sink: WARNING failed to open run_report_path '" << run_report_path_
+                << "' for writing\n";
+      return;
+    }
+    out << metrics_.BuildReportJson();
+  }
+
   HoloOceanRealtimeOutput& output_;
   const uw::runtime::LiveEventSource& source_;
+  uw::application::RuntimeMetricsCollector& metrics_;
+  std::string run_report_path_;
+  const uw::application::OnlineAssistPipeline* pipeline_ = nullptr;
+  const double process_start_wall_s_ = WallNowSeconds();
+  std::optional<double> last_report_write_wall_s_;
   uw::opencv_adapters::OperatorOverlayRenderer renderer_;
   std::mutex latest_mutex_;
   std::optional<uw::domain::ImageFrame> latest_pilot_image_;
@@ -153,7 +217,8 @@ class OnlineAssistRealtimeSink final : public HoloOceanRealtimeSink {
         source_(uw::runtime::LiveSourceConfig{}),
         visual_frontend_((uw::opencv_adapters::VisualAssistParams{})),
         sonar_frontend_(uw::application::BuildSonarCfarFrontendParams(platform_defaults_.sonar_frontend)),
-        output_sink_(output, source_) {
+        metrics_(MakeMetricsConfig(config)),
+        output_sink_(output, source_, metrics_, config.run_report_path) {
     uw::application::OnlineAssistPipelineDependencies deps;
     deps.rig = ResolveRig(config);
     deps.visual_frontend = &visual_frontend_;
@@ -173,6 +238,7 @@ class OnlineAssistRealtimeSink final : public HoloOceanRealtimeSink {
     // include/adapters/sim_wall_clock_estimator.hpp.
     deps.now = [this] { return sim_clock_.EstimateNow(); };
     pipeline_ = std::make_unique<uw::application::OnlineAssistPipeline>(std::move(deps));
+    output_sink_.SetPipeline(*pipeline_);
     port_ = std::make_unique<ForwardingPort>(*pipeline_);
 
     pump_thread_ = std::thread([this] {
@@ -230,12 +296,29 @@ class OnlineAssistRealtimeSink final : public HoloOceanRealtimeSink {
  private:
   template <typename Payload>
   void Submit(const char* topic, Payload payload) {
+    // header is a reference into payload -- read everything needed from it
+    // BEFORE payload is moved into source_.Submit below.
+    const auto& header = payload.header();
+    if (header.clock_domain() == uw::domain::CLOCK_DOMAIN_SIMULATION) {
+      // RTF needs the RAW (capture_s, wall_s) pair, not sim_clock_'s own
+      // anchored/extrapolated estimate -- feeding EstimateNow() back into
+      // itself here would just measure "how close to RTF=1 we assumed",
+      // not the actual ratio.
+      metrics_.ObserveSimTime(uw::domain::ToSeconds(header.capture_time()), WallNowSeconds());
+      if constexpr (std::is_same_v<Payload, uw::domain::VehicleState>) {
+        // Uses the anchor from BEFORE this message updates it just below
+        // (sim_clock_.Observe(header)) -- calling EstimateNow() after would
+        // trivially self-anchor to ~0 age every time, since this exact
+        // message would already be the anchor.
+        metrics_.ObserveVehicleState(header, uw::domain::ToSeconds(sim_clock_.EstimateNow()));
+      }
+    }
     // Anchors sim_clock_ using this message's own capture_time before it is
     // moved into the queue -- ingestion time is exactly when we can pair a
     // fresh (sim capture, wall receipt) sample, and doing it here (not on
     // the pump thread that later processes the event) keeps the anchor as
     // current as possible.
-    sim_clock_.Observe(payload.header());
+    sim_clock_.Observe(header);
     const auto status = source_.Submit(
         {topic, static_cast<uint64_t>(SteadyNowNs()), ++source_sequence_, std::move(payload)});
     if (status == uw::runtime::LiveSubmitStatus::kClosed) {
@@ -254,6 +337,9 @@ class OnlineAssistRealtimeSink final : public HoloOceanRealtimeSink {
   uw::runtime::LiveEventSource source_;
   uw::opencv_adapters::OpenCvVisualAssistFrontend visual_frontend_;
   uw::frontends::SonarCfarFrontend sonar_frontend_;
+  // Declared before output_sink_ -- its constructor takes a reference to
+  // this (same established pattern as source_ above).
+  uw::application::RuntimeMetricsCollector metrics_;
   RealtimeAssistOutputSink output_sink_;
   std::unique_ptr<uw::application::OnlineAssistPipeline> pipeline_;
   std::unique_ptr<ForwardingPort> port_;

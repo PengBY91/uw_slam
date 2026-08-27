@@ -87,6 +87,21 @@ struct HoloOceanRealtimeSinkConfig {
   std::string rig_config_path;
   uw::domain::RigCalibrationSnapshot fallback_rig;
   std::string platform_config_path;
+  // If non-empty, the sink periodically (roughly once per second, from the
+  // pump thread's own Publish() cadence -- see
+  // src/application/runtime_metrics_collector.cpp's doc comment for why a
+  // dedicated writer thread was judged not worth the added complexity)
+  // writes a JSON runtime-metrics report to this path: result/state age
+  // percentiles, deadline-miss fraction, queue backpressure stats, RTF,
+  // RSS growth, CPU headroom, recovery duration, detection/fused-track
+  // counts, and guidance-marked-stale-when-overdue. Empty (the default)
+  // means no report is written -- see
+  // docs/rov-realtime-closed-loop-code-review-2026-08-27.md finding A2.
+  std::string run_report_path;
+  // Result-age budget (ms) a published state must not exceed to count as
+  // "on time" for deadline_miss_fraction -- realtime_gate.py should pass
+  // the profile-appropriate value (250ms nominal, matching FUS-RT-002).
+  double deadline_ms = 250.0;
 };
 
 // Builds the real production sink: internally owns a LiveEventSource, a

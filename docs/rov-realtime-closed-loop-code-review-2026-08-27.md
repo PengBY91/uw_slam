@@ -56,28 +56,63 @@
      offset 会漂移）的合成场景，验证 staleness 判断在这种情况下仍然正确——现有 `FakeClock`
      天然同步，测不出这类回归。
 
-### A2. `realtime_gate.py` 验收 gate 是空壳，会直接抛未捕获异常 [部分修复 2026-08-27]
+### A2. `realtime_gate.py` 验收 gate 是空壳，会直接抛未捕获异常 [已修复 2026-08-27]
 
-> 已修复：`evaluate_gate()` 缺字段时现在抛出命名清晰的 `GateFailure`（"字段名:
-> missing from run report"），不再是裸 `KeyError`（`run_report.py` 新增
-> `_get_required()`）。`run_gate()` 会读回 `TaskScorer` 写的分数文件并塞进
+> 第一阶段已修复：`evaluate_gate()` 缺字段时现在抛出命名清晰的 `GateFailure`
+> （"字段名: missing from run report"），不再是裸 `KeyError`（`run_report.py`
+> 新增 `_get_required()`）。`run_gate()` 会读回 `TaskScorer` 写的分数文件并塞进
 > `report["task_score"]`。`main()` 新增 `required_passes()`：标称 campaign 按
 > 8/10、扰动 campaign 按 7/10 判定整体是否通过（SIM-ACC-003），不再是"必须
 > 每个 seed 都过"。新增 `tests/test_realtime_gate.py`（12 例）+
-> `test_run_report.py` 补一例，`adapters/holoocean` 全量 196 例 pytest 通过。
+> `test_run_report.py` 补一例。
 >
-> **仍未修复（范围较大，见下方"整体处理顺序"更新）**：`evaluate_gate()`
-> 需要的另外约 15 个遥测字段（`result_age_p95_ms`、`state_age_p95_ms`、
-> `rtf_p95`、`deadline_miss_fraction`、`queue_high_watermark`、
-> `recovery_duration_s_max`、`rss_growth_after_warmup_mib`、
-> `cpu/gpu_headroom_fraction_avg`、`sonar/visual/fused_track_count`、
-> `guidance_marked_stale_when_overdue`）仍然没有任何进程回填——这些本质上要
-> 靠 C++ 网关自己在运行期采集（复用已有的 `rolling_latency`、
-> `LiveEventSource::HealthReports()`，加新的 RSS/CPU 采样、RTF 估计、检测计数
-> 器），是一个独立的、量级不小的 C++ instrumentation 工作，没有在这次改动里
-> 仓促实现——`evaluate_gate` 现在至少会对着缺失字段给出诚实、可读的失败原因，
-> 而不是崩溃或悄悄放过。GPU headroom 尤其没有把握（这台开发机上也没有可靠
-> 手段验证），如果实现应明确标注数据来源与局限，不能编造数值。
+> 第二阶段（C++ 网关侧遥测采集，本次完成）：新增
+> `include/application/runtime_metrics_collector.hpp` +
+> `src/application/runtime_metrics_collector.cpp` 的 `RuntimeMetricsCollector`
+> ——单一 mutex 保护（生产环境下 ROS2 回调线程调用
+> `ObserveSimTime`/`ObserveVehicleState`，pump 线程调用
+> `ObservePublish`/`ObserveQueueHealth`/`SampleResourceUsage`/
+> `ObserveDiagnostics`，两者并发），聚合出 `evaluate_gate()` 需要的字段：
+> `result_age_p50/95/99_ms`（复用 B2 已有的 `LiveEventSource::HealthReports()`
+> 队列统计基础设施同款 `RollingLatency`）、`state_age_p50/95/99_ms`、
+> `rtf_p50/p95`（`ObserveSimTime` 用相邻两次原始 (sim capture, 真实墙钟) 样本
+> 算比值，不能复用 A1 的 `SimWallClockEstimator::EstimateNow()`——那是已经假设
+> RTF≈1 的外推结果，拿来算 RTF 会循环论证）、`deadline_miss_fraction`、
+> `queue_high_watermark`/`queue_drops`/`queue_rejects`/
+> `queue_capacity_violations`、`recovery_duration_s_max`、
+> `rss_growth_after_warmup_mib`（`/proc/self/status` 的 `VmRSS`，10 分钟预热
+> 后才建立基线）、`cpu_headroom_fraction_avg`（`/proc/stat` 相邻两次采样的
+> idle/total jiffies 差值）、`sonar/visual/fused_track_count`（复用
+> `OnlineAssistPipelineDiagnostics`）、`guidance_marked_stale_when_overdue`。
+> `RuntimeMetricsCollector` 已接入 `holoocean_realtime_sink.cpp` 的
+> `OnlineAssistRealtimeSink`/`RealtimeAssistOutputSink`：`Submit()`（ROS2 回调
+> 线程）喂 sim time/vehicle state 观测，`Publish()`（pump 线程，`sink_->
+> Publish(state)` 调用点）喂发布/队列健康/资源采样/诊断计数，并按
+> `run_report_path`（新增 ROS2 参数，空则不写）节流到约每秒一次写一份 JSON
+> report 文件——复用 C1 已有的 `min_publish_interval_s` 节流节奏而不是另开一个
+> 写线程，见 `HoloOceanRealtimeSinkConfig::run_report_path` 的文档注释。
+> `deadline_ms`（默认 250ms，对应 FUS-RT-002 标称目标）也新增为 ROS2 参数，
+> 经 `HoloOceanRealtimeGatewayOptions` 透传。`realtime_gate.py` 的 `run_gate()`
+> 启动网关子进程时追加 `--ros-args -p run_report_path:=... -p
+> deadline_ms:=250.0`，结束时把这份 JSON 读回并 `report.update()` 直接合并进
+> 扁平字段（与 `evaluate_gate()` 期望的顶层 key 结构一致）。
+>
+> **仍诚实缺失、非本次范围**：`gpu_headroom_fraction_avg` 依然从不写入
+> ——这台机器没有可靠、跨平台的方式测量它（需要 `nvidia-smi` 之类的额外
+> 集成，未做），代码里明确注释了这个取舍；`evaluate_gate()` 对标称/扰动
+> profile（`require_headroom_gate=True`）会因此正确地给出一个具名
+> `GateFailure`，而不是编造数值蒙混过关——minimum/overload profile 不检查
+> headroom，不受影响。这套遥测本身也**从未在真实 HoloOcean/ROS2 上跑过**
+> （已验证：`cmake -S . -B build_ros2 -DUW_BUILD_ROS2=ON` 能编译通过、
+> `/proc` 读取器在本机手动验证过解析正确，但没有真实仿真器可以跑一次完整
+> `realtime_gate.py` 会话来确认 gate 真的能在非缺失字段的路径上给出 PASS）。
+>
+> 新增/修改测试：`tests/application/runtime_metrics_collector_test.cpp`
+> （16 例，覆盖百分位、deadline miss、recovery duration、RSS/CPU 采样、
+> `gpu_headroom_fraction_avg` 永不出现、diagnostics 透传）。C++ 全量 590 例
+> CTest 通过，`adapters/holoocean` 全量 205 例 pytest 通过，
+> `tools/lint/check_layer_dependencies.py` 通过，ROS2 侧
+> `holoocean_realtime_node` 重新编译通过。
 
 ### A2（原始记录，供追溯）. `realtime_gate.py` 验收 gate 是空壳，会直接抛未捕获异常
 

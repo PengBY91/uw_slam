@@ -227,6 +227,15 @@ def run_gate(
         )
 
     scorer_out = str(Path(out_dir) / f"task_score_seed{seed}.json")
+    # holoocean_realtime_node writes its RuntimeMetricsCollector report here
+    # roughly once a second (see RealtimeAssistOutputSink::MaybeWriteReport
+    # in src/application/holoocean_realtime_sink.cpp) when given a non-empty
+    # run_report_path parameter -- read back below and merged into the flat
+    # report dict evaluate_gate() checks. deadline_ms=250.0 is FUS-RT-002's
+    # nominal result-age target; it does not vary per profile (only the
+    # ACCEPTABLE deadline_miss_fraction does, and that bound lives in
+    # run_report.py's per-profile GateSpec, not here).
+    gateway_run_report_out = str(Path(out_dir) / f"gateway_run_report_seed{seed}.json")
     group = ProcessGroup()
     try:
         group.start_subprocess(
@@ -242,7 +251,16 @@ def run_gate(
                 str(seed),
             ]
         )
-        group.start_subprocess([str(gateway_path)])
+        group.start_subprocess(
+            [
+                str(gateway_path),
+                "--ros-args",
+                "-p",
+                f"run_report_path:={gateway_run_report_out}",
+                "-p",
+                "deadline_ms:=250.0",
+            ]
+        )
         group.start_process(_run_scripted_pilot_process, args=(scenario_path, task_path))
         group.start_process(_run_scorer_process, args=(scenario_path, task_path, seed, scorer_out))
 
@@ -261,19 +279,25 @@ def run_gate(
         "task_id": Path(task_path).stem,
         "duration_s": duration_s,
     }
+    # holoocean_realtime_node's RuntimeMetricsCollector report -- read back
+    # whatever it last wrote and merge its fields directly into the flat
+    # report dict (result/state age percentiles, rtf, queue stats, RSS/CPU
+    # headroom, deadline misses, detection counts, recovery duration,
+    # staleness marking). gpu_headroom_fraction_avg is never present in it
+    # -- see runtime_metrics_collector.hpp's own doc comment for why that
+    # omission is deliberate rather than a bug; evaluate_gate() correctly
+    # GateFailures on it for nominal/disturbed profiles until real GPU
+    # sampling exists (minimum/overload don't require it).
+    gateway_report_path = Path(gateway_run_report_out)
+    if gateway_report_path.is_file():
+        try:
+            report.update(json.loads(gateway_report_path.read_text(encoding="utf-8")))
+        except json.JSONDecodeError:
+            pass  # gateway process may have been killed mid-write; leave those fields unset
+
     # scorer_ros_bridge.run_scorer_bridge writes this file at least once a
     # second and once more on shutdown -- read back whatever it last wrote
-    # rather than leaving `task_score` unset, which is the one field of the
-    # ~20 evaluate_gate() needs that a pure-Python process can honestly
-    # produce end to end today. The gateway-side telemetry (result/state
-    # age percentiles, RTF, queue stats, RSS/CPU/GPU headroom, deadline
-    # misses, detection counts, recovery duration, staleness marking) is a
-    # separate, still-open C++ instrumentation effort -- see
-    # docs/rov-realtime-closed-loop-code-review-2026-08-27.md finding A2's
-    # "still open" note for exactly what's missing and why it wasn't rushed
-    # here; evaluate_gate now fails cleanly (GateFailure naming the missing
-    # field) rather than crashing on it, which is the honest state to leave
-    # this in until that instrumentation lands.
+    # rather than leaving `task_score` unset.
     scorer_path = Path(scorer_out)
     if scorer_path.is_file():
         try:

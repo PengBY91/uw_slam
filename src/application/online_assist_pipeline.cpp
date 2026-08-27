@@ -226,6 +226,7 @@ class OnlineAssistPipeline::Impl {
     for (const auto& target : result.targets) {
       pending_visual_.push_back(Wrap(target, left_image.header()));
     }
+    diagnostics_.visual_detection_count += result.targets.size();
     // Sonar drives the association batch under normal operation (see
     // RunSonarDetection): a visual detection just stages into
     // pending_visual_ and waits for the next sonar arrival to pair with,
@@ -252,6 +253,7 @@ class OnlineAssistPipeline::Impl {
     for (const auto& target : targets) {
       pending_sonar_.push_back(Wrap(target, sonar.header()));
     }
+    diagnostics_.sonar_detection_count += targets.size();
     FlushAssociation(capture_s);
   }
 
@@ -429,7 +431,19 @@ class OnlineAssistPipeline::Impl {
 
     uw::domain::OperatorAssistState state;
     const auto track_set = fusion_->tracker().ToProtoSet(wall_s);
-    if (track_set.has_value()) *state.mutable_target_tracks() = *track_set;
+    if (track_set.has_value()) {
+      *state.mutable_target_tracks() = *track_set;
+      const bool any_fused = std::any_of(
+          track_set->tracks().begin(), track_set->tracks().end(), [](const auto& track) {
+            bool has_visual = false, has_sonar = false;
+            for (const auto source : track.sources()) {
+              has_visual |= (source == uw::domain::ASSIST_SOURCE_VISUAL);
+              has_sonar |= (source == uw::domain::ASSIST_SOURCE_SONAR);
+            }
+            return has_visual && has_sonar;
+          });
+      if (any_fused) ++diagnostics_.fused_track_publish_count;
+    }
 
     // Gated on current visual liveness, not just has_value(): without this,
     // a path offset computed from the last frame before a camera dropout
