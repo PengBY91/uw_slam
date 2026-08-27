@@ -30,6 +30,7 @@ reaching into `HoloOceanSession`'s private `_env` to bypass it.
 from __future__ import annotations
 
 import argparse
+import time
 from typing import Any, List, Optional, Tuple
 
 import numpy as np
@@ -448,14 +449,21 @@ def main() -> None:
     )
 
     try:
-        rate = node.create_rate(manifest.ticks_per_sec)
+        # NOT node.create_rate(...).sleep() -- confirmed against a real
+        # sourced ROS2 install (see docs/rov-realtime-closed-loop-code-
+        # review-2026-08-27.md) that it deadlocks here: rclpy's Rate.sleep()
+        # blocks on a timer callback that only fires while something spins
+        # this node, and nothing spins it while sleep() itself is blocking
+        # in this single-threaded loop (spin_once already returned before
+        # sleep starts). A plain time.sleep() has no such dependency.
+        dt_s = 1.0 / manifest.ticks_per_sec
         while rclpy.ok():
             for topic, message in session.tick(
                 message_types, visual_degradation=visual_degradation, sonar_degradation=sonar_degradation
             ):
                 publishers[topic].publish(message)
             rclpy.spin_once(node, timeout_sec=0.0)
-            rate.sleep()
+            time.sleep(dt_s)
     finally:
         session.close()
         node.destroy_node()
