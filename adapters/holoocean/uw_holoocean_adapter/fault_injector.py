@@ -29,6 +29,8 @@ from typing import Any, Deque, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
+from uw_holoocean_adapter.scenario_randomization import SonarDegradation, VisualDegradation
+
 
 @dataclasses.dataclass(frozen=True)
 class TopicFaultConfig:
@@ -105,6 +107,110 @@ def build_fault_schedule(
 
     events.sort()
     return tuple(events)
+
+
+@dataclasses.dataclass(frozen=True)
+class SensorDegradationWindow:
+    """One scheduled degraded period: `sim_time_s` in
+    `[start_s, start_s + duration_s)` is "inside" this window (see
+    `sensor_degradation_active`)."""
+
+    start_s: float
+    duration_s: float
+
+
+@dataclasses.dataclass(frozen=True)
+class SensorDegradationSchedule:
+    """Visual and sonar degradation windows are scheduled independently --
+    real turbidity events and real sonar multipath/gain events have no
+    reason to coincide, and testing them separately exercises the
+    single-modality-degraded paths the fault matrix table actually cares
+    about (see docs/rov-realtime-closed-loop-code-review-2026-08-27.md
+    finding B4)."""
+
+    visual_windows: Tuple[SensorDegradationWindow, ...] = ()
+    sonar_windows: Tuple[SensorDegradationWindow, ...] = ()
+
+
+def _sample_windows(
+    rng: np.random.Generator, duration_s: float, window_count: int, window_duration_s: float
+) -> Tuple[SensorDegradationWindow, ...]:
+    if window_duration_s <= 0:
+        raise ValueError(f"window_duration_s must be positive, got {window_duration_s}")
+    windows = []
+    for _ in range(window_count):
+        span = max(0.0, duration_s - window_duration_s)
+        start = float(rng.uniform(0.0, span)) if span > 0 else 0.0
+        windows.append(SensorDegradationWindow(start, window_duration_s))
+    return tuple(sorted(windows, key=lambda w: w.start_s))
+
+
+def build_sensor_degradation_schedule(
+    seed: int,
+    duration_s: float,
+    *,
+    visual_window_count: int = 0,
+    visual_window_duration_s: float = 30.0,
+    sonar_window_count: int = 0,
+    sonar_window_duration_s: float = 30.0,
+) -> SensorDegradationSchedule:
+    """Deterministically samples visual/sonar degradation window start times
+    within `[0, duration_s)` -- same determinism contract as
+    `build_fault_schedule`: identical arguments always yield an identical
+    schedule. A window_count of 0 (the default for both modalities) yields
+    no windows for that modality, matching "no scheduling" -- this function
+    is opt-in, not a behavior change for any existing caller that doesn't
+    invoke it."""
+    if duration_s < 0:
+        raise ValueError(f"duration_s must be non-negative, got {duration_s}")
+    rng = np.random.default_rng(seed)
+    visual_windows = (
+        _sample_windows(rng, duration_s, visual_window_count, visual_window_duration_s)
+        if visual_window_count > 0
+        else ()
+    )
+    sonar_windows = (
+        _sample_windows(rng, duration_s, sonar_window_count, sonar_window_duration_s)
+        if sonar_window_count > 0
+        else ()
+    )
+    return SensorDegradationSchedule(visual_windows, sonar_windows)
+
+
+def sensor_degradation_active(windows: Sequence[SensorDegradationWindow], sim_time_s: float) -> bool:
+    return any(w.start_s <= sim_time_s < w.start_s + w.duration_s for w in windows)
+
+
+def resolve_active_degradation(
+    schedule: Optional[SensorDegradationSchedule],
+    visual_profile: Optional[VisualDegradation],
+    sonar_profile: Optional[SonarDegradation],
+    sim_time_s: float,
+    *,
+    baseline_visual: Optional[VisualDegradation] = None,
+    baseline_sonar: Optional[SonarDegradation] = None,
+) -> Tuple[Optional[VisualDegradation], Optional[SonarDegradation]]:
+    """The pure "what degradation applies right now" decision --
+    RealtimeRosSession.tick() (real-HoloOcean-only, never unit tested
+    directly) calls this and nothing else to pick this tick's
+    visual_degradation/sonar_degradation, keeping the actual scheduling
+    logic in this fully unit-testable function instead.
+
+    `schedule=None` always returns the baseline (typically None/clear) --
+    exactly the pre-B4 "no scheduling at all, degradation is constant for
+    the whole run or absent" behavior, so existing callers that never pass
+    a schedule see no behavior change. Inside a scheduled window,
+    `visual_profile`/`sonar_profile` (typically
+    scenario_randomization.PRESET_CRITICAL_DEGRADED's components) apply;
+    outside every window, `baseline_visual`/`baseline_sonar` applies --
+    this is what gives a fault an actual start/duration/RECOVERY, per the
+    simulation spec's fault matrix, rather than a config that is either
+    permanently on or never exercised at all."""
+    if schedule is None:
+        return baseline_visual, baseline_sonar
+    visual = visual_profile if sensor_degradation_active(schedule.visual_windows, sim_time_s) else baseline_visual
+    sonar = sonar_profile if sensor_degradation_active(schedule.sonar_windows, sim_time_s) else baseline_sonar
+    return visual, sonar
 
 
 @dataclasses.dataclass(frozen=True)

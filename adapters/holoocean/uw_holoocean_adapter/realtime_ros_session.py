@@ -34,7 +34,13 @@ from typing import Any, List, Optional, Tuple
 
 import numpy as np
 
-from uw_holoocean_adapter.fault_injector import FaultInjector, ThrusterFaultConfig, apply_thruster_fault
+from uw_holoocean_adapter.fault_injector import (
+    FaultInjector,
+    SensorDegradationSchedule,
+    ThrusterFaultConfig,
+    apply_thruster_fault,
+    resolve_active_degradation,
+)
 from uw_holoocean_adapter.holoocean_driver import HoloOceanSession, RawSensorFrame
 from uw_holoocean_adapter.pilot_command_model import PilotCommandModel
 from uw_holoocean_adapter.scenario_randomization import ScenarioRandomization, SonarDegradation, VisualDegradation
@@ -227,6 +233,9 @@ class RealtimeRosSession:
         fault_injector: Optional[FaultInjector] = None,
         thruster_fault: Optional[ThrusterFaultConfig] = None,
         perturbation_rng: Optional[np.random.Generator] = None,
+        sensor_degradation_schedule: Optional[SensorDegradationSchedule] = None,
+        visual_degradation_profile: Optional[VisualDegradation] = None,
+        sonar_degradation_profile: Optional[SonarDegradation] = None,
     ):
         self._manifest = manifest
         self._topics = build_topic_map(manifest.agent_name)
@@ -253,6 +262,9 @@ class RealtimeRosSession:
         self._perturbation_rng = perturbation_rng
         self._sonar_min_range_m = manifest.sensor("ImagingSonar").configuration.get("RangeMin")
         self._sonar_max_range_m = manifest.sensor("ImagingSonar").configuration.get("RangeMax")
+        self._sensor_degradation_schedule = sensor_degradation_schedule
+        self._visual_degradation_profile = visual_degradation_profile
+        self._sonar_degradation_profile = sonar_degradation_profile
 
     def on_thruster_command(self, values) -> None:
         """Callback for the `/uw/pilot/thrusters` subscription. Never
@@ -272,6 +284,20 @@ class RealtimeRosSession:
         shaped_command = self._pilot_command_model.step(self._last_thruster_command, self._dt_s)
         shaped_command = apply_thruster_fault(shaped_command, self._thruster_fault)
         frame = self._session.step(shaped_command)
+        # resolve_active_degradation is the ONLY scheduling decision made
+        # here (fully unit-tested in isolation, see test_fault_injector.py)
+        # -- this class itself is real-HoloOcean-only and never unit tested
+        # directly. With no schedule configured it returns
+        # (visual_degradation, sonar_degradation) unchanged, so this is a
+        # no-op for every pre-B4 caller.
+        visual_degradation, sonar_degradation = resolve_active_degradation(
+            self._sensor_degradation_schedule,
+            self._visual_degradation_profile,
+            self._sonar_degradation_profile,
+            frame.sim_time_s,
+            baseline_visual=visual_degradation,
+            baseline_sonar=sonar_degradation,
+        )
         return build_realtime_messages(
             frame, self._topics, message_types, rng=self._rng,
             visual_degradation=visual_degradation,
@@ -323,6 +349,17 @@ def main() -> None:
     parser.add_argument("--sonar-degradation", choices=("clear", "critical"), default="clear")
     parser.add_argument("--thruster-fault-index", type=int, default=None)
     parser.add_argument("--thruster-fault-effectiveness", type=float, default=1.0)
+    # Finding B4 additions (docs/rov-realtime-closed-loop-code-review-2026-
+    # 08-27.md): --sensor-fault-schedule scheduled turns --visual-degradation/
+    # --sonar-degradation critical from "on for the whole run" into
+    # scheduled windows with an actual start/duration/recovery, matching
+    # the timing/outage faults above -- default "none" keeps every existing
+    # invocation's exact original (permanently-on-or-absent) behavior.
+    parser.add_argument("--sensor-fault-schedule", choices=("none", "scheduled"), default="none")
+    parser.add_argument("--visual-fault-window-count", type=int, default=1)
+    parser.add_argument("--visual-fault-window-duration-s", type=float, default=30.0)
+    parser.add_argument("--sonar-fault-window-count", type=int, default=1)
+    parser.add_argument("--sonar-fault-window-duration-s", type=float, default=30.0)
     args = parser.parse_args()
 
     import rclpy  # noqa: E402  (lazy: no rclpy install outside a sourced ROS2 distro)
@@ -334,7 +371,7 @@ def main() -> None:
     from std_msgs.msg import Float32MultiArray  # noqa: E402
     from holoocean_interfaces.msg import ImagingSonar  # noqa: E402
 
-    from uw_holoocean_adapter.fault_injector import build_fault_schedule
+    from uw_holoocean_adapter.fault_injector import build_fault_schedule, build_sensor_degradation_schedule
     from uw_holoocean_adapter.scenario_randomization import PRESET_CRITICAL_DEGRADED
 
     manifest = load_realtime_manifest(args.scenario, args.task)
@@ -357,12 +394,38 @@ def main() -> None:
             effectiveness_multiplier=args.thruster_fault_effectiveness,
         )
 
+    visual_degradation = PRESET_CRITICAL_DEGRADED.visual if args.visual_degradation == "critical" else None
+    sonar_degradation = PRESET_CRITICAL_DEGRADED.sonar if args.sonar_degradation == "critical" else None
+
+    sensor_degradation_schedule = None
+    visual_degradation_profile = None
+    sonar_degradation_profile = None
+    if args.sensor_fault_schedule == "scheduled":
+        fault_seed = args.fault_seed if args.fault_seed is not None else args.seed
+        duration_s = args.fault_duration_s if args.fault_duration_s is not None else manifest.task.max_duration_s
+        visual_degradation_profile = visual_degradation
+        sonar_degradation_profile = sonar_degradation
+        sensor_degradation_schedule = build_sensor_degradation_schedule(
+            fault_seed, duration_s,
+            visual_window_count=args.visual_fault_window_count if visual_degradation_profile is not None else 0,
+            visual_window_duration_s=args.visual_fault_window_duration_s,
+            sonar_window_count=args.sonar_fault_window_count if sonar_degradation_profile is not None else 0,
+            sonar_window_duration_s=args.sonar_fault_window_duration_s,
+        )
+        # Under scheduling, --visual-degradation/--sonar-degradation choose
+        # WHICH profile applies inside a window, not a permanently-on value
+        # -- outside every window the baseline passed to tick() reverts to
+        # clear (None), which is what actually gives the fault a recovery.
+        visual_degradation = None
+        sonar_degradation = None
+
     session = RealtimeRosSession(
         manifest, args.seed, rng,
         fault_injector=injector, thruster_fault=thruster_fault, perturbation_rng=perturbation_rng,
+        sensor_degradation_schedule=sensor_degradation_schedule,
+        visual_degradation_profile=visual_degradation_profile,
+        sonar_degradation_profile=sonar_degradation_profile,
     )
-    visual_degradation = PRESET_CRITICAL_DEGRADED.visual if args.visual_degradation == "critical" else None
-    sonar_degradation = PRESET_CRITICAL_DEGRADED.sonar if args.sonar_degradation == "critical" else None
     message_types = RosMessageTypes(Image=Image, Odometry=Odometry, ImagingSonar=ImagingSonar, Clock=Clock)
 
     rclpy.init()

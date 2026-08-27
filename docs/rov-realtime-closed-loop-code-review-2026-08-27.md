@@ -202,7 +202,47 @@
      管线里 `RigCalibrationSnapshot` protobuf 的解析路径，从 `configs/rig/*.yaml` 加载真实
      标定，而不是硬编码 identity。
 
-### B2. 队列背压/丢弃统计算出来了，但没人读
+### B2. 队列背压/丢弃统计算出来了，但没人读 [已修复 2026-08-27]
+
+> 修复方式：把 `BuildStatusJson` 这段原本藏在 `holoocean_realtime_sink.cpp`
+> 匿名命名空间里、完全没有单测覆盖的 JSON 拼装逻辑，整体搬到新文件
+> `include/application/holoocean_status_json.hpp` +
+> `src/application/holoocean_status_json.cpp`（`uw::application::
+> BuildOnlineAssistStatusJson`）——只依赖 `domain` 类型，不依赖
+> runtime/opencv/ROS2，复用这个仓库既有的"可移植核心 + 薄包装"分层方式
+> （类比 `holoocean_live_conversion.hpp` vs `holoocean_realtime_node.cpp`）。
+> 新增 `QueueHealthToJson`，函数签名新增 `queue_health` 参数
+> （`std::array<HealthReport, 4>`，顺序固定 localization/correction/
+> mapping/evidence，和 `LiveEventSource::HealthReports()` 自己文档的顺序
+> 一致），JSON 顶层新增 `"queue_health"` 一节，每条车道给出
+> `queue_depth`/`queue_high_watermark`/`dropped_frame_count`/
+> `rejected_frame_count`/`sequence_gap_count`/`oldest_message_age_ms`/
+> `latency_p50/p95/p99_ms`。`RealtimeAssistOutputSink` 新增对 `source_`
+> 的常引用（`source_` 在成员声明顺序里排在 `output_sink_` 之前，构造期
+> 已经可用；析构靠现有的"先 `Close()`+`join()` 泵线程、再走隐式成员析构"
+> 顺序保证不会有悬垂引用），`Publish()` 里改为
+> `BuildOnlineAssistStatusJson(state, source_.HealthReports())`。
+>
+> **范围说明**：只做了"可观测"这一半——JSON 里现在能看到每条车道的丢弃/
+> 拒绝/年龄统计了。**没有**把这些指标接回 `OnlineAssistPipeline::
+> ComputeDegradation()` 去改 `guidance_valid`/`system_health`——评估后
+> 认为这个联动本身价值有限且有风险：姿态队列一旦真的在拒绝消息，
+> `last_vehicle_state_capture_s_` 很快就会因为收不到新姿态而触发既有的
+> `vehicle_state_stale` 降级路径，安全侧的最终结果是一样的，真正的差距
+> 只是"运营方多早能看出原因"，而这正是暴露 JSON 字段已经解决的问题；反过来
+> 硬把队列统计接进降级状态机，会在没有真实数据验证阈值的情况下改变
+> `guidance_valid` 这个直接影响飞手 `ScriptedPilot` 推进器输出的信号,
+> 风险和收益不成比例,所以没有做。
+>
+> Python 侧 `hmi_status_bridge.parse_hmi_status` 用 `dict.get()` 按已知
+> key 取值，新增的顶层 `queue_health` key 是纯新增、向后兼容，不需要跟着
+> 改。新增 5 个单测（`tests/application/holoocean_status_json_test.cpp`，
+> 手写子串检查——仓库测试依赖里没有 JSON 解析库，和
+> `holoocean_live_conversion_test.cpp` 一类手写序列化器的验证方式一致），
+> `application_tests`（新增后 46 例）、完整 CTest 567 例全绿，ROS2 网关
+> 重新编译通过。
+
+### B2（原始记录，供追溯）. 队列背压/丢弃统计算出来了，但没人读
 
 - **证据**：`LiveEventSource::Stats()/HealthReports()`（`live_event_source.cpp:262-311`）
   完整统计了 `overflow_rejected_count`、`dropped_*`、`sequence_gap_count` 等，但
@@ -260,7 +300,41 @@
   检查年龄，超预算直接计入丢弃统计、`continue` 取下一条，不再进入下游处理——这个改动同时
   解决 B3 本身和性能一节的 D3。
 
-### B4. 故障注入矩阵覆盖不全
+### B4. 故障注入矩阵覆盖不全 [已修复 2026-08-27]
+
+> 修复方式：`fault_injector.py` 新增 `SensorDegradationWindow`
+> （start_s/duration_s）、`SensorDegradationSchedule`
+> （visual_windows/sonar_windows 两条独立时间表——真实的浑浊事件和真实的
+> 声呐多径/增益事件没有理由同时发生，分开调度也才能单独练习"只有一种
+> 模态退化"这条路径）、`build_sensor_degradation_schedule`（复用已有
+> `outage_count`/`outage_duration_s` 的采样风格：给定 seed/时长/窗口数/
+> 窗口时长，确定性地在 `[0, duration_s)` 内随机放置窗口）、
+> `sensor_degradation_active`（半开区间 `[start, start+duration)` 判断）、
+> `resolve_active_degradation`（纯函数：给定 schedule + 窗口内 profile +
+> 窗口外 baseline + 当前仿真时间，返回这一刻该用哪个 —— `schedule=None`
+> 时永远返回 baseline，对所有没有传 schedule 的既有调用方是纯加法、零
+> 行为变化）。
+>
+> `RealtimeRosSession`（本机没有 rclpy/HoloOcean，历来不直接单测，只测它
+> 调用的可移植核心）新增 `sensor_degradation_schedule`/
+> `visual_degradation_profile`/`sonar_degradation_profile` 三个可选构造
+> 参数；`tick()` 里在 `frame.sim_time_s` 拿到之后，唯一新增的一行是调用
+> `resolve_active_degradation(...)`——真正的调度判断逻辑不在这个不可单测
+> 的类里，风险面收得很小。`main()` 新增 `--sensor-fault-schedule
+> {none,scheduled}`（默认 `none`，保证现有调用方式行为完全不变）+
+> `--{visual,sonar}-fault-window-{count,duration-s}` 四个参数；选
+> `scheduled` 后，原本"`--visual-degradation critical` = 整个运行期间
+> 持续退化"变成"窗口内退化、窗口外自动恢复清澈/干净"，`--visual-degradation`/
+> `--sonar-degradation` 的语义从"是否退化"变成"窗口内用哪个 profile"。
+>
+> 新增 9 个单测覆盖 `build_sensor_degradation_schedule`（确定性、默认
+> 窗口数为 0、窗口不越界、拒绝非法参数）、`sensor_degradation_active`
+> （半开区间边界）、`resolve_active_degradation`（无 schedule 时恒等于
+> baseline、窗口内外切换、**窗口结束后真正恢复**——这条是和"整个运行期间
+> 常开"这种旧行为的关键区别）。`adapters/holoocean` 全量 pytest
+> 205 例（含新增 9 例）全绿。
+
+### B4（原始记录，供追溯）. 故障注入矩阵覆盖不全
 
 - **证据**：`fault_injector.py` 实现了时间类（时钟偏移/抖动/乱序/重复）、设备中断恢复、单
   推进器降效，但视觉/声呐类扰动（浑浊、后向散射、散斑、增益漂移、距离尺度偏差）目前是

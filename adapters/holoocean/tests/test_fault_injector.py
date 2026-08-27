@@ -1,16 +1,23 @@
 from itertools import pairwise
 
 import numpy as np
+import pytest
 
 from uw_holoocean_adapter.fault_injector import (
     FaultInjectionProfile,
     FaultInjector,
     ScheduledFault,
+    SensorDegradationSchedule,
+    SensorDegradationWindow,
     ThrusterFaultConfig,
     TopicFaultConfig,
     apply_thruster_fault,
     build_fault_schedule,
+    build_sensor_degradation_schedule,
+    resolve_active_degradation,
+    sensor_degradation_active,
 )
+from uw_holoocean_adapter.scenario_randomization import PRESET_CRITICAL_DEGRADED
 
 _TOPICS = ("/holoocean/auv0/LeftCamera", "/holoocean/auv0/RightCamera", "/holoocean/auv0/ImagingSonar")
 
@@ -132,3 +139,102 @@ def test_apply_thruster_fault_scales_only_the_targeted_channel():
 def test_apply_thruster_fault_is_a_no_op_when_no_fault_configured():
     command = [1.0, 2.0, 3.0]
     assert apply_thruster_fault(command, None) == command
+
+
+# docs/rov-realtime-closed-loop-code-review-2026-08-27.md finding B4: visual/
+# sonar degradation used to be a static per-run parameter, not a runtime-
+# schedulable fault with start/duration/recovery like the timing/outage
+# faults above already were.
+
+
+def test_sensor_degradation_schedule_is_repeatable():
+    schedule_a = build_sensor_degradation_schedule(
+        seed=7, duration_s=120.0, visual_window_count=2, visual_window_duration_s=10.0,
+        sonar_window_count=1, sonar_window_duration_s=20.0,
+    )
+    schedule_b = build_sensor_degradation_schedule(
+        seed=7, duration_s=120.0, visual_window_count=2, visual_window_duration_s=10.0,
+        sonar_window_count=1, sonar_window_duration_s=20.0,
+    )
+    assert schedule_a == schedule_b
+
+
+def test_sensor_degradation_schedule_default_window_counts_yield_no_windows():
+    schedule = build_sensor_degradation_schedule(seed=1, duration_s=60.0)
+    assert schedule == SensorDegradationSchedule()
+
+
+def test_sensor_degradation_windows_stay_within_the_run_duration():
+    schedule = build_sensor_degradation_schedule(
+        seed=3, duration_s=50.0, visual_window_count=5, visual_window_duration_s=8.0,
+        sonar_window_count=5, sonar_window_duration_s=8.0,
+    )
+    for window in schedule.visual_windows + schedule.sonar_windows:
+        assert window.start_s >= 0.0
+        assert window.start_s + window.duration_s <= 50.0 + 1e-9
+
+
+def test_sensor_degradation_active_checks_half_open_interval():
+    windows = (SensorDegradationWindow(start_s=10.0, duration_s=5.0),)
+    assert not sensor_degradation_active(windows, 9.999)
+    assert sensor_degradation_active(windows, 10.0)
+    assert sensor_degradation_active(windows, 14.999)
+    assert not sensor_degradation_active(windows, 15.0)
+
+
+def test_resolve_active_degradation_with_no_schedule_always_returns_baseline():
+    visual, sonar = resolve_active_degradation(
+        None, PRESET_CRITICAL_DEGRADED.visual, PRESET_CRITICAL_DEGRADED.sonar, sim_time_s=42.0,
+    )
+    assert visual is None
+    assert sonar is None
+
+
+def test_resolve_active_degradation_applies_profile_only_inside_its_own_window():
+    schedule = SensorDegradationSchedule(
+        visual_windows=(SensorDegradationWindow(start_s=10.0, duration_s=5.0),),
+        sonar_windows=(SensorDegradationWindow(start_s=30.0, duration_s=5.0),),
+    )
+
+    before = resolve_active_degradation(
+        schedule, PRESET_CRITICAL_DEGRADED.visual, PRESET_CRITICAL_DEGRADED.sonar, sim_time_s=5.0,
+    )
+    assert before == (None, None)
+
+    during_visual_only = resolve_active_degradation(
+        schedule, PRESET_CRITICAL_DEGRADED.visual, PRESET_CRITICAL_DEGRADED.sonar, sim_time_s=12.0,
+    )
+    assert during_visual_only == (PRESET_CRITICAL_DEGRADED.visual, None)
+
+    during_sonar_only = resolve_active_degradation(
+        schedule, PRESET_CRITICAL_DEGRADED.visual, PRESET_CRITICAL_DEGRADED.sonar, sim_time_s=32.0,
+    )
+    assert during_sonar_only == (None, PRESET_CRITICAL_DEGRADED.sonar)
+
+    after = resolve_active_degradation(
+        schedule, PRESET_CRITICAL_DEGRADED.visual, PRESET_CRITICAL_DEGRADED.sonar, sim_time_s=100.0,
+    )
+    assert after == (None, None)
+
+
+def test_resolve_active_degradation_recovers_after_window_ends():
+    # The whole point of a scheduled window over a permanently-on flag:
+    # degradation must actually turn back off.
+    schedule = SensorDegradationSchedule(
+        visual_windows=(SensorDegradationWindow(start_s=10.0, duration_s=5.0),),
+    )
+    inside = resolve_active_degradation(schedule, PRESET_CRITICAL_DEGRADED.visual, None, sim_time_s=12.0)
+    recovered = resolve_active_degradation(schedule, PRESET_CRITICAL_DEGRADED.visual, None, sim_time_s=16.0)
+    assert inside[0] is PRESET_CRITICAL_DEGRADED.visual
+    assert recovered[0] is None
+
+
+def test_build_sensor_degradation_schedule_rejects_negative_duration():
+    with pytest.raises(ValueError):
+        build_sensor_degradation_schedule(seed=1, duration_s=-1.0)
+
+
+def test_build_sensor_degradation_schedule_rejects_non_positive_window_duration():
+    with pytest.raises(ValueError):
+        build_sensor_degradation_schedule(seed=1, duration_s=60.0, visual_window_count=1,
+                                          visual_window_duration_s=0.0)
