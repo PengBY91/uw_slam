@@ -40,6 +40,16 @@ set_property(CACHE UW_SANITIZER PROPERTY STRINGS OFF address thread)
 if(NOT UW_SANITIZER STREQUAL "OFF")
   if(UW_SANITIZER STREQUAL "address")
     add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
+    # GCC's null/nonnull UBSan modes make non-weak function addresses appear
+    # nullable during constant evaluation.  That triggers GCC PR 71962 in
+    # Abseil's hash_policy_traits (abseil-cpp#1634) before our code can build.
+    # Keep ASan and every other UBSan check enabled; only disable the three
+    # GCC modes that independently reproduce the compiler error.  Clang does
+    # not have this issue and retains the complete undefined group.
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+      add_compile_options(
+        -fno-sanitize=null,nonnull-attribute,returns-nonnull-attribute)
+    endif()
     add_link_options(-fsanitize=address,undefined)
   elseif(UW_SANITIZER STREQUAL "thread")
     add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)

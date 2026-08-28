@@ -21,6 +21,10 @@ from uw_holoocean_adapter.realtime_gate import (
 from uw_holoocean_adapter.run_report import disturbed_gate, minimum_gate, nominal_gate, overload_gate
 
 
+def _immediately_exits():
+    """Pickleable process target for spawn/forkserver-based Python runtimes."""
+
+
 def _write_profile(tmp_path, **overrides):
     data = {
         "profile": "nominal",
@@ -95,9 +99,6 @@ def test_required_passes_rounds_up_for_non_ten_seed_campaigns():
 
 def test_process_group_start_process_reports_exit_and_stop_reaps_it():
     group = ProcessGroup()
-
-    def _immediately_exits():
-        return
 
     group.start_process(_immediately_exits)
     deadline = time.monotonic() + 2.0
