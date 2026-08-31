@@ -43,6 +43,8 @@
 |---|---|---|
 | 新贡献者第一次读代码、搞清楚整条调用链 | [新人上手指南](./uw-slam-newcomer-guide.md) | [两条主线代码走读](./uw-slam-two-mainlines-walkthrough-2026-08-26.md) |
 | 按执行顺序逐阶段读离线管线/在线辅助的代码块与机制 | [两条主线代码走读](./uw-slam-two-mainlines-walkthrough-2026-08-26.md) | [代码库参考](./uw-slam-codebase-reference-2026-08-18.md) |
+| 深入理解离线 SLAM 管线（主线一）每个阶段的机制、数学与设计原因 | [离线 SLAM 管线深度走读](./uw-slam-offline-slam-pipeline-deep-dive-2026-08-28.md) | [两条主线代码走读](./uw-slam-two-mainlines-walkthrough-2026-08-26.md) |
+| 深入理解 ROV 在线驾驶辅助（主线二）的实时闭环链路与降级语义 | [ROV 实时闭环深度走读](./uw-slam-rov-realtime-closed-loop-deep-dive-2026-08-28.md) | [两条主线代码走读](./uw-slam-two-mainlines-walkthrough-2026-08-26.md)、[在线融合规格](./specifications/rov-acoustic-optic-online-fusion-spec.md) |
 | 查找类型、接口、算法或 CMake target | [代码库参考](./uw-slam-codebase-reference-2026-08-18.md) | [根 README](../README.md) |
 | 理解核心消息与接口、依赖 DAG、状态机与 Gate | [长期架构设计](./acoustic-optic-slam-platform-architecture-2026-08-17.md) | [代码库参考](./uw-slam-codebase-reference-2026-08-18.md) |
 | 配置或复现实验 | [配置说明](../configs/README.md) | [根 README](../README.md#运行端到端-demo) |
@@ -62,6 +64,8 @@
 | [根 README](../README.md) | 当前入口 | 项目定位、快速开始、已验证能力与限制 | 当前工作树，2026-08-26 |
 | [新人上手指南](./uw-slam-newcomer-guide.md) | 当前说明 | 调用链、目录职责速查、常见误解边界 | `8df083b` + 当前工作树，2026-08-22 |
 | [两条主线代码走读](./uw-slam-two-mainlines-walkthrough-2026-08-26.md) | 当前事实 | 离线 SLAM 管线与 ROV 在线辅助两条主线的代码块、阶段逻辑与设计原因 | `80d4464` + 当前工作树，2026-08-26 |
+| [离线 SLAM 管线深度走读](./uw-slam-offline-slam-pipeline-deep-dive-2026-08-28.md) | 当前事实 | 主线一（synth_bag_gen → replay_demo）逐阶段机制、残差/求解器数学、v1 简化边界 | 当前工作树（`f4d3f3e`），2026-08-28 |
+| [ROV 实时闭环深度走读](./uw-slam-rov-realtime-closed-loop-deep-dive-2026-08-28.md) | 当前事实 | 主线二（HoloOcean → 网关 → 四车道 → 在线融合 → HMI/飞手）逐阶段机制、降级状态机、gate 体系 | 当前工作树（`f4d3f3e`），2026-08-28 |
 | [代码库参考](./uw-slam-codebase-reference-2026-08-18.md) | 当前事实 | 当前类型、函数、参数、数据流、测试与工具 | `8df083b` + 当前工作树，2026-08-22 |
 | [长期架构设计](./acoustic-optic-slam-platform-architecture-2026-08-17.md) | 已批准设计 | 长期目标、模块边界、不变量与阶段决策 | 状态映射核对至 2026-08-22 |
 | [Pipeline 工程方案](./holoocean-to-acoustic-optic-slam-pipeline-2026-08-05.md) | 演进中/历史参考 | 第一阶段 baseline、方案演进与代码审计修订 | 状态说明核对至 2026-08-22 |
