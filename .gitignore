@@ -4,6 +4,9 @@
 !/external_repos/README.md
 !/external_repos/external-repos-overview.md
 
+docs/docx
+*.docx
+
 # Build artifacts
 /build/
 /build-*/
