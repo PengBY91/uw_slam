@@ -31,6 +31,7 @@
 | down | **+4.594 m/s** |
 | yaw right | **+0.984 rad/s**（受控响应） |
 | DEPTH_HOLD | 15 s 内保持 **0.32 m** |
+| **30 分钟连续运行** | **89802 帧 / 1796 s 仿真时间，steady state 50.0 frames/s（RTF 1.00），stale=0、dropped=0、foreign=0**——规格的"30 分钟不失步"通过 |
 | HoloOcean IMU 含不含重力 | **含**（首帧 \|accel\| = 9.800 m/s²，首次实测证实 `imu.proto` 里那条一直没验证过的假设） |
 | EKF 与物理一致性 | 吻合（前进 1.96 vs 2.095、横移 1.77 vs 2.095、下潜 4.76 vs 4.594） |
 
@@ -158,6 +159,26 @@ HoloOcean 做的操纵/控制相关结论都要重新看**——尤其是"纯 su
 仿真里的转动阻尼是一个通用的 0.75/s 衰减项，真机是二次水动力阻尼。同理，各向同性的
 平动阻力让下潜速度做到 4.6 m/s（真机 BlueROV2 约 1 m/s 量级）。要在仿真里调姿态或
 垂向控制参数之前，先确认这两点是否可接受。
+
+### 2.4c WSL2↔Windows 的 TCP 长连接会断，桥接必须自愈（30 分钟 soak 实测）
+
+30 分钟连续运行中，第 ~17 分钟出现一次
+`ConnectionResetError(104, 'Connection reset by peer')`。这不是管线缺陷——
+`holoocean_bridge_sensor_host.py` 的注释里早就记录过本机这条路径的同类现象
+（"476 real ticks flowed, then one ConnectionResetError"）。
+
+桥接的重连逻辑按设计工作：`reconnect (#1)` 后立即恢复，Windows 侧的 HoloOcean
+会话没有重启，所以**仿真时间连续、无跳变**；而且重连快到 **SITL 全程没有察觉**
+——最终 `stale=0`（SITL 的 servo 重发一次都没触发，它的容忍是 10 秒）、
+`dropped=0`。
+
+两点设计上的后果值得保留：
+
+- Windows 侧的 host 必须**主动重连**（它是 TCP 客户端，桥接是 listener），
+  否则一次抖动就要人工重启整条链；
+- 桥接在重连后不能重新计时——`sim_time_offset` 在第一帧就锁定，Windows 侧会话
+  的时钟继续走，所以重连不会给 SITL 灌一个时间跳变。这条是在一次 Windows host
+  比桥接活得久的重启里发现的（当时 SITL 收到 timestamp 265.66 s）。
 
 ### 2.5 ArduSub 启动时把深度归零
 
