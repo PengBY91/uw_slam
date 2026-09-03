@@ -1,0 +1,29 @@
+[project]
+name = "uw-wit-imu"
+version = "0.1.0"
+description = "HWT9053-485 IMU protocol parsing, uniform-timeline reconstruction and the Pi-side UDP forwarder (PREP-D-01/D-02)."
+requires-python = ">=3.10"
+dependencies = [
+    "protobuf>=4.21",
+    "pyserial>=3.5",
+]
+# Deliberately minimal: this package's runtime target is a BlueOS extension
+# container on a Raspberry Pi, where every added dependency is bandwidth on
+# the tether at image-pull time and another thing that can fail to build on
+# arm64. No numpy — the arithmetic here is a handful of scalars per sample,
+# and a pure-Python implementation at 200 Hz is well inside the Pi's budget.
+# pyserial is imported lazily (only by configure.py/dump.py/service.py), so
+# protocol/registers/timebase/forwarder stay importable without it.
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["uw_wit_imu*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

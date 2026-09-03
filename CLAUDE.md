@@ -79,6 +79,7 @@ ctest --test-dir build --output-on-failure   # 用例数随代码变化，以实
 
 (cd adapters/holoocean && .venv/bin/pytest -q)  # 先按 adapters/holoocean/README.md 装 dev extra + 生成 schema_pb2
 (cd adapters/datasets && .venv/bin/pytest -q)   # EuRoC 转换器离线单测（碰了才需要跑）
+(cd adapters/wit_imu && .venv/bin/pytest -q)    # HWT9053-485 IMU 数据链离线单测（同上；先按其 README 建 venv + 生成 schema_pb2）
 
 tools/lint/check_no_ros_in_core.sh           # 依赖不变量检查（兼容入口，实际跑 tools/lint/check_layer_dependencies.py）
 ```
@@ -302,6 +303,9 @@ ctest --test-dir build -R integration.acoustic_optic_scenario_matrix_determinism
   {realtime_ros_session,fault_injector,task_scorer,realtime_gate,run_report}.py`；
   实时场景/任务 manifest：`adapters/holoocean/scenarios/`
 - EuRoC 等公共数据集转换：`adapters/datasets/uw_dataset_adapter/`
+- HWT9053-485 外挂 IMU 数据链（协议解析/均匀时间轴/Pi 侧 UDP 转发/BlueOS
+  extension/配置脚本）：`adapters/wit_imu/`，规格里点名的入口在
+  `tools/imu/wit_{configure,dump}.py`
 - 求解器基准脚本：`tools/bench/solver_benchmark.sh`
 - 集中式 CMake（library/application/test target 图）：`cmake/Dependencies.cmake`、
   `cmake/Libraries.cmake`、`cmake/Applications.cmake`、`cmake/Tests.cmake`

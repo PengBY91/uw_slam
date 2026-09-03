@@ -1,0 +1,35 @@
+{
+  "_comment": [
+    "BlueOS extension manifest (PREP-D-02 step 4). The docker.* block is what",
+    "BlueOS's extension manager passes to the Docker daemon. Two settings here",
+    "are load-bearing and not defaults:",
+    "  - NetworkMode host: the forwarder sends UDP to the topside computer at",
+    "    192.168.2.1, which is on the ROV's host network, not on a bridge.",
+    "  - the /dev/ttyUSB0 device binding plus privileged: BlueOS does not map",
+    "    USB serial devices into extension containers by default.",
+    "RestartPolicy is unless-stopped so the forwarder comes back after a",
+    "brown-out at depth without a topside operator having to notice."
+  ],
+  "name": "uw-wit-imu-forwarder",
+  "description": "HWT9053-485 IMU -> UDP protobuf ImuSample forwarder for uw_slam (PREP-D-02).",
+  "docker": "uw-slam/wit-imu-forwarder",
+  "tag": "0.1.0",
+  "permissions": {
+    "ExposedPorts": {},
+    "HostConfig": {
+      "Privileged": true,
+      "NetworkMode": "host",
+      "RestartPolicy": { "Name": "unless-stopped" },
+      "Devices": [
+        { "PathOnHost": "/dev/ttyUSB0", "PathInContainer": "/dev/ttyUSB0", "CgroupPermissions": "rwm" }
+      ]
+    },
+    "Env": [
+      "WIT_PORT=/dev/ttyUSB0",
+      "WIT_BAUD=230400",
+      "WIT_RATE=200",
+      "WIT_DEST_HOST=192.168.2.1",
+      "WIT_DEST_PORT=27500"
+    ]
+  }
+}
