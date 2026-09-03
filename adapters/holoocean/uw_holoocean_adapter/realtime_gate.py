@@ -47,6 +47,7 @@ from uw_holoocean_adapter.run_report import (
     minimum_gate,
     nominal_gate,
     overload_gate,
+    tether_limited_gate,
 )
 
 _DEFAULT_GATEWAY_BINARY = "build_ros2/bin/holoocean_realtime_node"
@@ -64,6 +65,20 @@ class RealtimeGateError(Exception):
     """A required process could not be started, or exited unexpectedly."""
 
 
+_FAULT_PROFILE_CHOICES = ("none", "critical", "bandwidth", "critical+bandwidth")
+
+
+@dataclasses.dataclass(frozen=True)
+class BandwidthGateConfig:
+    """The `bandwidth:` block of a rov_realtime_*.yaml profile, forwarded
+    verbatim to `realtime_ros_session --bandwidth-*` (PREP-E-02)."""
+
+    nominal_mbps: float = 20.0
+    min_mbps: float = 10.0
+    max_mbps: float = 40.0
+    walk_sigma_mbps_per_s: float = 0.0
+
+
 @dataclasses.dataclass(frozen=True)
 class GateProfile:
     profile: str
@@ -75,6 +90,13 @@ class GateProfile:
     disturbance_matrix_enabled: bool
     gate: str
     soak: bool = False
+    # PREP-E-02: `fault_profile` used to be read by nothing -- `faults_enabled:
+    # true` in a YAML had no runtime effect because run_gate() never passed a
+    # --fault-profile to the session subprocess. It is now forwarded (see
+    # session_fault_args()). "none" keeps the argv byte-identical to before.
+    fault_profile: str = "none"
+    fault_seed: Optional[int] = None
+    bandwidth: Optional[BandwidthGateConfig] = None
 
 
 def load_profile(path: str) -> GateProfile:
@@ -83,6 +105,21 @@ def load_profile(path: str) -> GateProfile:
         raise RealtimeGateError(f"profile file not found: {path}")
     data = yaml.safe_load(profile_path.read_text())
     camera = data.get("camera", {})
+    fault_profile = str(data.get("fault_profile", "none"))
+    if fault_profile not in _FAULT_PROFILE_CHOICES:
+        raise RealtimeGateError(
+            f"{path}: fault_profile {fault_profile!r} is not one of {_FAULT_PROFILE_CHOICES}"
+        )
+    bandwidth = None
+    if "bandwidth" in data and data["bandwidth"] is not None:
+        block = data["bandwidth"]
+        bandwidth = BandwidthGateConfig(
+            nominal_mbps=float(block.get("nominal_mbps", 20.0)),
+            min_mbps=float(block.get("min_mbps", 10.0)),
+            max_mbps=float(block.get("max_mbps", 40.0)),
+            walk_sigma_mbps_per_s=float(block.get("walk_sigma_mbps_per_s", 0.0)),
+        )
+    fault_seed = data.get("fault_seed")
     return GateProfile(
         profile=data["profile"],
         duration_s=data.get("duration_s"),
@@ -93,7 +130,32 @@ def load_profile(path: str) -> GateProfile:
         disturbance_matrix_enabled=bool(data.get("disturbance_matrix_enabled", False)),
         gate=str(data.get("gate", data["profile"])),
         soak=bool(data.get("soak", False)),
+        fault_profile=fault_profile,
+        fault_seed=int(fault_seed) if fault_seed is not None else None,
+        bandwidth=bandwidth,
     )
+
+
+def session_fault_args(profile: GateProfile) -> List[str]:
+    """Extra argv for `python -m uw_holoocean_adapter.realtime_ros_session`
+    expressing the profile's fault configuration. Empty (argv unchanged
+    from before PREP-E-02) when the profile declares no fault_profile; the
+    bandwidth flags are only emitted when a `bandwidth` profile is selected
+    so a `critical`-only profile does not pick up default link shaping."""
+    if profile.fault_profile == "none":
+        return []
+    args = ["--fault-profile", profile.fault_profile]
+    if profile.fault_seed is not None:
+        args += ["--fault-seed", str(profile.fault_seed)]
+    if "bandwidth" in profile.fault_profile:
+        bandwidth = profile.bandwidth or BandwidthGateConfig()
+        args += [
+            "--bandwidth-mbps", repr(bandwidth.nominal_mbps),
+            "--bandwidth-min-mbps", repr(bandwidth.min_mbps),
+            "--bandwidth-max-mbps", repr(bandwidth.max_mbps),
+            "--bandwidth-walk-sigma", repr(bandwidth.walk_sigma_mbps_per_s),
+        ]
+    return args
 
 
 def required_passes(gate_profile: str, seed_count: int) -> int:
@@ -110,6 +172,8 @@ def _gate_spec_for(profile: GateProfile, min_duration_s: float):
         return overload_gate()
     if profile.gate == "disturbed":
         return disturbed_gate()
+    if profile.gate == "tether_limited":
+        return tether_limited_gate()
     return nominal_gate(min_duration_s=min_duration_s)
 
 
@@ -249,6 +313,7 @@ def run_gate(
                 task_path,
                 "--seed",
                 str(seed),
+                *session_fault_args(profile),
             ]
         )
         group.start_subprocess(

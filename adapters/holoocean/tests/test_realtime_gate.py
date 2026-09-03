@@ -110,3 +110,60 @@ def test_process_group_start_process_reports_exit_and_stop_reaps_it():
         time.sleep(0.02)
     assert exited, "expected the started process to have exited within 2s"
     group.stop()  # must not raise even though the process already exited
+
+
+# ---- PREP-E-02: fault_profile / bandwidth forwarding ---------------------------
+
+import pathlib  # noqa: E402
+
+from uw_holoocean_adapter.realtime_gate import BandwidthGateConfig, session_fault_args  # noqa: E402
+from uw_holoocean_adapter.run_report import tether_limited_gate  # noqa: E402
+
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
+_TETHER_LIMITED_YAML = _REPO_ROOT / "configs/experiment/rov_realtime_tether_limited.yaml"
+
+
+def test_profiles_without_fault_keys_forward_no_extra_session_argv(tmp_path):
+    # The pre-PREP-E-02 argv must stay byte-identical for nominal/minimum runs.
+    profile = load_profile(_write_profile(tmp_path))
+    assert profile.fault_profile == "none"
+    assert profile.bandwidth is None
+    assert session_fault_args(profile) == []
+
+
+def test_critical_fault_profile_is_forwarded_without_bandwidth_flags(tmp_path):
+    profile = load_profile(_write_profile(tmp_path, fault_profile="critical", fault_seed=3))
+    assert session_fault_args(profile) == ["--fault-profile", "critical", "--fault-seed", "3"]
+
+
+def test_load_profile_rejects_unknown_fault_profile(tmp_path):
+    with pytest.raises(RealtimeGateError, match="fault_profile"):
+        load_profile(_write_profile(tmp_path, fault_profile="chaos"))
+
+
+def test_tether_limited_experiment_forwards_bandwidth_flags_and_gate():
+    profile = load_profile(str(_TETHER_LIMITED_YAML))
+    assert profile.fault_profile == "bandwidth"
+    assert profile.gate == "tether_limited"
+    assert profile.bandwidth == BandwidthGateConfig(
+        nominal_mbps=20.0, min_mbps=10.0, max_mbps=40.0, walk_sigma_mbps_per_s=2.0
+    )
+    assert session_fault_args(profile) == [
+        "--fault-profile", "bandwidth",
+        "--fault-seed", "42",
+        "--bandwidth-mbps", "20.0",
+        "--bandwidth-min-mbps", "10.0",
+        "--bandwidth-max-mbps", "40.0",
+        "--bandwidth-walk-sigma", "2.0",
+    ]
+    assert _gate_spec_for(profile, min_duration_s=0.0) == tether_limited_gate()
+
+
+def test_bandwidth_profile_without_block_uses_contract_tether_defaults(tmp_path):
+    profile = load_profile(_write_profile(tmp_path, fault_profile="critical+bandwidth"))
+    args = session_fault_args(profile)
+    assert args[:2] == ["--fault-profile", "critical+bandwidth"]
+    assert args[args.index("--bandwidth-mbps") + 1] == "20.0"
+    assert args[args.index("--bandwidth-min-mbps") + 1] == "10.0"
+    assert args[args.index("--bandwidth-max-mbps") + 1] == "40.0"
+    assert args[args.index("--bandwidth-walk-sigma") + 1] == "0.0"

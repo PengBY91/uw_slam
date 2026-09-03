@@ -23,6 +23,14 @@ dependencies = [
 [project.optional-dependencies]
 holoocean = ["holoocean"]
 dev = ["pytest>=7.0"]
+# Only tools/sonar_stats.py --plot and tools/calib/imu_allan.py --plot need
+# it (lazy import); the stats/fits themselves and their tests do not.
+plot = ["matplotlib>=3.7"]
+
+[tool.pytest.ini_options]
+# tools/ue5/smoke_world_test.py is a HoloOcean-side script whose *_test.py
+# name would otherwise be collected (and fail at import without HoloOcean).
+testpaths = ["tests"]
 
 [tool.uv]
 # uv's default "universal" resolution solves the lock across every platform

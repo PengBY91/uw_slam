@@ -1,0 +1,188 @@
+{
+  "_comment": [
+    "PREP-A-03 digital twin of the contract vehicle (docs/ROV平台参数.md ROV-01..05, SON-01..03;",
+    "docs/ROV平台到货前准备工作规格-2026-09-02.md PREP-A-03). Not used directly: load",
+    "blue_rov_contract_mono.json (stage 1, MainCamera only) or blue_rov_contract_stereo.json",
+    "(stage 2, MainCamera + LeftCamera/RightCamera). Every uw_* key and this _comment are",
+    "repo-only and stripped by scenario_manifest.holoocean_scenario_cfg().",
+    "Profiles (SIM-PERF-002/003, tick_budget_2026-09-02.md): 'fidelity' = ticks 200,",
+    "frames_per_sec false, IMU 200 Hz, cameras 1920x1080 @ 25 Hz (30 fps is not an integer",
+    "tick divisor), sonar 40 Hz 768x512, RTF ~0.1; 'realtime' = ticks 25, frames_per_sec true,",
+    "cameras 960x540 @ 12.5 Hz, sonar 5 Hz 768x256, IMU/orientation/depth 25 Hz, RTF ~1.",
+    "Sonar modes: the contract sonar runs at 750 kHz (120 m, 0.95 deg beam) or 1.2 MHz",
+    "(50 m, 0.6 deg beam). HoloOcean's ImagingSonar has NO beam-width parameter, so the",
+    "angular-resolution difference between the two modes CANNOT be simulated; only the",
+    "range and a coarser noise floor (larger AddSigma/RangeSigma at 750 kHz) are modelled.",
+    "AzimuthBins stays 768 in both modes: the contract's 768 is the output beam count, not",
+    "a beam width (recorded as SIM-SON-004). Range resolution: the contract 2.5 mm over 50 m",
+    "would need 20000 bins; HoloOcean is capped by GPU cost, so 768x512 (~10 cm @ 50 m) is used.",
+    "IMU noise: HWT9053-485 nominal (vendor datasheet class values, NOT measured -- PREP-D-05",
+    "Allan run after delivery replaces them). HoloOcean AccelSigma/AngVelSigma are per-sample",
+    "sigmas = noise density * sqrt(rate): gyro 0.005 deg/s/sqrt(Hz) = 8.7e-5 rad/s/sqrt(Hz)",
+    "-> 1.23e-3 rad/s at 200 Hz; accel 100 ug/sqrt(Hz) = 9.8e-4 m/s^2/sqrt(Hz) -> 1.39e-2 m/s^2.",
+    "AccelBiasSigma/AngVelBiasSigma are per-sample random-walk steps (bias walk density *",
+    "sqrt(dt)): gyro 1e-5 rad/s/sqrt(s) -> 7.1e-7 rad/s; accel 1e-4 m/s^2/sqrt(s) -> 7.1e-6.",
+    "The same numbers appear as continuous densities in configs/rig/bluerov2_contract.yaml.",
+    "Heading: VehicleOrientation stays in the file (the realtime session needs it to build",
+    "VehicleState) but is NOT an algorithm topic; the session adds heading noise per",
+    "uw_metadata.heading_noise_model (ROV-03: heading +-1 deg, degraded by thruster current).",
+    "Sensor locations are CAD-pending initial values (metres, HoloOcean agent frame x fwd /",
+    "y right / z up): gimbal camera at the front of the electronics tube, sonar on the top",
+    "front bracket, IMU inside the tube. Stereo placeholders follow PREP-B-08 (10 cm pure-y",
+    "baseline, rigid, no gimbal). Gimbal pitch is locked at 0 deg (open question 3)."
+  ],
+  "name": "uw_bluerov_contract_2026_09_base",
+  "package_name": "Ocean",
+  "world": "PierHarbor",
+  "main_agent": "auv0",
+  "ticks_per_sec": 200,
+  "frames_per_sec": false,
+  "uw_metadata": {
+    "manifest_version": 2,
+    "vehicle_variant": "BlueROV2 Heavy contract 2026-09",
+    "thruster_count": 8,
+    "dynamics_calibration_status": "nominal_not_pool_calibrated",
+    "pilot_command_model": {"limit": 100.0, "deadzone": 5.0, "time_constant_s": 0.15},
+    "sonar_model": {"operating_frequency_hz": 1200000.0, "calibration_status": "nominal_not_contract_sonar_calibrated"},
+    "heading_noise_model": {"sigma_deg": 1.0, "bias_deg_per_full_thrust": 3.0},
+    "default_profile": "fidelity",
+    "default_sonar_mode": "sonar_1200khz"
+  },
+  "uw_profiles": {
+    "fidelity": {
+      "ticks_per_sec": 200,
+      "frames_per_sec": false,
+      "sensors": {
+        "MainCamera": {"Hz": 25, "configuration": {"CaptureWidth": 1920, "CaptureHeight": 1080}},
+        "LeftCamera": {"Hz": 25, "configuration": {"CaptureWidth": 1920, "CaptureHeight": 1080}},
+        "RightCamera": {"Hz": 25, "configuration": {"CaptureWidth": 1920, "CaptureHeight": 1080}},
+        "PilotCamera": {"Hz": 25, "configuration": {"CaptureWidth": 1280, "CaptureHeight": 720}},
+        "ImagingSonar": {"Hz": 40, "configuration": {"RangeBins": 512}},
+        "IMUSensor": {"Hz": 200},
+        "VehicleOrientation": {"Hz": 50},
+        "DepthSensor": {"Hz": 50},
+        "PoseSensor": {"Hz": 10}
+      }
+    },
+    "realtime": {
+      "ticks_per_sec": 25,
+      "frames_per_sec": true,
+      "sensors": {
+        "MainCamera": {"Hz": 12.5, "configuration": {"CaptureWidth": 960, "CaptureHeight": 540}},
+        "LeftCamera": {"Hz": 12.5, "configuration": {"CaptureWidth": 960, "CaptureHeight": 540}},
+        "RightCamera": {"Hz": 12.5, "configuration": {"CaptureWidth": 960, "CaptureHeight": 540}},
+        "PilotCamera": {"Hz": 12.5, "configuration": {"CaptureWidth": 960, "CaptureHeight": 540}},
+        "ImagingSonar": {"Hz": 5, "configuration": {"RangeBins": 256}},
+        "IMUSensor": {"Hz": 25},
+        "VehicleOrientation": {"Hz": 25},
+        "DepthSensor": {"Hz": 25},
+        "PoseSensor": {"Hz": 5}
+      }
+    }
+  },
+  "uw_sonar_modes": {
+    "sonar_1200khz": {
+      "operating_frequency_hz": 1200000.0,
+      "configuration": {"RangeMax": 50.0, "AddSigma": 0.01, "MultSigma": 0.02, "RangeSigma": 0.02}
+    },
+    "sonar_750khz": {
+      "operating_frequency_hz": 750000.0,
+      "configuration": {"RangeMax": 120.0, "AddSigma": 0.02, "MultSigma": 0.03, "RangeSigma": 0.05}
+    }
+  },
+  "algorithm_topics": [
+    "/holoocean/auv0/MainCamera",
+    "/holoocean/auv0/LeftCamera",
+    "/holoocean/auv0/RightCamera",
+    "/holoocean/auv0/ImagingSonar",
+    "/holoocean/auv0/VehicleState",
+    "/holoocean/auv0/IMU"
+  ],
+  "agents": [
+    {
+      "agent_name": "auv0",
+      "agent_type": "BlueROV2",
+      "control_scheme": 0,
+      "location": [0.0, 0.0, -3.0],
+      "rotation": [0.0, 0.0, 0.0],
+      "sensors": [
+        {
+          "sensor_type": "RGBCamera",
+          "sensor_name": "MainCamera",
+          "socket": "CameraSocket",
+          "location": [0.22, 0.0, 0.0],
+          "rotation": [0.0, 0.0, 0.0],
+          "Hz": 25,
+          "configuration": {"CaptureWidth": 1920, "CaptureHeight": 1080, "FOVAngle": 90}
+        },
+        {
+          "sensor_type": "RGBCamera",
+          "sensor_name": "LeftCamera",
+          "socket": "CameraSocket",
+          "location": [0.15, -0.05, 0.06],
+          "Hz": 25,
+          "configuration": {"CaptureWidth": 1920, "CaptureHeight": 1080, "FOVAngle": 90}
+        },
+        {
+          "sensor_type": "RGBCamera",
+          "sensor_name": "RightCamera",
+          "socket": "CameraSocket",
+          "location": [0.15, 0.05, 0.06],
+          "Hz": 25,
+          "configuration": {"CaptureWidth": 1920, "CaptureHeight": 1080, "FOVAngle": 90}
+        },
+        {
+          "sensor_type": "RGBCamera",
+          "sensor_name": "PilotCamera",
+          "socket": "CameraSocket",
+          "location": [0.22, 0.0, 0.0],
+          "Hz": 25,
+          "configuration": {"CaptureWidth": 1280, "CaptureHeight": 720, "FOVAngle": 100}
+        },
+        {
+          "sensor_type": "ImagingSonar",
+          "sensor_name": "ImagingSonar",
+          "socket": "CameraSocket",
+          "location": [0.20, 0.0, 0.10],
+          "Hz": 40,
+          "configuration": {
+            "Azimuth": 140,
+            "Elevation": 20,
+            "RangeMin": 0.30,
+            "RangeMax": 50.0,
+            "RangeBins": 512,
+            "AzimuthBins": 768,
+            "AddSigma": 0.01,
+            "MultSigma": 0.02,
+            "RangeSigma": 0.02,
+            "MultiPath": false,
+            "WaterSpeedSound": 1480
+          }
+        },
+        {"sensor_type": "OrientationSensor", "sensor_name": "VehicleOrientation", "socket": "COM", "Hz": 50},
+        {
+          "sensor_type": "IMUSensor",
+          "sensor_name": "IMUSensor",
+          "socket": "COM",
+          "location": [0.0, 0.0, 0.0],
+          "Hz": 200,
+          "configuration": {
+            "AccelSigma": [0.0139, 0.0139, 0.0139],
+            "AngVelSigma": [0.00123, 0.00123, 0.00123],
+            "AccelBiasSigma": [7.1e-6, 7.1e-6, 7.1e-6],
+            "AngVelBiasSigma": [7.1e-7, 7.1e-7, 7.1e-7],
+            "ReturnBias": true
+          }
+        },
+        {
+          "sensor_type": "DepthSensor",
+          "sensor_name": "DepthSensor",
+          "socket": "COM",
+          "Hz": 50,
+          "configuration": {"Sigma": 0.02}
+        },
+        {"sensor_type": "PoseSensor", "sensor_name": "PoseSensor", "socket": "COM", "Hz": 10}
+      ]
+    }
+  ]
+}

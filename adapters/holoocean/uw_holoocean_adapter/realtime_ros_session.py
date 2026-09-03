@@ -48,19 +48,23 @@ from uw_holoocean_adapter.scenario_randomization import ScenarioRandomization, S
 from uw_holoocean_adapter.sensor_perturbation import perturb_sonar, perturb_stereo_pair
 from uw_holoocean_adapter.coordinates import pose_sensor_to_pose
 from uw_holoocean_adapter.ros_message_conversion import (
+    HeadingNoise,
     RosMessageTypes,
     StateNoise,
     TopicMap,
     build_topic_map,
     holoocean_camera_to_ros_image,
+    holoocean_imu_to_ros_imu,
     holoocean_sonar_to_imaging_sonar_msg,
     sim_time_to_clock_msg,
+    thrust_fraction_of,
     truth_pose_to_odometry,
     vehicle_state_to_odometry,
 )
 from uw_holoocean_adapter.scenario_manifest import RealtimeScenarioManifest, load_realtime_manifest
 from uw_holoocean_adapter.thrust_allocation import allocate, parse_pilot_axes
 
+_MAIN_CAMERA_KEY = "MainCamera"  # PREP-A-03: the contract vehicle's single gimbal camera
 _LEFT_CAMERA_KEY = "LeftCamera"
 _RIGHT_CAMERA_KEY = "RightCamera"
 _PILOT_CAMERA_KEY = "PilotCamera"
@@ -88,6 +92,9 @@ def build_realtime_messages(
     sonar_min_range_m: Optional[float] = None,
     sonar_max_range_m: Optional[float] = None,
     fault_injector: Optional[FaultInjector] = None,
+    heading_noise: Optional[HeadingNoise] = None,
+    thrust_fraction: float = 0.0,
+    fallback_angular_velocity: Optional[np.ndarray] = None,
 ) -> List[Tuple[str, Any]]:
     """Converts one HoloOcean tick's `RawSensorFrame` into the (topic,
     message) pairs that tick should publish. Only builds a message for a
@@ -107,7 +114,17 @@ def build_realtime_messages(
     without a `perturbation_rng` (or supplying `sonar_degradation` without
     both range bounds) is a caller error, not a silent no-op — raises
     `ValueError`, since a perturbation config the caller explicitly asked
-    for silently not being applied would be worse than failing loudly."""
+    for silently not being applied would be worse than failing loudly.
+
+    PREP-A-03 additions (all default to the pre-existing behaviour):
+    `MainCamera` publishes on `topics.main_camera`; a raw `IMUSensor`
+    reading publishes on `topics.imu` as `sensor_msgs/Imu` (requires
+    `message_types.Imu`); `heading_noise`/`thrust_fraction` add the
+    contract vehicle's magnetometer heading error to `VehicleState`; and
+    `fallback_angular_velocity` (the last IMU reading the caller saw) lets
+    `VehicleState` keep publishing at the orientation/depth rate on ticks
+    where the (differently-rated) IMU did not fire -- without it the
+    original all-three-sensors-or-nothing rule applies."""
     if visual_degradation is not None and perturbation_rng is None:
         raise ValueError("visual_degradation requires perturbation_rng")
     if sonar_degradation is not None and (
@@ -145,6 +162,16 @@ def build_realtime_messages(
                 message_types=message_types,
             ),
         ))
+    if _MAIN_CAMERA_KEY in sensors:
+        messages.append((
+            topics.main_camera,
+            holoocean_camera_to_ros_image(
+                np.asarray(sensors[_MAIN_CAMERA_KEY]),
+                capture_time_s=frame.sim_time_s,
+                frame_id="camera_main_link",
+                message_types=message_types,
+            ),
+        ))
     if _PILOT_CAMERA_KEY in sensors:
         messages.append((
             topics.pilot_camera,
@@ -170,19 +197,32 @@ def build_realtime_messages(
                 message_types=message_types,
             ),
         ))
-    if _ORIENTATION_KEY in sensors and _IMU_KEY in sensors and _DEPTH_KEY in sensors:
+    angular_velocity: Optional[np.ndarray] = None
+    if _IMU_KEY in sensors:
         imu = np.asarray(sensors[_IMU_KEY])
+        angular_velocity = imu[1]
+        messages.append((
+            topics.imu,
+            holoocean_imu_to_ros_imu(
+                imu, capture_time_s=frame.sim_time_s, frame_id="imu_link", message_types=message_types
+            ),
+        ))
+    elif fallback_angular_velocity is not None:
+        angular_velocity = np.asarray(fallback_angular_velocity, dtype=float).reshape(3)
+    if _ORIENTATION_KEY in sensors and angular_velocity is not None and _DEPTH_KEY in sensors:
         depth = np.asarray(sensors[_DEPTH_KEY]).reshape(-1)
         messages.append((
             topics.vehicle_state,
             vehicle_state_to_odometry(
                 np.asarray(sensors[_ORIENTATION_KEY]),
-                imu[1],
+                angular_velocity,
                 float(depth[0]),
                 frame.sim_time_s,
                 state_noise,
                 rng,
                 message_types,
+                heading_noise=heading_noise,
+                thrust_fraction=thrust_fraction,
             ),
         ))
 
@@ -249,10 +289,21 @@ class RealtimeRosSession:
         sensor_degradation_schedule: Optional[SensorDegradationSchedule] = None,
         visual_degradation_profile: Optional[VisualDegradation] = None,
         sonar_degradation_profile: Optional[SonarDegradation] = None,
+        heading_noise: Optional[HeadingNoise] = None,
     ):
         self._manifest = manifest
-        self._topics = build_topic_map(manifest.agent_name)
+        self._topics = build_topic_map(manifest.agent_name, manifest.algorithm_topics)
         self._rng = rng
+        # PREP-A-03 step 3: the contract scenarios declare their heading
+        # noise model in uw_metadata; an explicit argument overrides it and
+        # a manifest without the block (legacy AI-D baseline) gets none.
+        self._heading_noise = (
+            heading_noise
+            if heading_noise is not None
+            else HeadingNoise.from_manifest_metadata(manifest.uw_metadata.get("heading_noise_model"))
+        )
+        self._last_angular_velocity: Optional[np.ndarray] = None
+        self._last_thrust_fraction = 0.0
         self._session = HoloOceanSession(
             manifest.holoocean_scenario_cfg(), seed,
             randomization=randomization if randomization is not None else ScenarioRandomization(),
@@ -306,7 +357,10 @@ class RealtimeRosSession:
     ) -> List[Tuple[str, Any]]:
         shaped_command = self._pilot_command_model.step(self._last_thruster_command, self._dt_s)
         shaped_command = apply_thruster_fault(shaped_command, self._thruster_fault)
+        self._last_thrust_fraction = thrust_fraction_of(shaped_command, self._pilot_command_model.limit)
         frame = self._session.step(shaped_command)
+        if _IMU_KEY in frame.sensors:
+            self._last_angular_velocity = np.asarray(frame.sensors[_IMU_KEY], dtype=float)[1].copy()
         # resolve_active_degradation is the ONLY scheduling decision made
         # here (fully unit-tested in isolation, see test_fault_injector.py)
         # -- this class itself is real-HoloOcean-only and never unit tested
@@ -329,10 +383,39 @@ class RealtimeRosSession:
             sonar_min_range_m=self._sonar_min_range_m,
             sonar_max_range_m=self._sonar_max_range_m,
             fault_injector=self._fault_injector,
+            heading_noise=self._heading_noise,
+            thrust_fraction=self._last_thrust_fraction,
+            fallback_angular_velocity=self._last_angular_velocity,
         )
 
     def close(self) -> None:
         self._session.close()
+
+
+def build_publisher_table(manifest: RealtimeScenarioManifest, topics: TopicMap) -> List[Tuple[str, str]]:
+    """(topic, RosMessageTypes attribute) pairs a session should create
+    publishers for -- derived from the sensors the manifest actually
+    carries (PREP-A-03: a mono scenario gets no Left/Right publishers, a
+    scenario without a raw IMU stream gets no IMU publisher), plus the
+    unconditional /clock and truth topics."""
+    table: List[Tuple[str, str]] = []
+    for sensor_key, topic in (
+        (_MAIN_CAMERA_KEY, topics.main_camera),
+        (_LEFT_CAMERA_KEY, topics.left_camera),
+        (_RIGHT_CAMERA_KEY, topics.right_camera),
+        (_PILOT_CAMERA_KEY, topics.pilot_camera),
+    ):
+        if manifest.has_sensor(sensor_key):
+            table.append((topic, "Image"))
+    if manifest.has_sensor(_SONAR_KEY):
+        table.append((topics.imaging_sonar, "ImagingSonar"))
+    if manifest.has_sensor(_IMU_KEY):
+        table.append((topics.imu, "Imu"))
+    if manifest.has_sensor(_ORIENTATION_KEY) and manifest.has_sensor(_DEPTH_KEY):
+        table.append((topics.vehicle_state, "Odometry"))
+    table.append((topics.clock, "Clock"))
+    table.append((topics.scoring_truth, "Odometry"))
+    return table
 
 
 def _build_critical_fault_profile(topics: TopicMap) -> "FaultInjectionProfile":
@@ -351,11 +434,83 @@ def _build_critical_fault_profile(topics: TopicMap) -> "FaultInjectionProfile":
     )
 
 
+# Nominal serialized bytes per message when the manifest cannot tell us
+# (PREP-E-02). ROS `sensor_msgs/Image` carries width*height*3 (bgr8);
+# holoocean_interfaces/ImagingSonar carries float32 per range/azimuth cell
+# (4 bytes; the tether-side adapter will quantize to 8 bit, see PREP-E-01's
+# table, but what the session publishes today is float32); an Odometry is
+# ~1 kB.
+_NOMINAL_STATE_BYTES = 1024
+
+
+def _sensor_configuration(manifest: "RealtimeScenarioManifest", sensor_name: str) -> dict:
+    try:
+        return dict(manifest.sensor(sensor_name).configuration)
+    except (KeyError, ValueError):
+        return {}
+
+
+def _build_bandwidth_profile(
+    topics: TopicMap, manifest: "RealtimeScenarioManifest", *,
+    nominal_mbps: float, min_mbps: float, max_mbps: float, walk_sigma_mbps_per_s: float,
+) -> "BandwidthProfile":
+    """PREP-E-01's degradation order as shaper priorities (lower sends
+    first / drops last): vehicle state/IMU telemetry first (< 1 Mbps, the
+    spec's table treats it as always fitting), then sonar frames ("声呐帧率
+    最后动" -- last of the *video-class* streams to give way), then the
+    pilot video, then the stereo/mono algorithm cameras. Telemetry outranks
+    sonar deliberately: a byte-blind priority queue would otherwise starve
+    1 kB state messages to protect a 1.5 MB float32 sonar frame that cannot
+    be delivered in time anyway. Message sizes come from the scenario
+    manifest's sensor configurations so a 960×540 realtime profile and a
+    1080p fidelity profile shape differently without any extra flags."""
+    from uw_holoocean_adapter.fault_injector import BandwidthProfile
+
+    def camera_bytes(sensor_name: str) -> int:
+        cfg = _sensor_configuration(manifest, sensor_name)
+        return int(cfg.get("CaptureWidth", 1280)) * int(cfg.get("CaptureHeight", 720)) * 3
+
+    sonar_cfg = _sensor_configuration(manifest, "ImagingSonar")
+    sonar_bytes = int(sonar_cfg.get("RangeBins", 512)) * int(sonar_cfg.get("AzimuthBins", 768)) * 4
+
+    priority = {topics.vehicle_state: 0, topics.imaging_sonar: 1, topics.pilot_camera: 2,
+                topics.left_camera: 3, topics.right_camera: 3}
+    sizes = {
+        topics.imaging_sonar: sonar_bytes,
+        topics.vehicle_state: _NOMINAL_STATE_BYTES,
+        topics.pilot_camera: camera_bytes("PilotCamera"),
+        topics.left_camera: camera_bytes("LeftCamera"),
+        topics.right_camera: camera_bytes("RightCamera"),
+    }
+    # Optional topics another task (PREP-A-03) may add to TopicMap; absent
+    # attributes simply are not shaped by name and fall back to defaults.
+    main_camera = getattr(topics, "main_camera", None)
+    if main_camera:
+        priority[main_camera] = 3
+        sizes[main_camera] = camera_bytes("MainCamera")
+    imu_topic = getattr(topics, "imu", None)
+    if imu_topic:
+        priority[imu_topic] = 0
+        sizes[imu_topic] = 512
+    return BandwidthProfile(
+        nominal_mbps=nominal_mbps, min_mbps=min_mbps, max_mbps=max_mbps,
+        walk_sigma_mbps_per_s=walk_sigma_mbps_per_s, walk_interval_s=1.0,
+        topic_priority=priority, topic_bytes=sizes,
+        max_queue_s=2.0, base_latency_s=0.0, bucket_depth_s=0.1,
+        bypass_topics=(topics.clock, topics.scoring_truth),
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scenario", required=True)
     parser.add_argument("--task", required=True)
     parser.add_argument("--seed", type=int, default=42)
+    # PREP-A-03: which `uw_profiles` / `uw_sonar_modes` overlay of the
+    # scenario file to run (None = the file's own default; an error for a
+    # legacy file without such blocks).
+    parser.add_argument("--profile", default=None, help="fidelity | realtime (SIM-PERF-002/003)")
+    parser.add_argument("--sonar-mode", default=None, help="sonar_1200khz | sonar_750khz")
     # A separate process (a fixed-step task control script, ScriptedPilot,
     # or an interactive pilot station) publishes /uw/pilot/thrusters — this
     # gateway only subscribes it, per the plan: "A deterministic task
@@ -365,9 +520,20 @@ def main() -> None:
     #
     # All flags below are additive Task 5 options, every one defaulted to
     # today's no-fault/no-perturbation behavior.
-    parser.add_argument("--fault-profile", choices=("none", "critical"), default="none")
+    parser.add_argument(
+        "--fault-profile", choices=("none", "critical", "bandwidth", "critical+bandwidth"), default="none"
+    )
     parser.add_argument("--fault-seed", type=int, default=None)
     parser.add_argument("--fault-duration-s", type=float, default=None)
+    # PREP-E-02 tether link shaping (only used when --fault-profile includes
+    # "bandwidth"): the available rate starts at --bandwidth-mbps and random-
+    # walks within [--bandwidth-min-mbps, --bandwidth-max-mbps] with the given
+    # per-sqrt(second) sigma (0 = constant). Defaults are docs/ROV平台参数.md
+    # ROV-05's 10–40 Mbps measured tether band around a 20 Mbps nominal.
+    parser.add_argument("--bandwidth-mbps", type=float, default=20.0)
+    parser.add_argument("--bandwidth-min-mbps", type=float, default=10.0)
+    parser.add_argument("--bandwidth-max-mbps", type=float, default=40.0)
+    parser.add_argument("--bandwidth-walk-sigma", type=float, default=0.0)
     parser.add_argument("--visual-degradation", choices=("clear", "critical"), default="clear")
     parser.add_argument("--sonar-degradation", choices=("clear", "critical"), default="clear")
     parser.add_argument("--thruster-fault-index", type=int, default=None)
@@ -394,21 +560,49 @@ def main() -> None:
     from std_msgs.msg import Float32MultiArray  # noqa: E402
     from holoocean_interfaces.msg import ImagingSonar  # noqa: E402
 
-    from uw_holoocean_adapter.fault_injector import build_fault_schedule, build_sensor_degradation_schedule
+    from uw_holoocean_adapter.fault_injector import (
+        BandwidthShaper,
+        build_bandwidth_schedule,
+        build_fault_schedule,
+        build_sensor_degradation_schedule,
+    )
     from uw_holoocean_adapter.scenario_randomization import PRESET_CRITICAL_DEGRADED
 
-    manifest = load_realtime_manifest(args.scenario, args.task)
+    manifest = load_realtime_manifest(args.scenario, args.task, profile=args.profile, sonar_mode=args.sonar_mode)
+    print(
+        f"realtime_ros_session: scenario {manifest.name} profile={manifest.profile} "
+        f"sonar_mode={manifest.sonar_mode} ticks_per_sec={manifest.ticks_per_sec}"
+    )
     rng = np.random.default_rng(args.seed)
     perturbation_rng = np.random.default_rng(args.seed + 1)
-    topics = build_topic_map(manifest.agent_name)
+    topics = build_topic_map(manifest.agent_name, manifest.algorithm_topics)
 
     injector: Optional[FaultInjector] = None
-    if args.fault_profile == "critical":
+    if args.fault_profile != "none":
         fault_seed = args.fault_seed if args.fault_seed is not None else args.seed
         duration_s = args.fault_duration_s if args.fault_duration_s is not None else manifest.task.max_duration_s
-        profile = _build_critical_fault_profile(topics)
-        schedule = build_fault_schedule(fault_seed, profile, duration_s)
-        injector = FaultInjector(schedule, profile, np.random.default_rng(fault_seed))
+        selected = set(args.fault_profile.split("+"))
+        shaper: Optional[BandwidthShaper] = None
+        if "bandwidth" in selected:
+            bandwidth_profile = _build_bandwidth_profile(
+                topics, manifest,
+                nominal_mbps=args.bandwidth_mbps, min_mbps=args.bandwidth_min_mbps,
+                max_mbps=args.bandwidth_max_mbps, walk_sigma_mbps_per_s=args.bandwidth_walk_sigma,
+            )
+            # Own seed stream (fault_seed + 7): the walk must not shift the
+            # drop/duplicate/reorder schedule of a critical+bandwidth run
+            # relative to the same seed's critical-only run.
+            bandwidth_schedule = build_bandwidth_schedule(fault_seed + 7, bandwidth_profile, duration_s)
+            shaper = BandwidthShaper(bandwidth_schedule, bandwidth_profile)
+        if "critical" in selected:
+            profile = _build_critical_fault_profile(topics)
+            schedule = build_fault_schedule(fault_seed, profile, duration_s)
+        else:
+            from uw_holoocean_adapter.fault_injector import FaultInjectionProfile
+
+            profile = FaultInjectionProfile()
+            schedule = ()
+        injector = FaultInjector(schedule, profile, np.random.default_rng(fault_seed), bandwidth=shaper)
 
     thruster_fault = None
     if args.thruster_fault_index is not None:
@@ -449,21 +643,13 @@ def main() -> None:
         visual_degradation_profile=visual_degradation_profile,
         sonar_degradation_profile=sonar_degradation_profile,
     )
-    message_types = RosMessageTypes(Image=Image, Odometry=Odometry, ImagingSonar=ImagingSonar, Clock=Clock)
+    message_types = RosMessageTypes(Image=Image, Odometry=Odometry, ImagingSonar=ImagingSonar, Clock=Clock, Imu=Imu)
 
     rclpy.init()
     node = Node("uw_holoocean_realtime_gateway")
     publishers = {
         topic: node.create_publisher(getattr(message_types, attr), topic, qos_profile_sensor_data)
-        for topic, attr in (
-            (topics.left_camera, "Image"),
-            (topics.right_camera, "Image"),
-            (topics.pilot_camera, "Image"),
-            (topics.imaging_sonar, "ImagingSonar"),
-            (topics.vehicle_state, "Odometry"),
-            (topics.clock, "Clock"),
-            (topics.scoring_truth, "Odometry"),
-        )
+        for topic, attr in build_publisher_table(manifest, topics)
     }
     node.create_subscription(
         Float32MultiArray, topics.pilot_command, lambda msg: session.on_pilot_command(msg.data),

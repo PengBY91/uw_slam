@@ -1,6 +1,8 @@
 #include "adapters/ros2_holoocean_realtime_gateway.hpp"
 
+#include <algorithm>
 #include <chrono>
+#include <stdexcept>
 #include <utility>
 
 #include "sensor_models/geometry.hpp"
@@ -74,6 +76,22 @@ sensor_msgs::msg::Image ToRosImage(const uw::domain::ImageFrame& frame) {
 HoloOceanRealtimeGatewayOptions ReadOptionsFromParameters(rclcpp::Node& node) {
   HoloOceanRealtimeGatewayOptions options;
   options.agent_name = node.declare_parameter<std::string>("agent_name", options.agent_name);
+  options.camera_roles =
+      node.declare_parameter<std::vector<std::string>>("camera_roles", options.camera_roles);
+  for (const auto& role : options.camera_roles) {
+    if (role != "left" && role != "right" && role != "main" && role != "pilot") {
+      throw std::invalid_argument("camera_roles: unknown role '" + role +
+                                  "' (expected left|right|main|pilot)");
+    }
+  }
+  const bool has_left = std::find(options.camera_roles.begin(), options.camera_roles.end(), "left") !=
+                        options.camera_roles.end();
+  const bool has_right = std::find(options.camera_roles.begin(), options.camera_roles.end(), "right") !=
+                         options.camera_roles.end();
+  if (has_left != has_right) {
+    throw std::invalid_argument("camera_roles: left and right must be enabled together (stereo) or "
+                                "both omitted (monocular)");
+  }
   options.calibration_version =
       node.declare_parameter<std::string>("calibration_version", options.calibration_version);
   options.rig_config_path =
@@ -106,17 +124,25 @@ HoloOceanRealtimeGatewayOptions ReadOptionsFromParameters(rclcpp::Node& node) {
 uw::domain::RigCalibrationSnapshot BuildIdentityRig(const HoloOceanRealtimeGatewayOptions& options) {
   uw::domain::RigCalibrationSnapshot rig;
   rig.mutable_calibration_version()->set_value(options.calibration_version);
-  const std::string left_id = "camera_left";
-  const std::string right_id = "camera_right";
   const std::string sonar_id = options.sonar_calibration.sensor_id;
   const std::string state_id = "rov-state";
+  const auto has_role = [&](const char* role) {
+    return std::find(options.camera_roles.begin(), options.camera_roles.end(), role) !=
+           options.camera_roles.end();
+  };
+  // camera_main first (see the header comment): the online pipeline treats
+  // the first rig camera as its visual input.
+  std::vector<std::string> camera_ids;
+  if (has_role("main")) camera_ids.push_back("camera_main");
+  if (has_role("left")) camera_ids.push_back("camera_left");
+  if (has_role("right")) camera_ids.push_back("camera_right");
   auto add_identity_edge = [&](const std::string& child) {
     auto* edge = rig.add_frame_tree();
     edge->mutable_parent_frame()->set_value("base_link");
     edge->mutable_child_frame()->set_value(child);
     *edge->mutable_transform() = uw::sensor_models::Pose3::Identity().ToProto();
   };
-  for (const std::string& sensor : {left_id, right_id}) {
+  for (const std::string& sensor : camera_ids) {
     auto* camera = rig.add_cameras();
     camera->mutable_sensor_id()->set_value(sensor);
     camera->set_width(1280);
@@ -131,7 +157,10 @@ uw::domain::RigCalibrationSnapshot BuildIdentityRig(const HoloOceanRealtimeGatew
   sonar->mutable_sensor_id()->set_value(sonar_id);
   sonar->set_sonar_enabled(true);
   rig.add_vehicle_state_sensors()->set_value(state_id);
-  for (const std::string& sensor : {left_id, right_id, sonar_id, state_id}) {
+  std::vector<std::string> offset_ids = camera_ids;
+  offset_ids.push_back(sonar_id);
+  offset_ids.push_back(state_id);
+  for (const std::string& sensor : offset_ids) {
     (*rig.mutable_time_offset_seconds())[sensor] = 0.0;
     (*rig.mutable_time_offset_provenance())[sensor] = "assumed:holoocean_realtime_node";
   }
@@ -154,17 +183,29 @@ HoloOceanRealtimeGatewayNode::HoloOceanRealtimeGatewayNode()
 
   const auto qos = rclcpp::SensorDataQoS();
   const std::string prefix = "/holoocean/" + options_.agent_name + "/";
-  // Exactly the four algorithm-input topics + the independent PilotCamera
-  // presentation topic -- never /uw/sim/ground_truth, and never
+  // The camera topics enabled by `camera_roles` (PREP-A-03: left/right,
+  // main, and the independent PilotCamera presentation topic) plus sonar
+  // and vehicle state -- never /uw/sim/ground_truth, and never
   // /uw/pilot/thrusters (Task 3's realtime_ros_session.py owns that).
-  left_sub_ = create_subscription<sensor_msgs::msg::Image>(
-      prefix + "LeftCamera", qos, [this](const sensor_msgs::msg::Image::SharedPtr msg) { OnLeftCamera(msg); });
-  right_sub_ = create_subscription<sensor_msgs::msg::Image>(
-      prefix + "RightCamera", qos,
-      [this](const sensor_msgs::msg::Image::SharedPtr msg) { OnRightCamera(msg); });
-  pilot_sub_ = create_subscription<sensor_msgs::msg::Image>(
-      prefix + "PilotCamera", qos,
-      [this](const sensor_msgs::msg::Image::SharedPtr msg) { OnPilotCamera(msg); });
+  for (const std::string& role : options_.camera_roles) {
+    if (role == "left") {
+      camera_subs_.push_back(create_subscription<sensor_msgs::msg::Image>(
+          prefix + "LeftCamera", qos,
+          [this](const sensor_msgs::msg::Image::SharedPtr msg) { OnLeftCamera(msg); }));
+    } else if (role == "right") {
+      camera_subs_.push_back(create_subscription<sensor_msgs::msg::Image>(
+          prefix + "RightCamera", qos,
+          [this](const sensor_msgs::msg::Image::SharedPtr msg) { OnRightCamera(msg); }));
+    } else if (role == "main") {
+      camera_subs_.push_back(create_subscription<sensor_msgs::msg::Image>(
+          prefix + "MainCamera", qos,
+          [this](const sensor_msgs::msg::Image::SharedPtr msg) { OnMainCamera(msg); }));
+    } else if (role == "pilot") {
+      camera_subs_.push_back(create_subscription<sensor_msgs::msg::Image>(
+          prefix + "PilotCamera", qos,
+          [this](const sensor_msgs::msg::Image::SharedPtr msg) { OnPilotCamera(msg); }));
+    }
+  }
   sonar_sub_ = create_subscription<holoocean_interfaces::msg::ImagingSonar>(
       prefix + "ImagingSonar", qos,
       [this](const holoocean_interfaces::msg::ImagingSonar::SharedPtr msg) { OnSonar(msg); });
@@ -193,6 +234,11 @@ void HoloOceanRealtimeGatewayNode::OnLeftCamera(const sensor_msgs::msg::Image::S
 void HoloOceanRealtimeGatewayNode::OnRightCamera(const sensor_msgs::msg::Image::SharedPtr msg) {
   sink_->OnRightCamera(ConvertHoloImage(ToRawHoloImage(*msg), "camera_right", "camera_right_link",
                                         ++right_sequence_, options_.calibration_version, NowMonotonicNs()));
+}
+
+void HoloOceanRealtimeGatewayNode::OnMainCamera(const sensor_msgs::msg::Image::SharedPtr msg) {
+  sink_->OnMainCamera(ConvertHoloImage(ToRawHoloImage(*msg), "camera_main", "camera_main_link",
+                                       ++main_sequence_, options_.calibration_version, NowMonotonicNs()));
 }
 
 void HoloOceanRealtimeGatewayNode::OnPilotCamera(const sensor_msgs::msg::Image::SharedPtr msg) {

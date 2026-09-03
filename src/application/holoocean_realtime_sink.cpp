@@ -279,6 +279,9 @@ class OnlineAssistRealtimeSink final : public HoloOceanRealtimeSink {
   void OnRightCamera(uw::domain::ImageFrame frame) override {
     Submit(uw::runtime::kTopicCameraRight, std::move(frame));
   }
+  void OnMainCamera(uw::domain::ImageFrame frame) override {
+    Submit(uw::runtime::kTopicCameraMain, std::move(frame));
+  }
   void OnPilotCamera(uw::domain::ImageFrame frame) override {
     // Presentation-only -- cached for the overlay compositor, NEVER
     // submitted to LiveEventSource/OnlineAssistPipeline (the plan's

@@ -232,3 +232,27 @@ def test_task_score_must_carry_task_success_when_present():
     report["task_score"] = {"completion_time_s": 12.0}
     with pytest.raises(GateFailure, match="task_score"):
         evaluate_gate(report, nominal_gate())
+
+
+# ---- PREP-E-02 ------------------------------------------------------------------
+
+from uw_holoocean_adapter.run_report import tether_limited_gate  # noqa: E402
+
+
+def test_tether_limited_gate_boundary_400_150_ms_and_two_percent_misses():
+    gate = tether_limited_gate()
+    evaluate_gate(_base_report(result_age_p95_ms=400.0, state_age_p95_ms=150.0, deadline_miss_fraction=0.02), gate)
+    with pytest.raises(GateFailure, match="result_age_p95_ms"):
+        evaluate_gate(_base_report(result_age_p95_ms=400.1), gate)
+    with pytest.raises(GateFailure, match="state_age_p95_ms"):
+        evaluate_gate(_base_report(state_age_p95_ms=150.1), gate)
+    with pytest.raises(GateFailure, match="deadline_miss_fraction"):
+        evaluate_gate(_base_report(deadline_miss_fraction=0.021), gate)
+
+
+def test_tether_limited_gate_sits_between_nominal_and_overload_and_keeps_headroom_gate():
+    gate = tether_limited_gate()
+    assert nominal_gate().result_age_p95_ms_max < gate.result_age_p95_ms_max < overload_gate().result_age_p95_ms_max
+    assert gate.require_headroom_gate is True
+    with pytest.raises(GateFailure, match="cpu_headroom_fraction_avg"):
+        evaluate_gate(_base_report(cpu_headroom_fraction_avg=0.1), gate)

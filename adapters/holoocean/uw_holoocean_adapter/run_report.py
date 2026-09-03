@@ -20,9 +20,9 @@ from typing import Any, Dict, List, Optional
 # numbers, not derived from anything else in this repo. State (vehicle
 # state) age budgets are the plan's second, tighter number in the same
 # "350/150 ms" / "250/100 ms" / "500/200 ms" triples.
-_RESULT_AGE_P95_MS = {"minimum": 350.0, "nominal": 250.0, "overload": 500.0}
-_STATE_AGE_P95_MS = {"minimum": 150.0, "nominal": 100.0, "overload": 200.0}
-_DEADLINE_MISS_FRACTION = {"minimum": 0.01, "nominal": 0.01, "overload": 0.05}
+_RESULT_AGE_P95_MS = {"minimum": 350.0, "nominal": 250.0, "overload": 500.0, "tether_limited": 400.0}
+_STATE_AGE_P95_MS = {"minimum": 150.0, "nominal": 100.0, "overload": 200.0, "tether_limited": 150.0}
+_DEADLINE_MISS_FRACTION = {"minimum": 0.01, "nominal": 0.01, "overload": 0.05, "tether_limited": 0.02}
 _RTF_P95_MIN = 1.0
 _RECOVERY_DURATION_S_MAX = 2.0
 _RSS_GROWTH_AFTER_WARMUP_MIB_MAX = 256.0
@@ -145,6 +145,26 @@ def disturbed_gate() -> GateSpec:
         result_age_p95_ms_max=_RESULT_AGE_P95_MS["nominal"],
         state_age_p95_ms_max=_STATE_AGE_P95_MS["nominal"],
         deadline_miss_fraction_max=_DEADLINE_MISS_FRACTION["nominal"],
+    )
+
+
+def tether_limited_gate() -> GateSpec:
+    """PREP-E-02: nominal sensor rates behind a shaped 10–40 Mbps tether
+    (`fault_injector.BandwidthShaper`, `configs/experiment/
+    rov_realtime_tether_limited.yaml`). The link budget itself adds
+    queueing delay the pipeline cannot remove — at the 10 Mbps floor a
+    single 768×256 sonar frame is ≈160 ms of serialization time — so the
+    result-age bound sits between nominal (250 ms) and overload (500 ms):
+    400 ms, with state age at the minimum profile's 150 ms (state messages
+    are ~1 kB and outrank camera traffic, so they should still arrive
+    nearly on time) and a 2% deadline-miss allowance for the bursts the
+    random walk produces. Headroom is still required: the shaped link
+    lowers CPU/GPU load, it does not raise it."""
+    return GateSpec(
+        profile="tether_limited",
+        result_age_p95_ms_max=_RESULT_AGE_P95_MS["tether_limited"],
+        state_age_p95_ms_max=_STATE_AGE_P95_MS["tether_limited"],
+        deadline_miss_fraction_max=_DEADLINE_MISS_FRACTION["tether_limited"],
     )
 
 

@@ -1,0 +1,144 @@
+# RigCalibrationSnapshot for the contract vehicle (PREP-A-03, docs/ROV平台到货前
+# 准备工作规格-2026-09-02.md; parameters from docs/ROV平台参数.md ROV-01..05 /
+# SON-01..03). Digital-twin counterpart: adapters/holoocean/scenarios/
+# blue_rov_contract_{base,mono,stereo}.json -- the frame_tree translations
+# below are the SAME CAD-pending initial values as those files' sensor
+# `location` entries (HoloOcean agent frame x-forward / y-right / z-up →
+# this repo's body frame x-forward / y-LEFT / z-up, so y flips sign).
+#
+# Status of every block (update when the real numbers arrive):
+#   frame_tree      camera_main/sonar/imu: CAD-pending INITIAL VALUES, not
+#                   measured -- open question 3 (gimbal pitch) is locked to
+#                   0 deg here; a non-zero lock goes into camera_main_link's
+#                   rotation sub-matrix, never into an Euler field.
+#                   camera_left/right: PREP-B-08 placeholders (10 cm pure-y
+#                   baseline, parallel axes, rigid, no gimbal) -- replaced
+#                   by docs/calibration/stereo-acceptance.md's calibration.
+#   cameras         camera_main: IMX462 1080p, K from a 90 deg horizontal FOV
+#                   assumption (fx = fy = 960 / tan(45 deg) = 960), zero
+#                   distortion -- to be replaced by an in-water checkerboard
+#                   calibration (calibrate_camera.py). left/right: same
+#                   placeholder intrinsics.
+#   imu_noise       HWT9053-485 NOMINAL (vendor datasheet-class values,
+#                   not measured). PREP-B-05 imu_allan.py / PREP-D-05 Allan
+#                   run after delivery overwrite these. Units: continuous
+#                   densities -- sigma_gyro_c rad/s/sqrt(Hz), sigma_accel_c
+#                   m/s^2/sqrt(Hz), bias walk rad/s/sqrt(s) and
+#                   m/s^2/sqrt(s); sigma_*_bias are the initial bias
+#                   uncertainties. Derivation: gyro 0.005 deg/s/sqrt(Hz),
+#                   accel 100 ug/sqrt(Hz), gyro bias instability ~5 deg/h
+#                   (2.4e-5 rad/s), accel bias ~50 ug (4.9e-4 m/s^2). The
+#                   HoloOcean per-sample sigmas in the scenario JSON are
+#                   these densities times sqrt(200 Hz).
+#   sonar           contract SON-01: 140 deg x 20 deg, 768 beams, 2.5 mm
+#                   range resolution (the simulated sonar uses 512 bins,
+#                   i.e. ~10 cm at 50 m -- see the scenario JSON _comment),
+#                   1.2 MHz mode default (50 m). 750 kHz (120 m) needs only
+#                   a different max range at the adapter (PREP-B-04), not a
+#                   second rig entry: online v1 rigs allow exactly one
+#                   enabled sonar.
+#   depth           built-in Bar30-class pressure sensor, 2 cm sigma assumed.
+#
+# Do NOT reference this rig from the synthetic demos (synthetic_smoke*.yaml):
+# synth_bag_gen renders from the cameras block and the tracked ATE numbers
+# would change (see example_auv.yaml's header).
+
+calibration_version: "bluerov2_contract_v0_cad_pending"
+
+frame_tree:
+  - parent_frame: base_link
+    child_frame: imu_link
+    transform_row_major:
+      [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]
+  # IMX462 gimbal camera: front of the electronics tube, gimbal pitch locked
+  # at 0 deg (open question 3 -- a downward lock of P deg becomes a rotation
+  # about body y here).
+  - parent_frame: base_link
+    child_frame: camera_main_link
+    transform_row_major:
+      [1,0,0,0.22, 0,1,0,0, 0,0,1,0, 0,0,0,1]
+  # Future stereo pair (PREP-B-08 placeholder geometry): 10 cm baseline
+  # along body y, left at +y, mounted above the tube, parallel to +x.
+  - parent_frame: base_link
+    child_frame: camera_left_link
+    transform_row_major:
+      [1,0,0,0.15, 0,1,0,0.05, 0,0,1,0.06, 0,0,0,1]
+  - parent_frame: base_link
+    child_frame: camera_right_link
+    transform_row_major:
+      [1,0,0,0.15, 0,1,0,-0.05, 0,0,1,0.06, 0,0,0,1]
+  # Forward-looking sonar on the top front bracket, boresight along +x.
+  - parent_frame: base_link
+    child_frame: sonar_link
+    transform_row_major:
+      [1,0,0,0.20, 0,1,0,0, 0,0,1,0.10, 0,0,0,1]
+
+# camera_main FIRST: the online assist pipeline treats the first rig camera
+# as its visual input (src/application/online_assist_pipeline.cpp), which
+# in the stage-1 mono form must be the gimbal camera.
+cameras:
+  - sensor_id: camera_main
+    width: 1920
+    height: 1080
+    k_matrix_row_major:
+      [960.0,0,960.0, 0,960.0,540.0, 0,0,1]
+    distortion: [0.0, 0.0, 0.0, 0.0, 0.0]
+    distortion_model: plumb_bob
+  - sensor_id: camera_left
+    width: 1920
+    height: 1080
+    k_matrix_row_major:
+      [960.0,0,960.0, 0,960.0,540.0, 0,0,1]
+    distortion: [0.0, 0.0, 0.0, 0.0, 0.0]
+    distortion_model: plumb_bob
+  - sensor_id: camera_right
+    width: 1920
+    height: 1080
+    k_matrix_row_major:
+      [960.0,0,960.0, 0,960.0,540.0, 0,0,1]
+    distortion: [0.0, 0.0, 0.0, 0.0, 0.0]
+    distortion_model: plumb_bob
+
+time_offset_seconds:
+  camera_main: 0.0
+  camera_left: 0.0
+  camera_right: 0.0
+  sonar0: 0.0
+  imu0: 0.0
+  depth0: 0.0
+  rov-state: 0.0
+
+time_offset_provenance:
+  camera_main: assumed:cad-pending
+  camera_left: assumed:prep-b08-placeholder
+  camera_right: assumed:prep-b08-placeholder
+  sonar0: assumed:cad-pending
+  imu0: assumed:cad-pending
+  depth0: assumed:cad-pending
+  rov-state: assumed:cad-pending
+
+vehicle_state_sensors:
+  - rov-state
+
+imu_noise:
+  sigma_gyro_c: 8.7e-5
+  sigma_accel_c: 9.8e-4
+  sigma_gyro_bias: 2.4e-5
+  sigma_accel_bias: 4.9e-4
+  sigma_gyro_bias_walk_c: 1.0e-5
+  sigma_accel_bias_walk_c: 1.0e-4
+  rate_hz: 200
+  gravity_mps2: 9.80665
+
+sonar_beam_models:
+  - sensor_id: sonar0
+    horizontal_fov_rad: 2.4434609528
+    elevation_aperture_rad: 0.3490658504
+    range_resolution_m: 0.0025
+    nominal_speed_of_sound_mps: 1480.0
+    sonar_enabled: true
+
+depth_models:
+  - sensor_id: depth0
+    noise_sigma_m: 0.02
+    depth_enabled: true

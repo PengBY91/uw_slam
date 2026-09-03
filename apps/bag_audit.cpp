@@ -181,6 +181,7 @@ int main(int argc, char** argv) {
 
   const auto left = CollectHeaderStats<uw::domain::ImageFrame>(opt.bag_path, "/raw/camera/left");
   const auto right = CollectHeaderStats<uw::domain::ImageFrame>(opt.bag_path, "/raw/camera/right");
+  const auto main_camera = CollectHeaderStats<uw::domain::ImageFrame>(opt.bag_path, "/raw/camera/main");
   const auto sonar = CollectHeaderStats<uw::domain::SonarFrame>(opt.bag_path, "/raw/sonar_frame");
   const auto imu = CollectHeaderStats<uw::domain::ImuSample>(opt.bag_path, "/raw/imu");
   const auto dvl = CollectHeaderStats<uw::domain::DvlSample>(opt.bag_path, "/raw/dvl");
@@ -207,6 +208,7 @@ int main(int argc, char** argv) {
   }
   report_presence("/raw/camera/left", left.count, is_required("/raw/camera/left"));
   report_presence("/raw/camera/right", right.count, is_required("/raw/camera/right"));
+  report_presence("/raw/camera/main", main_camera.count, is_required("/raw/camera/main"));
   report_presence("/gt/state", gt_state.count, is_required("/gt/state"));
   report_presence("/evidence/depth", depth.count, is_required("/evidence/depth"));
   report_presence("/raw/sonar_frame", sonar.count, is_required("/raw/sonar_frame"));
@@ -245,6 +247,8 @@ int main(int argc, char** argv) {
   auto report_unbounded = [&](const std::string& topic, uint64_t count, const char* why) {
     if (count > 0) std::cout << "  " << topic << ": " << count << " messages (" << why << ")\n";
   };
+  report_unbounded("/raw/camera/main", main_camera.count,
+                   "monocular gimbal camera (PREP-A-03), own rate, never a stereo keyframe");
   report_unbounded("/raw/imu", imu.count, "own rate, not bounded by camera keyframes");
   report_unbounded("/raw/dvl", dvl.count, "own rate, not bounded by camera keyframes");
   report_unbounded("/raw/sonar_frame", sonar.count,
@@ -271,6 +275,7 @@ int main(int argc, char** argv) {
   };
   check_header_time("/raw/camera/left", left);
   check_header_time("/raw/camera/right", right);
+  check_header_time("/raw/camera/main", main_camera);
   check_header_time("/raw/sonar_frame", sonar);
   check_header_time("/raw/imu", imu);
   check_header_time("/raw/dvl", dvl);
@@ -289,7 +294,7 @@ int main(int argc, char** argv) {
   // --- 4) clock-domain consistency ------------------------------------
   std::cout << "\n== clock-domain consistency ==\n";
   std::set<int> all_clock_domains;
-  for (const auto* stats : {&left, &right, &sonar, &imu, &dvl}) {
+  for (const auto* stats : {&left, &right, &main_camera, &sonar, &imu, &dvl}) {
     all_clock_domains.insert(stats->clock_domains.begin(), stats->clock_domains.end());
   }
   all_clock_domains.erase(static_cast<int>(uw::domain::CLOCK_DOMAIN_UNSPECIFIED));
@@ -311,7 +316,7 @@ int main(int argc, char** argv) {
     std::cout << "  skipped: no --rig given\n";
   } else {
     std::set<std::string> all_frames;
-    for (const auto* stats : {&left, &right, &sonar, &imu, &dvl}) {
+    for (const auto* stats : {&left, &right, &main_camera, &sonar, &imu, &dvl}) {
       all_frames.insert(stats->sensor_frames.begin(), stats->sensor_frames.end());
     }
     if (all_frames.empty()) {

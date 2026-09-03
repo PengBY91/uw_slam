@@ -1,0 +1,18 @@
+{
+  "_comment": [
+    "PREP-A-03 stage-2 configuration: everything in the mono file plus the future",
+    "stereo pair (LeftCamera/RightCamera at the PREP-B-08 placeholder geometry: 10 cm",
+    "pure-y baseline, rigid, parallel optical axes). Used for the stereo regressions",
+    "(real_holoocean_vo.yaml path) and once the stereo camera is fitted."
+  ],
+  "uw_extends": "blue_rov_contract_base.json",
+  "name": "uw_bluerov_contract_2026_09_stereo",
+  "algorithm_topics": [
+    "/holoocean/auv0/MainCamera",
+    "/holoocean/auv0/LeftCamera",
+    "/holoocean/auv0/RightCamera",
+    "/holoocean/auv0/ImagingSonar",
+    "/holoocean/auv0/VehicleState",
+    "/holoocean/auv0/IMU"
+  ]
+}

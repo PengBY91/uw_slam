@@ -43,6 +43,10 @@ struct CanonicalTopicInfo {
 
 inline constexpr char kTopicCameraLeft[] = "/raw/camera/left";
 inline constexpr char kTopicCameraRight[] = "/raw/camera/right";
+// PREP-A-03: the contract vehicle's single gimbal camera (IMX462). Same
+// ImageFrame payload as left/right; a bag carrying only this topic is a
+// monocular recording (never a stereo keyframe source).
+inline constexpr char kTopicCameraMain[] = "/raw/camera/main";
 inline constexpr char kTopicSonarFrame[] = "/raw/sonar_frame";
 inline constexpr char kTopicImu[] = "/raw/imu";
 inline constexpr char kTopicDvl[] = "/raw/dvl";
@@ -66,6 +70,8 @@ inline const std::unordered_map<std::string, CanonicalTopicInfo>& CanonicalTopic
                              CanonicalEventKind::kImageFrame, CanonicalTopicRole::kAlgorithmInput)},
       {kTopicCameraRight, MakeCanonicalTopicInfo<uw::domain::ImageFrame>(
                               CanonicalEventKind::kImageFrame, CanonicalTopicRole::kAlgorithmInput)},
+      {kTopicCameraMain, MakeCanonicalTopicInfo<uw::domain::ImageFrame>(
+                             CanonicalEventKind::kImageFrame, CanonicalTopicRole::kAlgorithmInput)},
       {kTopicSonarFrame, MakeCanonicalTopicInfo<uw::domain::SonarFrame>(
                              CanonicalEventKind::kSonarFrame, CanonicalTopicRole::kAlgorithmInput)},
       {kTopicImu, MakeCanonicalTopicInfo<uw::domain::ImuSample>(

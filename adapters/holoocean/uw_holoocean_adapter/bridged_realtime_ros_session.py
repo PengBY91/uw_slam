@@ -44,7 +44,13 @@ from uw_holoocean_adapter.realtime_ros_session import (
     _validate_thruster_command,
     build_realtime_messages,
 )
-from uw_holoocean_adapter.ros_message_conversion import RosMessageTypes, TopicMap, build_topic_map
+from uw_holoocean_adapter.ros_message_conversion import (
+    HeadingNoise,
+    RosMessageTypes,
+    TopicMap,
+    build_topic_map,
+    thrust_fraction_of,
+)
 from uw_holoocean_adapter.scenario_manifest import RealtimeScenarioManifest, load_realtime_manifest
 from uw_holoocean_adapter.scenario_randomization import SonarDegradation, VisualDegradation
 
@@ -67,7 +73,10 @@ class BridgedRealtimeRosSession:
         sonar_degradation_profile: Optional[SonarDegradation] = None,
     ):
         self._manifest = manifest
-        self._topics: TopicMap = build_topic_map(manifest.agent_name)
+        self._topics: TopicMap = build_topic_map(manifest.agent_name, manifest.algorithm_topics)
+        self._heading_noise = HeadingNoise.from_manifest_metadata(manifest.uw_metadata.get("heading_noise_model"))
+        self._last_angular_velocity: Optional[np.ndarray] = None
+        self._last_thrust_fraction = 0.0
         self._rng = rng
         self._sock = sock
         actuator = manifest.actuator_model
@@ -126,8 +135,11 @@ class BridgedRealtimeRosSession:
         # the frame that command produces -- keeps both hosts' understanding
         # of "which command produced this frame" in lockstep without a
         # separate acknowledgement message.
+        self._last_thrust_fraction = thrust_fraction_of(shaped_command, self._pilot_command_model.limit)
         send_thruster_command(self._sock, shaped_command)
         frame = recv_raw_sensor_frame(self._sock)
+        if "IMUSensor" in frame.sensors:
+            self._last_angular_velocity = np.asarray(frame.sensors["IMUSensor"], dtype=float)[1].copy()
         visual_degradation, sonar_degradation = resolve_active_degradation(
             self._sensor_degradation_schedule,
             self._visual_degradation_profile,
@@ -144,6 +156,9 @@ class BridgedRealtimeRosSession:
             sonar_min_range_m=self._sonar_min_range_m,
             sonar_max_range_m=self._sonar_max_range_m,
             fault_injector=self._fault_injector,
+            heading_noise=self._heading_noise,
+            thrust_fraction=self._last_thrust_fraction,
+            fallback_angular_velocity=self._last_angular_velocity,
         )
 
     def close(self) -> None:
@@ -157,6 +172,8 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--bridge-host", default="0.0.0.0")
     parser.add_argument("--bridge-port", type=int, default=5599)
+    parser.add_argument("--profile", default=None, help="fidelity | realtime (PREP-A-03 uw_profiles overlay)")
+    parser.add_argument("--sonar-mode", default=None, help="sonar_1200khz | sonar_750khz")
     parser.add_argument("--fault-profile", choices=("none", "critical"), default="none")
     parser.add_argument("--fault-seed", type=int, default=None)
     parser.add_argument("--fault-duration-s", type=float, default=None)
@@ -176,17 +193,17 @@ def main() -> None:
     from rclpy.qos import qos_profile_sensor_data  # noqa: E402
     from nav_msgs.msg import Odometry  # noqa: E402
     from rosgraph_msgs.msg import Clock  # noqa: E402
-    from sensor_msgs.msg import Image  # noqa: E402
+    from sensor_msgs.msg import Image, Imu  # noqa: E402
     from std_msgs.msg import Float32MultiArray  # noqa: E402
     from holoocean_interfaces.msg import ImagingSonar  # noqa: E402
 
     from uw_holoocean_adapter.fault_injector import build_fault_schedule, build_sensor_degradation_schedule
     from uw_holoocean_adapter.scenario_randomization import PRESET_CRITICAL_DEGRADED
 
-    manifest = load_realtime_manifest(args.scenario, args.task)
+    manifest = load_realtime_manifest(args.scenario, args.task, profile=args.profile, sonar_mode=args.sonar_mode)
     rng = np.random.default_rng(args.seed)
     perturbation_rng = np.random.default_rng(args.seed + 1)
-    topics = build_topic_map(manifest.agent_name)
+    topics = build_topic_map(manifest.agent_name, manifest.algorithm_topics)
 
     injector: Optional[FaultInjector] = None
     if args.fault_profile == "critical":
@@ -245,7 +262,7 @@ def main() -> None:
         visual_degradation_profile=visual_degradation_profile,
         sonar_degradation_profile=sonar_degradation_profile,
     )
-    message_types = RosMessageTypes(Image=Image, Odometry=Odometry, ImagingSonar=ImagingSonar, Clock=Clock)
+    message_types = RosMessageTypes(Image=Image, Odometry=Odometry, ImagingSonar=ImagingSonar, Clock=Clock, Imu=Imu)
 
     rclpy.init()
     # Deliberately NOT "uw_holoocean_realtime_gateway" -- that name is
@@ -254,17 +271,11 @@ def main() -> None:
     # own main() has the same collision -- a pre-existing issue, not
     # something this bridging work should silently carry into new code).
     node = Node("uw_holoocean_bridged_sensor_session")
+    from uw_holoocean_adapter.realtime_ros_session import build_publisher_table
+
     publishers = {
         topic: node.create_publisher(getattr(message_types, attr), topic, qos_profile_sensor_data)
-        for topic, attr in (
-            (topics.left_camera, "Image"),
-            (topics.right_camera, "Image"),
-            (topics.pilot_camera, "Image"),
-            (topics.imaging_sonar, "ImagingSonar"),
-            (topics.vehicle_state, "Odometry"),
-            (topics.clock, "Clock"),
-            (topics.scoring_truth, "Odometry"),
-        )
+        for topic, attr in build_publisher_table(manifest, topics)
     }
     node.create_subscription(
         Float32MultiArray, topics.pilot_command, lambda msg: session.on_pilot_command(msg.data),

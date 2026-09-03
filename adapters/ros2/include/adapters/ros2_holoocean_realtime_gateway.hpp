@@ -32,6 +32,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <holoocean_interfaces/msg/imaging_sonar.hpp>
 #include <nav_msgs/msg/odometry.hpp>
@@ -47,6 +48,14 @@ namespace uw::adapters {
 
 struct HoloOceanRealtimeGatewayOptions {
   std::string agent_name = "auv0";
+  // PREP-A-03: which camera topics to subscribe, as roles -- "left"/"right"
+  // (the AI-D / future stereo pair, algorithm inputs), "main" (the contract
+  // vehicle's single gimbal camera, algorithm input) and "pilot" (the
+  // presentation-only pilot view). Set via the `camera_roles` string-array
+  // ROS2 parameter; the default reproduces the pre-PREP-A-03 launch
+  // exactly (left + right + pilot). A mono launch passes {"main", "pilot"}.
+  // Any camera not listed is neither subscribed nor reported missing.
+  std::vector<std::string> camera_roles = {"left", "right", "pilot"};
   std::string calibration_version = "holoocean_realtime_v1";
   HoloOceanSonarCalibration sonar_calibration;
   // Empty by default -- see HoloOceanRealtimeSinkConfig's doc comment
@@ -72,8 +81,10 @@ struct HoloOceanRealtimeGatewayOptions {
   double deadline_ms = 250.0;
 };
 
-// Minimal, identity-extrinsic RigCalibrationSnapshot for the four algorithm
-// sensors -- real calibrated intrinsics/extrinsics are not carried by
+// Minimal, identity-extrinsic RigCalibrationSnapshot for the algorithm
+// sensors actually enabled by `options.camera_roles` (camera_main first
+// when "main" is enabled, so the online pipeline's "first rig camera is
+// the visual camera" rule picks it in a mono launch) -- real calibrated intrinsics/extrinsics are not carried by
 // Task 1's manifest in a directly-usable form and wiring them through is
 // out of this task's scope (topic/conversion/overlay wiring only, per the
 // plan text); matches apps/online_assist_smoke.cpp's own BuildRig()
@@ -98,6 +109,7 @@ class HoloOceanRealtimeGatewayNode : public rclcpp::Node, private HoloOceanRealt
 
   void OnLeftCamera(const sensor_msgs::msg::Image::SharedPtr msg);
   void OnRightCamera(const sensor_msgs::msg::Image::SharedPtr msg);
+  void OnMainCamera(const sensor_msgs::msg::Image::SharedPtr msg);
   void OnPilotCamera(const sensor_msgs::msg::Image::SharedPtr msg);
   void OnSonar(const holoocean_interfaces::msg::ImagingSonar::SharedPtr msg);
   void OnVehicleState(const nav_msgs::msg::Odometry::SharedPtr msg);
@@ -109,13 +121,15 @@ class HoloOceanRealtimeGatewayNode : public rclcpp::Node, private HoloOceanRealt
 
   std::atomic<uint64_t> left_sequence_{0};
   std::atomic<uint64_t> right_sequence_{0};
+  std::atomic<uint64_t> main_sequence_{0};
   std::atomic<uint64_t> pilot_sequence_{0};
   std::atomic<uint64_t> sonar_sequence_{0};
   std::atomic<uint64_t> state_sequence_{0};
 
-  rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr left_sub_;
-  rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr right_sub_;
-  rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr pilot_sub_;
+  // One entry per enabled camera role (see HoloOceanRealtimeGatewayOptions::
+  // camera_roles); kept alive here since rclcpp drops a subscription whose
+  // SharedPtr goes out of scope.
+  std::vector<rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr> camera_subs_;
   rclcpp::Subscription<holoocean_interfaces::msg::ImagingSonar>::SharedPtr sonar_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr state_sub_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr overlay_pub_;

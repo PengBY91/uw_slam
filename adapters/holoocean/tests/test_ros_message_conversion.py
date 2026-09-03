@@ -94,8 +94,18 @@ class FakeClock:
         self.clock = _FakeStamp()
 
 
+class FakeImu:
+    def __init__(self):
+        self.header = _FakeHeader()
+        self.linear_acceleration = _FakeVector3()
+        self.angular_velocity = _FakeVector3()
+        self.orientation_covariance = [0.0] * 9
+
+
 def fake_message_types():
-    return RosMessageTypes(Image=FakeImage, Odometry=FakeOdometry, ImagingSonar=FakeImagingSonar, Clock=FakeClock)
+    return RosMessageTypes(
+        Image=FakeImage, Odometry=FakeOdometry, ImagingSonar=FakeImagingSonar, Clock=FakeClock, Imu=FakeImu
+    )
 
 
 def test_vehicle_odometry_uses_noisy_state_not_scoring_pose():

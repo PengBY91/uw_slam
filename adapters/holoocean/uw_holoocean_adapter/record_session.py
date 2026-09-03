@@ -63,6 +63,10 @@ _DEFAULT_SONAR_MAX_RANGE_M = 10.0
 _SONAR_SENSOR_KEY = "ImagingSonar"
 _IMU_SENSOR_KEY = "IMUSensor"
 _DVL_SENSOR_KEY = "DVLSensor"
+# PREP-A-03: the contract vehicle's single gimbal camera. Written to
+# /raw/camera/main (include/runtime/canonical_topics.hpp kTopicCameraMain)
+# under its own tick identity -- it never forms a stereo keyframe.
+_MAIN_CAMERA_SENSOR_KEY = "MainCamera"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -142,6 +146,21 @@ def _write_sensor_tick(
             receive_time_s=frame.receive_time_s,
         )
         writer.write_message("/raw/camera/left", log_time_ns, left_image)
+        messages_written += 1
+
+    if _MAIN_CAMERA_SENSOR_KEY in sensors:
+        main_image = holoocean_camera_to_image_frame(
+            modules.image,
+            modules.observation,
+            modules.time,
+            np.asarray(sensors[_MAIN_CAMERA_SENSOR_KEY]),
+            sensor_id="camera_main",
+            sensor_frame="camera_main_link",
+            observation_id=tick_id,
+            capture_time_s=frame.sim_time_s,
+            receive_time_s=frame.receive_time_s,
+        )
+        writer.write_message("/raw/camera/main", log_time_ns, main_image)
         messages_written += 1
 
     if has_right:

@@ -1,0 +1,26 @@
+{
+  "_comment": [
+    "PREP-A-03 stage-1 (delivery form) configuration: single IMX462 gimbal camera as",
+    "MainCamera, contract sonar, HWT9053 IMU, depth, noisy heading. Derived from",
+    "blue_rov_contract_base.json via uw_extends; uw_sensor_subset drops the stereo",
+    "placeholders so the mono session never subscribes/records them. Select the",
+    "profile with --profile fidelity|realtime and the sonar mode with --sonar-mode."
+  ],
+  "uw_extends": "blue_rov_contract_base.json",
+  "name": "uw_bluerov_contract_2026_09_mono",
+  "uw_sensor_subset": [
+    "MainCamera",
+    "PilotCamera",
+    "ImagingSonar",
+    "VehicleOrientation",
+    "IMUSensor",
+    "DepthSensor",
+    "PoseSensor"
+  ],
+  "algorithm_topics": [
+    "/holoocean/auv0/MainCamera",
+    "/holoocean/auv0/ImagingSonar",
+    "/holoocean/auv0/VehicleState",
+    "/holoocean/auv0/IMU"
+  ]
+}

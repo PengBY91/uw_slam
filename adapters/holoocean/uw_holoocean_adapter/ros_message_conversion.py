@@ -41,6 +41,11 @@ class RosMessageTypes:
     Odometry: Any
     ImagingSonar: Any
     Clock: Any
+    # `sensor_msgs.msg.Imu` -- optional (None) so pre-PREP-A-03 callers keep
+    # constructing this bundle unchanged; publishing a raw IMU reading
+    # without it is a loud error, not a silent skip (see
+    # `holoocean_imu_to_ros_imu`).
+    Imu: Any = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -51,6 +56,37 @@ class StateNoise:
 
     orientation_sigma: float
     depth_sigma: float
+
+
+@dataclasses.dataclass(frozen=True)
+class HeadingNoise:
+    """PREP-A-03 step 3: the contract vehicle's heading comes from ArduSub's
+    magnetometer-fused EKF (docs/ROV平台参数.md ROV-03: +-1 deg nominal,
+    degraded by thruster-current magnetic interference), so the simulated
+    `VehicleState` heading gets (a) zero-mean Gaussian yaw noise of
+    `sigma_rad` and (b) a yaw bias of `bias_rad_per_full_thrust *
+    thrust_fraction`, where `thrust_fraction` is the current shaped
+    thruster command's L2 norm normalised so that every thruster at its
+    limit gives 1.0. Both are applied about the WORLD z axis (a heading
+    error), on top of `StateNoise.orientation_sigma`'s small-angle noise.
+    The default values are the spec's: sigma 1 deg, bias 3 deg per 100%
+    thrust."""
+
+    sigma_rad: float = float(np.radians(1.0))
+    bias_rad_per_full_thrust: float = float(np.radians(3.0))
+
+    @staticmethod
+    def from_manifest_metadata(model: dict[str, Any] | None) -> "HeadingNoise | None":
+        """Builds from a scenario's `uw_metadata.heading_noise_model`
+        (`{"sigma_deg": ..., "bias_deg_per_full_thrust": ...}`); None in,
+        None out (the legacy AI-D baseline has no such block and keeps its
+        heading-noise-free behaviour)."""
+        if model is None:
+            return None
+        return HeadingNoise(
+            sigma_rad=float(np.radians(float(model.get("sigma_deg", 1.0)))),
+            bias_rad_per_full_thrust=float(np.radians(float(model.get("bias_deg_per_full_thrust", 3.0)))),
+        )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -69,19 +105,37 @@ class TopicMap:
     # input.
     pilot_command: str = "/uw/pilot/command"
     pilot_thrusters: str = "/uw/pilot/thrusters"
+    # PREP-A-03: the contract vehicle's single gimbal camera and its raw
+    # 200 Hz IMU stream. Defaulted (agent auv0) so hand-built TopicMaps
+    # predating this field keep working; build_topic_map() fills them per
+    # agent.
+    main_camera: str = "/holoocean/auv0/MainCamera"
+    imu: str = "/holoocean/auv0/IMU"
 
 
-def build_topic_map(agent_name: str = "auv0") -> TopicMap:
+def build_topic_map(agent_name: str = "auv0", algorithm_inputs: tuple[str, ...] | None = None) -> TopicMap:
     """The complete realtime closed-loop topic set. `algorithm_inputs` is
-    exactly the four topics `OnlineAssistPipeline`/algorithm-side code may
+    exactly the topics `OnlineAssistPipeline`/algorithm-side code may
     subscribe — never `pilot_camera` (a separate, presentation-only path),
     never `clock`, and never `scoring_truth` (only the scorer may
-    subscribe that one)."""
+    subscribe that one). Defaults to the legacy AI-D stereo set (left,
+    right, sonar, state); a session built from a manifest passes that
+    manifest's own `algorithm_topics` (PREP-A-03 mono: main camera, sonar,
+    state, IMU) instead."""
     left_camera = f"/holoocean/{agent_name}/LeftCamera"
     right_camera = f"/holoocean/{agent_name}/RightCamera"
+    main_camera = f"/holoocean/{agent_name}/MainCamera"
     pilot_camera = f"/holoocean/{agent_name}/PilotCamera"
     imaging_sonar = f"/holoocean/{agent_name}/ImagingSonar"
     vehicle_state = f"/holoocean/{agent_name}/VehicleState"
+    imu = f"/holoocean/{agent_name}/IMU"
+    inputs = (
+        tuple(algorithm_inputs)
+        if algorithm_inputs is not None
+        else (left_camera, right_camera, imaging_sonar, vehicle_state)
+    )
+    if _TRUTH_TOPIC in inputs or pilot_camera in inputs or "/clock" in inputs:
+        raise ValueError(f"algorithm_inputs may not include truth/pilot/clock topics: {inputs}")
     return TopicMap(
         left_camera=left_camera,
         right_camera=right_camera,
@@ -90,8 +144,19 @@ def build_topic_map(agent_name: str = "auv0") -> TopicMap:
         vehicle_state=vehicle_state,
         clock="/clock",
         scoring_truth=_TRUTH_TOPIC,
-        algorithm_inputs=(left_camera, right_camera, imaging_sonar, vehicle_state),
+        algorithm_inputs=inputs,
+        main_camera=main_camera,
+        imu=imu,
     )
+
+
+def thrust_fraction_of(command, limit: float) -> float:
+    """`HeadingNoise`'s thrust input: L2 norm of the 8-thruster command
+    normalised so all thrusters at `limit` give 1.0; clipped to [0, 1]."""
+    values = np.asarray(list(command), dtype=float).reshape(-1)
+    if values.size == 0 or limit <= 0:
+        return 0.0
+    return float(min(1.0, np.linalg.norm(values) / (limit * np.sqrt(values.size))))
 
 
 def _small_angle_quaternion(rotation_vector_rad: np.ndarray) -> np.ndarray:
@@ -111,6 +176,9 @@ def vehicle_state_to_odometry(
     noise: StateNoise,
     rng: np.random.Generator,
     message_types,
+    *,
+    heading_noise: "HeadingNoise | None" = None,
+    thrust_fraction: float = 0.0,
 ):
     """Builds the noisy `VehicleState` `nav_msgs/Odometry` published to
     algorithm consumers, from exactly the three sensors the plan specifies
@@ -130,6 +198,11 @@ def vehicle_state_to_odometry(
     `rng` must be an explicitly-owned, seeded `numpy.random.Generator` (see
     this repo's determinism rule in CLAUDE.md) — never a bare
     `np.random.normal()` call against global state.
+
+    `heading_noise` (PREP-A-03) adds a world-z yaw error of
+    N(0, sigma) + bias * `thrust_fraction` on top of the small-angle
+    noise; None (the default) draws nothing extra, so every pre-existing
+    caller's RNG stream is unchanged.
     """
     orientation_matrix = np.asarray(orientation_matrix, dtype=float)
     if orientation_matrix.shape != (3, 3):
@@ -142,6 +215,17 @@ def vehicle_state_to_odometry(
         quaternion_xyzw=_small_angle_quaternion(rng.normal(0.0, noise.orientation_sigma, size=3)),
     )
     noisy_quat = noise_pose.compose(base_pose).quaternion_xyzw
+    if heading_noise is not None:
+        yaw_error = float(rng.normal(0.0, heading_noise.sigma_rad)) + (
+            heading_noise.bias_rad_per_full_thrust * float(np.clip(thrust_fraction, 0.0, 1.0))
+        )
+        heading_pose = Pose(
+            translation=np.zeros(3),
+            quaternion_xyzw=_small_angle_quaternion(np.array([0.0, 0.0, yaw_error])),
+        )
+        noisy_quat = heading_pose.compose(
+            Pose(translation=np.zeros(3), quaternion_xyzw=noisy_quat)
+        ).quaternion_xyzw
     noisy_depth_z = raw_depth_z + float(rng.normal(0.0, noise.depth_sigma))
     # Angular-rate noise reuses the same orientation_sigma knob (one shared
     # rotational-uncertainty budget) rather than inventing a third
@@ -246,6 +330,35 @@ def holoocean_sonar_to_imaging_sonar_msg(intensity_array: np.ndarray, *, capture
     msg.bins_range = num_ranges
     msg.bins_azimuth = num_beams
     msg.image_range = np.asarray(intensity_array, dtype=np.float32).reshape(-1).tolist()
+    return msg
+
+
+def holoocean_imu_to_ros_imu(imu_array: np.ndarray, *, capture_time_s: float, frame_id: str, message_types):
+    """Builds a `sensor_msgs/Imu` from one HoloOcean IMUSensor reading --
+    the live counterpart of `imu_conversion.holoocean_imu_to_imu_sample`
+    (same (2,3)/(4,3) input shape: row 0 linear acceleration INCLUDING
+    gravity, row 1 angular velocity, optional bias rows ignored here). No
+    orientation is filled (covariance[0] = -1 per the sensor_msgs/Imu
+    contract for "no orientation estimate"); the pipeline's preintegration
+    frontend (PREP-B-01) consumes raw rates only."""
+    imu_array = np.asarray(imu_array, dtype=float)
+    if imu_array.ndim != 2 or imu_array.shape[1] != 3 or imu_array.shape[0] not in (2, 4):
+        raise ValueError(f"expected a (2,3) or (4,3) IMU array, got shape {imu_array.shape}")
+    imu_type = getattr(message_types, "Imu", None)
+    if imu_type is None:
+        raise ValueError("message_types.Imu is required to publish an IMU reading (sensor_msgs/Imu)")
+    msg = imu_type()
+    _stamp_from_seconds(msg.header.stamp, capture_time_s)
+    msg.header.frame_id = frame_id
+    msg.linear_acceleration.x = float(imu_array[0][0])
+    msg.linear_acceleration.y = float(imu_array[0][1])
+    msg.linear_acceleration.z = float(imu_array[0][2])
+    msg.angular_velocity.x = float(imu_array[1][0])
+    msg.angular_velocity.y = float(imu_array[1][1])
+    msg.angular_velocity.z = float(imu_array[1][2])
+    covariance = getattr(msg, "orientation_covariance", None)
+    if covariance is not None and len(covariance) >= 1:
+        covariance[0] = -1.0
     return msg
 
 

@@ -66,10 +66,16 @@ HMI 或控制链。
 
 `SIM-ROV-003` 标称场景应支持定常水流；扰动场景必须支持水流方向/速度变化和单推进器降效。
 
-### 4.2 AI-D 双目
+### 4.2 相机（阶段 1 单目 IMX462；阶段 2 加双目）
 
-`SIM-CAM-001` 最低放行配置必须提供 1280×720 左右图、15 Hz、同一双目对标识和可校验的
-采集时间。标称配置使用 AI-D 经供应商确认的原生分辨率、20 Hz。
+`SIM-CAM-001` 相机配置按阶段分两种形态（准备规格 PREP-A-03，2026-09-03 修订）：
+**阶段 1（合同到货形态）**：单路 `MainCamera`（IMX462 云台相机，云台俯仰锁死并写进 rig），
+fidelity profile 为 1920×1080@25 Hz、realtime profile 为 960×540@12.5 Hz，算法话题
+`/holoocean/auv0/MainCamera`；不得要求双目对存在。**阶段 2（双目挂载后）**：在阶段 1 基础
+上增加 `LeftCamera`/`RightCamera`，二者必须同时存在或同时缺席；最低放行配置提供 1280×720
+左右图、15 Hz、同一双目对标识和可校验的采集时间，标称配置使用供应商确认的原生分辨率。
+两种形态由 `blue_rov_contract_mono.json` / `blue_rov_contract_stereo.json` 承载，共用同一
+基线文件，阶段切换只改配置不改代码。
 
 `SIM-CAM-002` 左右图必须模拟硬件同步，采集时差不得超过 2 ms；必须能够注入左右时间偏差、
 单目丢帧和曝光差异。
@@ -83,10 +89,19 @@ HMI 或控制链。
 垂直视场、最小/最大距离、距离分辨率、工作频率、增益和名义声速。
 
 `SIM-SON-002` 最低、标称和过载输出频率分别为 5 Hz、10 Hz 和 20 Hz。标称场景不得依赖
-SV1213 标称“最高 40 Hz”才能通过。
+声呐标称“最高 40 Hz”才能通过。（2026-09-03 补充：合同声呐数字孪生的 fidelity profile 按合同
+最高 40 Hz 配置、realtime profile 按 5 Hz 配置，见 `SIM-PERF-002/003`；本条的三档仍是验收
+gate 的依据，40 Hz 只用于算法验证录制。）
 
 `SIM-SON-003` 声呐模型必须支持散斑、加性/乘性噪声、多径、旁瓣或虚假回波、距离尺度偏差、
 盲区、增益变化和帧丢失。干净默认模型只能用于冒烟测试。
+
+`SIM-SON-004` 合同声呐双模（750 kHz / 120 m / 0.95° 与 1.2 MHz / 50 m / 0.6°，768 波束）
+必须作为同一场景文件的可选 `uw_sonar_modes` 覆盖层提供（默认 1.2 MHz），运行清单记录所选
+模式。**已知仿真局限**：HoloOcean `ImagingSonar` 没有波束宽度参数，两种模式的角向分辨率差异
+不能被仿真，只能用更大的 `AddSigma`/`RangeSigma` 近似 750 kHz 的更差噪底；`AzimuthBins`
+在两种模式下都保持 768（合同的 768 是输出波束数，不是波束宽度）。任何依赖角向分辨率差异
+的结论必须等真机声呐（PREP-A-10 差距量化）确认。
 
 ### 4.4 ROV 状态
 
@@ -94,7 +109,18 @@ SV1213 标称“最高 40 Hz”才能通过。
 角速度、深度和设备健康。
 
 `SIM-STATE-002` 算法状态消息必须是带噪观测，不得复制真值位姿。必须支持偏置、噪声、短时
-冻结和时间戳异常。
+冻结和时间戳异常。（2026-09-03 补充：合同机体的航向来自磁罗盘 EKF，`VehicleState` 的姿态
+必须叠加航向高斯噪声 σ=1° 与随当帧推力命令范数成比例的偏置（默认每 100% 推力 3°），系数由
+场景文件 `uw_metadata.heading_noise_model` 给出；`OrientationSensor` 真值不得作为算法话题。）
+
+### 4.5 IMU
+
+`SIM-IMU-001` 合同形态必须以独立算法话题 `/holoocean/auv0/IMU`（`sensor_msgs/Imu`，
+含重力的原始加速度与角速度，不含姿态）发布外挂 HWT9053-485 的仿真读数：fidelity profile
+200 Hz、realtime profile 25 Hz；噪声参数（`AccelSigma`/`AngVelSigma`/`AccelBiasSigma`/
+`AngVelBiasSigma`）与 `configs/rig/bluerov2_contract.yaml` 的 `imu_noise` 来源一致，到货后
+以 Allan 实测（PREP-B-05/D-05）回填。离线录制写入 `/raw/imu`（`ImuSample`），不得只在双目
+关键帧 tick 上写。
 
 ## 5. 时间、频率与确定性
 

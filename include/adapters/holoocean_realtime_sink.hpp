@@ -34,6 +34,12 @@ class HoloOceanRealtimeSink {
   virtual ~HoloOceanRealtimeSink() = default;
   virtual void OnLeftCamera(uw::domain::ImageFrame frame) = 0;
   virtual void OnRightCamera(uw::domain::ImageFrame frame) = 0;
+  // PREP-A-03: the contract vehicle's single gimbal camera -- an algorithm
+  // input (routed to /raw/camera/main), unlike OnPilotCamera below. The
+  // online pipeline picks its visual camera by matching the frame's
+  // sensor_id ("camera_main") against the rig's first camera entry, so a
+  // mono rig must list camera_main first.
+  virtual void OnMainCamera(uw::domain::ImageFrame frame) = 0;
   // Presentation-only -- an implementation must never route this into the
   // algorithm pipeline (the plan's "independent pilot path" requirement).
   virtual void OnPilotCamera(uw::domain::ImageFrame frame) = 0;
