@@ -622,6 +622,35 @@ ScenarioConfig LoadScenarioConfig(const std::string& path) {
     }
   }
 
+  if (root["control_points"]) {
+    for (const auto& node : root["control_points"]) {
+      ScenarioControlPoint point;
+      if (!node["tag"] || !node["position_m"]) {
+        throw std::runtime_error("control_points entries require `tag` and `position_m`: " + path);
+      }
+      point.tag = node["tag"].as<std::string>();
+      const auto& position = node["position_m"];
+      if (position.size() != 3) {
+        throw std::runtime_error("control_points position_m must have exactly 3 components: " + path);
+      }
+      point.position_W =
+          Eigen::Vector3d(position[0].as<double>(), position[1].as<double>(), position[2].as<double>());
+      point.size_m = GetOr<double>(node, "size_m", point.size_m);
+      point.reflectivity_class = GetOr<std::string>(node, "reflectivity_class", point.reflectivity_class);
+      if (!(point.size_m > 0.0)) {
+        throw std::runtime_error("control_points size_m must be > 0: " + path);
+      }
+      // A duplicated tag would silently make the association ambiguous and
+      // the per-point table unreadable, so reject it at load time.
+      for (const auto& existing : config.control_points) {
+        if (existing.tag == point.tag) {
+          throw std::runtime_error("duplicate control_points tag \"" + point.tag + "\": " + path);
+        }
+      }
+      config.control_points.push_back(std::move(point));
+    }
+  }
+
   return config;
 }
 

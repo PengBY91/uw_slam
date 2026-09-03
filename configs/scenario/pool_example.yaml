@@ -1,0 +1,59 @@
+# Template for a real test-pool scenario (PREP-B-06 / PREP-A-08).
+#
+# The numbers below are PLACEHOLDERS chosen to show the shape of the file,
+# not a real pool. PREP-A-08 replaces them with the actual pool's drawings
+# or measured dimensions and the surveyed marker positions, under a name
+# like configs/scenario/pool_<name>.yaml.
+#
+# What makes this scenario different from the synthetic ones: it has no
+# dense ground-truth trajectory, so `evaluation`'s ATE cannot be computed
+# on a real recording made in it. `control_points` is the substitute —
+# a handful of markers whose world positions were surveyed independently
+# (tape measure or total station), scored by
+# include/evaluation/control_point_metrics.hpp.
+#
+# Frame convention (repo-wide, CLAUDE.md): world/body are Z-up, so a
+# marker on the floor of a 3 m pool has z = -3.0. That is the NEGATIVE of
+# the positive-down PressureDepthMeasurement.depth_m the pressure sensor
+# reports; the two must not be mixed.
+
+seed: 42
+num_keyframes: 12
+radius_m: 3.0
+arc_radians: 1.2
+depth_m: 3.0
+
+noise:
+  relative_pose_noise_m: 0.02
+  sonar_range_noise_m: 0.03
+  sonar_bearing_noise_rad: 0.01
+
+sonar_targets_world:
+  - [3.0, 3.0, -3.0]
+
+# tag                unique, referenced by the labelled observations
+# position_m         marker CENTRE in the world frame, Z-up
+# size_m             largest dimension; reported alongside the error so a
+#                    5 cm error against a 30 cm plate reads differently
+#                    from the same error against a 5 cm sphere
+# reflectivity_class strong|moderate|weak — the same vocabulary as
+#                    adapters/holoocean/scenarios/*.yaml's
+#                    acoustic_reflectivity_class, so one marker table can
+#                    drive both the UE5 level and this metric
+control_points:
+  - tag: cp_floor_a
+    position_m: [1.0, 1.0, -3.0]
+    size_m: 0.30
+    reflectivity_class: strong
+  - tag: cp_floor_b
+    position_m: [4.0, 1.0, -3.0]
+    size_m: 0.30
+    reflectivity_class: strong
+  - tag: cp_floor_c
+    position_m: [4.0, 4.0, -3.0]
+    size_m: 0.30
+    reflectivity_class: strong
+  - tag: cp_wall_d
+    position_m: [0.0, 2.5, -1.2]
+    size_m: 0.30
+    reflectivity_class: moderate

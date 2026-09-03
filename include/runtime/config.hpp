@@ -251,6 +251,29 @@ struct ScenarioNoiseConfig {
   double sonar_bearing_noise_rad = 0.01;
 };
 
+// One surveyed marker on the pool floor/wall, for the sparse control-point
+// evaluation (PREP-B-06). This is the ground-truth side of the metric: a
+// small number of positions known independently of the estimator (tape
+// measure or total station), as opposed to the dense per-keyframe ground
+// truth ComputeAte needs — which a real pool run simply does not have.
+//
+// `position_W` is the marker's CENTRE in the scenario's world frame,
+// Z-up like everything else in this repo (so a floor marker in a 3 m pool
+// has z around -3). `size_m` is the marker's largest dimension, used as
+// the association gate radius' floor and reported alongside the error so
+// a 5 cm error against a 30 cm plate reads differently from the same
+// error against a 5 cm sphere. `reflectivity_class` mirrors the
+// acoustic_reflectivity_class vocabulary in
+// adapters/holoocean/scenarios/*.yaml ("strong" / "moderate" / "weak") so
+// the same marker table can drive both the UE5 level (PREP-A-06/A-08) and
+// this metric.
+struct ScenarioControlPoint {
+  std::string tag;
+  Eigen::Vector3d position_W = Eigen::Vector3d::Zero();
+  double size_m = 0.3;
+  std::string reflectivity_class = "strong";
+};
+
 struct ScenarioConfig {
   uint64_t seed = 42;
   int num_keyframes = 12;
@@ -259,6 +282,9 @@ struct ScenarioConfig {
   double depth_m = 12.0;
   ScenarioNoiseConfig noise;
   std::vector<Eigen::Vector3d> sonar_targets_world;
+  // Empty for every scenario that has dense ground truth; populated for
+  // pool scenarios (PREP-A-08) where it is the only ground truth there is.
+  std::vector<ScenarioControlPoint> control_points;
 };
 
 // The fully-resolved layer stack for one run: defaults + rig + scenario,

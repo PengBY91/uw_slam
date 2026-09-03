@@ -103,7 +103,8 @@ TEST(Config, LoadsExperimentConfigWithAllThreeLayers) {
 TEST(Config, LoadsEveryCheckedInRigUnderOnlineV1CardinalityContract) {
   for (const std::string name : {"euroc_mh01.yaml", "example_auv.yaml",
                                  "example_auv_real_camera.yaml",
-                                 "example_auv_sonar_only.yaml"}) {
+                                 "example_auv_sonar_only.yaml",
+                                 "bluerov2_contract.yaml"}) {
     EXPECT_NO_THROW(uw::runtime::LoadRigConfig(
         std::string(UW_REPO_ROOT) + "/configs/rig/" + name))
         << "rig file: " << name;
@@ -853,4 +854,90 @@ TEST(Config, ExperimentLevelEstimationSolverOverridesTheDefault) {
   const auto config = uw::runtime::LoadExperimentConfig(path.string());
   EXPECT_EQ(config.defaults.solver, "ceres_v1");
   std::remove(path.string().c_str());
+}
+
+namespace {
+
+std::filesystem::path WriteScenario(const std::string& name, const std::string& yaml) {
+  const auto path = std::filesystem::temp_directory_path() / name;
+  std::ofstream(path) << yaml;
+  return path;
+}
+
+constexpr const char* kScenarioPreamble =
+    "seed: 42\n"
+    "num_keyframes: 4\n"
+    "radius_m: 2.0\n"
+    "arc_radians: 0.5\n"
+    "depth_m: 3.0\n";
+
+}  // namespace
+
+// PREP-B-06: scenarios with no dense ground truth (a real test pool) carry
+// a small table of surveyed markers instead.
+TEST(Config, LoadsScenarioControlPoints) {
+  const auto path = WriteScenario("uw_control_points.yaml",
+                                  std::string(kScenarioPreamble) +
+                                      "control_points:\n"
+                                      "  - tag: cp_floor_a\n"
+                                      "    position_m: [1.0, 1.5, -3.0]\n"
+                                      "    size_m: 0.30\n"
+                                      "    reflectivity_class: strong\n"
+                                      "  - tag: cp_wall_b\n"
+                                      "    position_m: [0.0, 4.0, -1.2]\n");
+  const auto config = uw::runtime::LoadScenarioConfig(path.string());
+  std::remove(path.string().c_str());
+
+  ASSERT_EQ(config.control_points.size(), 2u);
+  EXPECT_EQ(config.control_points[0].tag, "cp_floor_a");
+  EXPECT_NEAR(config.control_points[0].position_W.z(), -3.0, 1e-9);
+  EXPECT_NEAR(config.control_points[0].size_m, 0.30, 1e-9);
+  EXPECT_EQ(config.control_points[0].reflectivity_class, "strong");
+  // Defaults apply to the entries that omit them.
+  EXPECT_NEAR(config.control_points[1].size_m, 0.3, 1e-9);
+  EXPECT_EQ(config.control_points[1].reflectivity_class, "strong");
+}
+
+TEST(Config, ScenariosWithoutControlPointsLoadWithAnEmptyTable) {
+  const auto config = uw::runtime::LoadScenarioConfig(std::string(UW_REPO_ROOT) +
+                                                       "/configs/scenario/synthetic_smoke.yaml");
+  EXPECT_TRUE(config.control_points.empty());
+}
+
+TEST(Config, RejectsMalformedControlPoints) {
+  const auto missing_tag = WriteScenario("uw_cp_missing_tag.yaml",
+                                          std::string(kScenarioPreamble) +
+                                              "control_points:\n"
+                                              "  - position_m: [1.0, 1.5, -3.0]\n");
+  EXPECT_THROW(uw::runtime::LoadScenarioConfig(missing_tag.string()), std::runtime_error);
+  std::remove(missing_tag.string().c_str());
+
+  const auto short_position = WriteScenario("uw_cp_short_position.yaml",
+                                             std::string(kScenarioPreamble) +
+                                                 "control_points:\n"
+                                                 "  - tag: cp_a\n"
+                                                 "    position_m: [1.0, 1.5]\n");
+  EXPECT_THROW(uw::runtime::LoadScenarioConfig(short_position.string()), std::runtime_error);
+  std::remove(short_position.string().c_str());
+
+  // A duplicated tag would make the association ambiguous and the
+  // per-point error table unreadable, so it is refused at load time.
+  const auto duplicate = WriteScenario("uw_cp_duplicate.yaml",
+                                        std::string(kScenarioPreamble) +
+                                            "control_points:\n"
+                                            "  - tag: cp_a\n"
+                                            "    position_m: [1.0, 1.5, -3.0]\n"
+                                            "  - tag: cp_a\n"
+                                            "    position_m: [2.0, 1.5, -3.0]\n");
+  EXPECT_THROW(uw::runtime::LoadScenarioConfig(duplicate.string()), std::runtime_error);
+  std::remove(duplicate.string().c_str());
+
+  const auto bad_size = WriteScenario("uw_cp_bad_size.yaml",
+                                       std::string(kScenarioPreamble) +
+                                           "control_points:\n"
+                                           "  - tag: cp_a\n"
+                                           "    position_m: [1.0, 1.5, -3.0]\n"
+                                           "    size_m: 0.0\n");
+  EXPECT_THROW(uw::runtime::LoadScenarioConfig(bad_size.string()), std::runtime_error);
+  std::remove(bad_size.string().c_str());
 }
