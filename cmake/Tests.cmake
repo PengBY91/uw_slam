@@ -16,6 +16,7 @@ add_executable(core_tests
   tests/core/camera_model_test.cpp
   tests/core/camera_rectifier_test.cpp
   tests/core/sonar_arc_projector_test.cpp
+  tests/core/ned_conversion_test.cpp
 )
 target_link_libraries(core_tests PRIVATE uw::core GTest::gtest GTest::gtest_main)
 uw_register_gtest(core_tests "unit.core" "unit;core")

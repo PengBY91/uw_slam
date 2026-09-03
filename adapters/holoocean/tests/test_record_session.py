@@ -86,9 +86,9 @@ def test_record_frames_emits_a_keyframe_only_for_camera_bearing_frames():
 
 
 def test_record_frames_forms_no_keyframe_for_an_all_non_camera_sequence():
-    # Depth has no camera-independent write path (its identity is defined
-    # relative to a stereo keyframe -- see _write_sensor_tick), so it stays
-    # silently unwritten here; that's expected, not this test's point.
+    # Since PREP-A-04 depth is written on any tick that carries it (keyed on
+    # the tick id when no stereo pair formed) -- the contract vehicle is
+    # monocular and the pressure reading is its only absolute-z reference.
     frames = [
         RawSensorFrame(sim_time_s=0.0, receive_time_s=0.0, sensors={"IMUSensor": np.zeros((2, 3))}),
         RawSensorFrame(sim_time_s=0.1, receive_time_s=0.1, sensors={"DepthSensor": np.array([1.0])}),
@@ -101,7 +101,8 @@ def test_record_frames_forms_no_keyframe_for_an_all_non_camera_sequence():
         # IMU still gets written even though no keyframe formed -- the
         # multi-rate fix this test suite is guarding.
         assert len(list(read_canonical_messages(path, "/raw/imu", imu_pb2.ImuSample))) == 1
-        assert list(read_canonical_messages(path, "/evidence/depth", measurement_pb2.MeasurementEvidence)) == []
+        depth = list(read_canonical_messages(path, "/evidence/depth", measurement_pb2.MeasurementEvidence))
+        assert [m.source_observations[0].value for _, m in depth] == ["tick1"]
 
 
 def test_record_frames_writes_sonar_imu_dvl_when_present_on_a_camera_bearing_tick():

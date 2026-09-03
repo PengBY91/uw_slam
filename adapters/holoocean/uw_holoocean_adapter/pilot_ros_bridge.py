@@ -1,5 +1,7 @@
 """rclpy wrapper closing the realtime loop's pilot leg: subscribes
-`/uw/hmi/status`, drives one `ScriptedPilot`, publishes `/uw/pilot/thrusters`
+`/uw/hmi/status`, drives one `ScriptedPilot`, publishes `/uw/pilot/command`
+(PREP-C-02 setpoint-level contract [surge, sway, heave, yaw_rate]; the
+HoloOcean backend allocates it to thrusters itself)
 -- the piece `realtime_gate.py`'s `_run_scripted_pilot_process` was missing
 (see docs/rov-realtime-closed-loop-code-review-2026-08-27.md finding A3).
 
@@ -15,15 +17,15 @@ from __future__ import annotations
 from uw_holoocean_adapter.hmi_status_bridge import parse_guidance_status
 from uw_holoocean_adapter.scenario_manifest import TaskSpec
 from uw_holoocean_adapter.scripted_pilot import ScriptedPilot
+from uw_holoocean_adapter.thrust_allocation import PilotAxes
 
 _STATUS_TOPIC = "/uw/hmi/status"
-_THRUSTER_TOPIC = "/uw/pilot/thrusters"
-_THRUSTER_COUNT = 8
+_COMMAND_TOPIC = "/uw/pilot/command"
 
 
 def run_scripted_pilot_bridge(task: TaskSpec) -> None:
-    """Blocks forever (rclpy.spin), publishing one command on every
-    `/uw/hmi/status` update. Called as a `multiprocessing.Process` target
+    """Blocks forever (rclpy.spin), publishing one `/uw/pilot/command` on
+    every `/uw/hmi/status` update. Called as a `multiprocessing.Process` target
     from `realtime_gate.py`'s `_run_scripted_pilot_process` -- that module's
     own docstring explains why this has no separate CLI entrypoint."""
     import rclpy  # noqa: E402  (lazy: no rclpy install outside a sourced ROS2 distro)
@@ -35,7 +37,7 @@ def run_scripted_pilot_bridge(task: TaskSpec) -> None:
 
     rclpy.init()
     node = Node("uw_scripted_pilot_bridge")
-    publisher = node.create_publisher(Float32MultiArray, _THRUSTER_TOPIC, qos_profile_sensor_data)
+    publisher = node.create_publisher(Float32MultiArray, _COMMAND_TOPIC, qos_profile_sensor_data)
 
     def _on_status(msg: "String") -> None:
         try:
@@ -46,11 +48,11 @@ def run_scripted_pilot_bridge(task: TaskSpec) -> None:
             # instead, same fail-safe ScriptedPilot itself applies to a
             # stale/invalid status.
             node.get_logger().warning(f"malformed /uw/hmi/status payload, holding station: {error}")
-            command = [0.0] * _THRUSTER_COUNT
+            axes = PilotAxes.zero()
         else:
-            command = pilot.command(status)
+            axes = pilot.pilot_axes(status)
         out = Float32MultiArray()
-        out.data = [float(v) for v in command]
+        out.data = [float(v) for v in axes.as_list()]
         publisher.publish(out)
 
     node.create_subscription(String, _STATUS_TOPIC, _on_status, qos_profile_sensor_data)

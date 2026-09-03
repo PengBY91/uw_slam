@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "uw/domain/calibration.pb.h"
+#include "uw/domain/command.pb.h"
 #include "uw/domain/dvl.pb.h"
 #include "uw/domain/factor.pb.h"
 #include "uw/domain/health.pb.h"

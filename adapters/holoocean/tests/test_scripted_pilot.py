@@ -65,7 +65,15 @@ def test_negative_bearing_turns_the_opposite_way():
     # bearing error -> the yaw-differential term flips sign, so the
     # negative-bearing command's first horizontal channel must be strictly
     # less than the positive-bearing one's.
-    assert negative[4] < positive[4]
+    # Opposite bearing -> opposite yaw_rate; the surge term (range error) is
+    # the same in both, so the yaw contribution to any angled thruster is
+    # equal and opposite about the straight-ahead command.
+    pilot = ScriptedPilot(search_task_spec())
+    straight = pilot.command(make_assist_status(bearing_rad=0.0, range_m=6.0))
+    assert positive[4] - straight[4] == pytest.approx(-(negative[4] - straight[4]))
+    assert positive[4] != straight[4]
+    assert pilot.pilot_axes(make_assist_status(bearing_rad=0.3, range_m=6.0)).yaw_rate < 0.0
+    assert pilot.pilot_axes(make_assist_status(bearing_rad=-0.3, range_m=6.0)).yaw_rate > 0.0
 
 
 def test_sonar_only_search_is_more_conservative_than_visual():

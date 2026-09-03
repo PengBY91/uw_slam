@@ -2,7 +2,11 @@ import numpy as np
 import pytest
 
 from uw_holoocean_adapter.holoocean_driver import RawSensorFrame
-from uw_holoocean_adapter.realtime_ros_session import _validate_thruster_command, build_realtime_messages
+from uw_holoocean_adapter.realtime_ros_session import (
+    _pilot_axes_to_thrusters,
+    _validate_thruster_command,
+    build_realtime_messages,
+)
 from uw_holoocean_adapter.ros_message_conversion import StateNoise, build_topic_map
 
 from test_ros_message_conversion import fake_message_types  # noqa: E402  (shared fakes, same dir)
@@ -108,3 +112,14 @@ def test_pilot_camera_and_sonar_both_publish_independently():
 ])
 def test_validate_thruster_command_length(values, expected):
     assert _validate_thruster_command(values) == expected
+
+
+def test_pilot_axes_to_thrusters_allocates_or_rejects():
+    # PREP-C-02: four axes in -> eight thruster forces out, bounded by the
+    # actuator limit; wrong length is rejected, never padded.
+    assert _pilot_axes_to_thrusters([0.0, 0.0, 0.0], 100.0) is None
+    assert _pilot_axes_to_thrusters([0.0] * 8, 100.0) is None
+    forces = _pilot_axes_to_thrusters([1.0, 0.0, 0.0, 0.0], 100.0)
+    assert forces is not None and len(forces) == 8
+    assert max(abs(f) for f in forces) == pytest.approx(100.0)
+    assert forces[0:4] == [0.0] * 4

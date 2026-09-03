@@ -59,6 +59,7 @@ from uw_holoocean_adapter.ros_message_conversion import (
     vehicle_state_to_odometry,
 )
 from uw_holoocean_adapter.scenario_manifest import RealtimeScenarioManifest, load_realtime_manifest
+from uw_holoocean_adapter.thrust_allocation import allocate, parse_pilot_axes
 
 _LEFT_CAMERA_KEY = "LeftCamera"
 _RIGHT_CAMERA_KEY = "RightCamera"
@@ -205,6 +206,17 @@ def build_realtime_messages(
     return messages
 
 
+def _pilot_axes_to_thrusters(values, limit: float) -> List[float] | None:
+    """`/uw/pilot/command` (PREP-C-02 setpoint-level contract: exactly four
+    floats [surge, sway, heave, yaw_rate] in [-1, 1]) allocated to the 8
+    HoloOcean thruster forces this backend actually drives. Any other length
+    is rejected (None), never padded."""
+    axes = parse_pilot_axes(values)
+    if axes is None:
+        return None
+    return allocate(axes, limit=limit)
+
+
 def _validate_thruster_command(values) -> List[float] | None:
     """`/uw/pilot/thrusters` must carry exactly `_THRUSTER_COUNT` floats —
     any other length is rejected (logged, not applied) rather than crashing
@@ -267,10 +279,20 @@ class RealtimeRosSession:
         self._visual_degradation_profile = visual_degradation_profile
         self._sonar_degradation_profile = sonar_degradation_profile
 
+    def on_pilot_command(self, values) -> None:
+        """Callback for the `/uw/pilot/command` subscription -- the
+        setpoint-level contract (PREP-C-02). Allocated to thrusters here,
+        inside the simulation backend, then shaped by PilotCommandModel and
+        applied on the next `step()` exactly like the legacy thruster topic."""
+        allocated = _pilot_axes_to_thrusters(values, self._pilot_command_model.limit)
+        if allocated is not None:
+            self._last_thruster_command = allocated
+
     def on_thruster_command(self, values) -> None:
-        """Callback for the `/uw/pilot/thrusters` subscription. Never
-        directly moves/teleports the vehicle — the filtered command only
-        ever reaches HoloOcean through `step()` below, on the next tick."""
+        """Callback for the legacy sim-internal `/uw/pilot/thrusters`
+        subscription (8 raw forces). Never directly moves/teleports the
+        vehicle — the filtered command only ever reaches HoloOcean through
+        `step()` below, on the next tick."""
         validated = _validate_thruster_command(values)
         if validated is not None:
             self._last_thruster_command = validated
@@ -444,7 +466,11 @@ def main() -> None:
         )
     }
     node.create_subscription(
-        Float32MultiArray, "/uw/pilot/thrusters", lambda msg: session.on_thruster_command(msg.data),
+        Float32MultiArray, topics.pilot_command, lambda msg: session.on_pilot_command(msg.data),
+        qos_profile_sensor_data,
+    )
+    node.create_subscription(
+        Float32MultiArray, topics.pilot_thrusters, lambda msg: session.on_thruster_command(msg.data),
         qos_profile_sensor_data,
     )
 

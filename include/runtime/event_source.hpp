@@ -28,6 +28,10 @@ struct EventSourceReport {
   uint64_t parse_failure_count = 0;
   // Reference-only inputs rejected before algorithm-consumer delivery.
   uint64_t reference_rejected_count = 0;
+  // Control-output messages (/cmd/*, see canonical_topics.hpp) seen in a
+  // recorded bag: legitimate content, never emitted as an input event, and
+  // not an "unknown topic".
+  uint64_t control_message_count = 0;
 };
 
 // Returning false stops the source early: Run() returns with status

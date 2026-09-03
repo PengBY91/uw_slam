@@ -63,6 +63,12 @@ class TopicMap:
     clock: str
     scoring_truth: str
     algorithm_inputs: tuple[str, ...]
+    # Control-output topics (PREP-C-02): the setpoint-level command the
+    # pilot/assist/autonomy side publishes, and the sim-internal thruster
+    # topic the HoloOcean backend derives from it. Neither is an algorithm
+    # input.
+    pilot_command: str = "/uw/pilot/command"
+    pilot_thrusters: str = "/uw/pilot/thrusters"
 
 
 def build_topic_map(agent_name: str = "auv0") -> TopicMap:

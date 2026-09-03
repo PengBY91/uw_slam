@@ -107,13 +107,14 @@ def _write_sensor_tick(
     (messages_written, formed_stereo_pair): formed_stereo_pair is True only
     when both LeftCamera and RightCamera published this tick -- that is the
     one condition under which record_frames() below should advance its
-    keyframe counter, since GT state and depth evidence are genuinely
-    per-keyframe concepts (their identity fields reference the stereo
-    keyframe they belong to). A lone camera (monocular), sonar, IMU, and DVL
-    are each written whenever present, independent of a stereo pair or of
-    each other, with observation_id stably keyed on `tick_index` (this
-    frame's raw simulation-tick position) -- never on `keyframe_index`,
-    which only advances at the much lower stereo-camera rate."""
+    keyframe counter. A lone camera (monocular), sonar, IMU, DVL, GT state
+    and depth evidence are each written whenever present, independent of a
+    stereo pair or of each other, with observation_id stably keyed on
+    `tick_index` (this frame's raw simulation-tick position) -- never on
+    `keyframe_index`, which only advances at the much lower stereo-camera
+    rate. The one exception: on a tick where a stereo pair DID form, GT and
+    depth are keyed on that pair's "kfN" id (the stereo replay pipeline
+    associates them to keyframes by that id), exactly as before."""
     sensors = frame.sensors
     log_time_ns = int(frame.sim_time_s * 1e9)
     tick_id = "tick" + str(tick_index)
@@ -158,28 +159,35 @@ def _write_sensor_tick(
         writer.write_message("/raw/camera/right", log_time_ns, right_image)
         messages_written += 1
 
-    if formed_stereo_pair:
-        kf_id = camera_observation_id
-        if "PoseSensor" in sensors:
-            snapshot = pose_sensor_to_state_snapshot(
-                modules.state,
-                modules.time,
-                np.asarray(sensors["PoseSensor"]),
-                state_id=kf_id,
-                capture_time_s=frame.sim_time_s,
-            )
-            writer.write_message("/gt/state", log_time_ns, snapshot)
-            messages_written += 1
+    # GT state and depth evidence are written on ANY tick that carries them,
+    # keyed on the stereo keyframe id when one formed this tick and on the
+    # tick id otherwise (PREP-A-04, 2026-09-02): the contract vehicle is
+    # monocular, so a stereo pair never forms and the pressure/depth reading
+    # -- the one absolute-z reference the stage-1 estimator has -- must not
+    # be silently dropped along with the GT needed to evaluate it. Stereo
+    # bags are byte-identical to before: a formed pair still yields exactly
+    # the "kfN"-keyed messages it always did.
+    reference_id = camera_observation_id
+    if "PoseSensor" in sensors:
+        snapshot = pose_sensor_to_state_snapshot(
+            modules.state,
+            modules.time,
+            np.asarray(sensors["PoseSensor"]),
+            state_id=reference_id,
+            capture_time_s=frame.sim_time_s,
+        )
+        writer.write_message("/gt/state", log_time_ns, snapshot)
+        messages_written += 1
 
-        if "DepthSensor" in sensors:
-            evidence = depth_sensor_to_evidence(
-                modules.measurement,
-                np.asarray(sensors["DepthSensor"]),
-                evidence_id="depth_" + kf_id,
-                source_observation_id=kf_id,
-            )
-            writer.write_message("/evidence/depth", log_time_ns, evidence)
-            messages_written += 1
+    if "DepthSensor" in sensors:
+        evidence = depth_sensor_to_evidence(
+            modules.measurement,
+            np.asarray(sensors["DepthSensor"]),
+            evidence_id="depth_" + reference_id,
+            source_observation_id=reference_id,
+        )
+        writer.write_message("/evidence/depth", log_time_ns, evidence)
+        messages_written += 1
 
     if _SONAR_SENSOR_KEY in sensors:
         sonar_frame = holoocean_sonar_to_sonar_frame(

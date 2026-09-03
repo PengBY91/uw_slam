@@ -21,8 +21,14 @@ import dataclasses
 from typing import List, Optional
 
 from uw_holoocean_adapter.scenario_manifest import TaskSpec
+from uw_holoocean_adapter.thrust_allocation import PilotAxes, allocate
 
-_THRUSTER_COUNT = 8  # [4 vertical, 4 horizontal], matching record_session.py's _default_command() layout
+# Full-scale thrust a PilotAxes value of 1.0 maps to when the caller asks for
+# raw thruster forces via command(); matches blue_rov_aid_sv1213_base.json's
+# pilot_command_model.limit. The gains below are still expressed in those raw
+# units (their original calibration) and are normalised by this on the way
+# out, so PilotAxes stays in [-1, 1] (PREP-C-02 setpoint-level contract).
+_AXIS_FULL_SCALE = 100.0
 
 _MAX_STALENESS_S = 0.5
 
@@ -54,9 +60,13 @@ class ScriptedPilot:
     def subscriptions(self) -> tuple:
         return ("/uw/hmi/status",)
 
-    def command(self, status: AssistGuidanceStatus) -> List[float]:
+    def pilot_axes(self, status: AssistGuidanceStatus) -> PilotAxes:
+        """The setpoint-level command (PREP-C-02): what a pilot station or
+        the MAVLink adapter consumes. Bearing is body-FLU (positive = target
+        to the left), so steering toward it is a NEGATIVE yaw_rate
+        (+yaw_rate == clockwise from above == turn right)."""
         if not status.guidance_valid or status.age_s > _MAX_STALENESS_S:
-            return [0.0] * _THRUSTER_COUNT
+            return PilotAxes.zero()
 
         gain_scale = _SONAR_ONLY_GAIN_SCALE if status.source == "SONAR" else 1.0
 
@@ -67,17 +77,17 @@ class ScriptedPilot:
             yaw_correction = _YAW_GAIN * gain_scale * status.path_lateral_offset_m
             forward_thrust = _CRUISE_ADVANCE * gain_scale
         else:
-            return [0.0] * _THRUSTER_COUNT
+            return PilotAxes.zero()
 
-        vertical = [0.0, 0.0, 0.0, 0.0]
-        # Differential yaw across a [front-right, front-left, rear-right,
-        # rear-left]-style 4-thruster horizontal layout: same-side pair
-        # gets +correction, opposite-side pair gets -correction, so net
-        # forward thrust is preserved while the vehicle also yaws.
-        horizontal = [
-            forward_thrust + yaw_correction,
-            forward_thrust - yaw_correction,
-            forward_thrust + yaw_correction,
-            forward_thrust - yaw_correction,
-        ]
-        return vertical + horizontal
+        return PilotAxes.clamped(
+            surge=forward_thrust / _AXIS_FULL_SCALE,
+            sway=0.0,
+            heave=0.0,
+            yaw_rate=-yaw_correction / _AXIS_FULL_SCALE,
+        )
+
+    def command(self, status: AssistGuidanceStatus) -> List[float]:
+        """Raw HoloOcean thruster forces for the simulation backend --
+        `pilot_axes()` run through the BlueROV2 Heavy allocation. Kept for
+        sim-only callers; production paths carry PilotAxes / PilotCommand."""
+        return allocate(self.pilot_axes(status), limit=_AXIS_FULL_SCALE)

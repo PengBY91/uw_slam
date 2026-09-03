@@ -34,14 +34,15 @@
 //     all, only ObservationId references back to a keyframe id — presence/
 //     count-plausibility only.
 //
-// Rate plausibility, concretely: /gt/state, /evidence/depth, /raw/imu, and
-// /raw/dvl are each emitted AT MOST ONCE per camera keyframe in both
-// synth_bag_gen and record_session.py (one sensor reading per tick), so
-// "plausible" for those four means count(topic) <= count(camera_left) — not
-// an assumed absolute Hz this repo has no independent way to verify per-bag
-// (see the recording spec's own note that sonar/IMU/DVL are downsampled to
-// camera-keyframe rate, not their native rate). /raw/sonar_frame is
-// deliberately EXCLUDED from that bound: apps/synth_bag_gen.cpp writes one
+// Rate plausibility, concretely: a "kfN"-keyed /gt/state or /evidence/depth
+// message is emitted AT MOST ONCE per stereo camera keyframe (synth_bag_gen
+// and record_session.py both key them on the keyframe id), so "plausible"
+// for those means count(kf-keyed) <= count(camera_left). Tick-keyed
+// ("tickN") GT/depth and /raw/imu, /raw/dvl are written at each sensor's
+// own rate by record_session.py (multi-rate recording, PREP-A-04) and are
+// therefore NOT bounded by the camera — an absolute Hz is something this
+// tool has no independent way to verify per bag. /raw/sonar_frame is
+// likewise unbounded: apps/synth_bag_gen.cpp writes one
 // SonarFrame per in-range target per keyframe (a documented v1
 // simplification, see RenderSyntheticSonarFrame's call site), so a
 // synthetic bag can and does have MORE sonar messages than camera
@@ -49,7 +50,11 @@
 // violation (an earlier draft of this check assumed a 1:1-or-fewer bound
 // for every non-camera topic and had to be corrected against this exact
 // case). Camera left/right matching each other (the stereo-pair invariant)
-// is checked unconditionally.
+// is checked whenever either side is present. A bag with NO camera pair at
+// all (monocular / sensor-only recording -- the contract vehicle has a
+// single camera, see PREP-A-04) skips every camera-keyframe-bounded check:
+// there is no keyframe count to bound by, and record_session.py writes
+// GT/depth/IMU/DVL per tick in that case.
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -80,8 +85,14 @@ HeaderStats CollectHeaderStats(const std::string& bag_path, const std::string& t
   return stats;
 }
 
+// "kfN" ids are stereo-keyframe-keyed (one per camera-bearing tick, bounded
+// by the camera keyframe count); anything else ("tickN") is a per-tick
+// reading written at the sensor's own rate and is NOT bounded by the camera.
+bool IsKeyframeKeyed(const std::string& id) { return id.rfind("kf", 0) == 0; }
+
 struct StateStats {
   uint64_t count = 0;
+  uint64_t keyframe_keyed = 0;
   bool capture_time_monotonic = true;
   int64_t last_capture_ns = std::numeric_limits<int64_t>::min();
 };
@@ -91,6 +102,7 @@ StateStats CollectStateStats(const std::string& bag_path, const std::string& top
   uw::runtime::ReadMcapMessages<uw::domain::StateSnapshot>(
       bag_path, topic, [&](uint64_t, const uw::domain::StateSnapshot& msg) {
         ++stats.count;
+        if (IsKeyframeKeyed(msg.state_id().value())) ++stats.keyframe_keyed;
         if (StampIsZero(msg.capture_timestamp())) return;
         const int64_t ns = StampToNanos(msg.capture_timestamp());
         if (ns < stats.last_capture_ns) stats.capture_time_monotonic = false;
@@ -99,11 +111,21 @@ StateStats CollectStateStats(const std::string& bag_path, const std::string& top
   return stats;
 }
 
-uint64_t CountMessages(const std::string& bag_path, const std::string& topic) {
+struct EvidenceStats {
   uint64_t count = 0;
+  uint64_t keyframe_keyed = 0;
+};
+
+EvidenceStats CollectEvidenceStats(const std::string& bag_path, const std::string& topic) {
+  EvidenceStats stats;
   uw::runtime::ReadMcapMessages<uw::domain::MeasurementEvidence>(
-      bag_path, topic, [&](uint64_t, const uw::domain::MeasurementEvidence&) { ++count; });
-  return count;
+      bag_path, topic, [&](uint64_t, const uw::domain::MeasurementEvidence& msg) {
+        ++stats.count;
+        if (msg.source_observations_size() > 0 && IsKeyframeKeyed(msg.source_observations(0).value())) {
+          ++stats.keyframe_keyed;
+        }
+      });
+  return stats;
 }
 
 struct Options {
@@ -163,54 +185,70 @@ int main(int argc, char** argv) {
   const auto imu = CollectHeaderStats<uw::domain::ImuSample>(opt.bag_path, "/raw/imu");
   const auto dvl = CollectHeaderStats<uw::domain::DvlSample>(opt.bag_path, "/raw/dvl");
   const auto gt_state = CollectStateStats(opt.bag_path, "/gt/state");
-  const uint64_t depth_count = CountMessages(opt.bag_path, "/evidence/depth");
+  const auto depth = CollectEvidenceStats(opt.bag_path, "/evidence/depth");
 
   // --- 1) presence ---------------------------------------------------
-  // Camera left/right are always required regardless of --require: this
-  // repo's recording architecture has nothing else to anchor on without
-  // them (see this file's header comment).
+  // Camera left/right are required as a PAIR whenever either is present:
+  // a stereo bag with one side missing is a broken recording. A bag with
+  // neither is a monocular / sensor-only recording (the contract vehicle,
+  // PREP-A-04 in docs/ROV平台到货前准备工作规格-2026-09-02.md, carries a single
+  // camera), which is legitimate -- pass --require for the topics such a
+  // bag must carry instead of relying on the stereo anchor.
   std::cout << "\n== topic presence ==\n";
   auto report_presence = [&](const std::string& topic, uint64_t count, bool required) {
     const std::string status = count > 0 ? "present" : (required ? "MISSING (required)" : "absent (optional)");
     std::cout << "  " << topic << ": " << status << " (" << count << " messages)\n";
     if (count == 0 && required) fail(topic + " is required but has zero messages");
   };
-  report_presence("/raw/camera/left", left.count, true);
-  report_presence("/raw/camera/right", right.count, true);
+  const bool has_stereo = left.count > 0 && right.count > 0;
+  if (!has_stereo) {
+    std::cout << "  stereo pair: absent -- monocular / sensor-only bag (a lone camera on one side is "
+                 "legitimate), stereo-keyframe bounds below are skipped\n";
+  }
+  report_presence("/raw/camera/left", left.count, is_required("/raw/camera/left"));
+  report_presence("/raw/camera/right", right.count, is_required("/raw/camera/right"));
   report_presence("/gt/state", gt_state.count, is_required("/gt/state"));
-  report_presence("/evidence/depth", depth_count, is_required("/evidence/depth"));
+  report_presence("/evidence/depth", depth.count, is_required("/evidence/depth"));
   report_presence("/raw/sonar_frame", sonar.count, is_required("/raw/sonar_frame"));
   report_presence("/raw/imu", imu.count, is_required("/raw/imu"));
   report_presence("/raw/dvl", dvl.count, is_required("/raw/dvl"));
 
   // --- 2) rate plausibility -------------------------------------------
   std::cout << "\n== rate plausibility (relative to camera keyframe count) ==\n";
-  if (left.count != right.count) {
+  if (has_stereo && left.count != right.count) {
     fail("camera left/right message counts differ (" + std::to_string(left.count) + " vs " +
          std::to_string(right.count) + ") — stereo pairing is broken");
-  } else {
+  } else if (has_stereo) {
     std::cout << "  camera left/right paired: " << left.count << " == " << right.count << "\n";
+  } else if (left.count > 0 || right.count > 0) {
+    std::cout << "  monocular camera on " << (left.count > 0 ? "/raw/camera/left" : "/raw/camera/right")
+              << " (" << (left.count > 0 ? left.count : right.count) << " frames), no stereo pairing to check\n";
   }
-  auto check_bounded_by_camera = [&](const std::string& topic, uint64_t count) {
-    if (count > left.count) {
-      fail(topic + " has more messages (" + std::to_string(count) + ") than camera keyframes (" +
-           std::to_string(left.count) + ") — every canonical topic in this architecture is written at most "
-           "once per camera-bearing tick, see this file's header comment");
-    } else {
-      std::cout << "  " << topic << ": " << count << " <= " << left.count << " camera keyframes\n";
+  // Only keyframe-keyed ("kfN") GT/depth messages are bounded by the camera
+  // keyframe count; tick-keyed ones are written at the sensor's own rate
+  // (record_session.py multi-rate semantics, PREP-A-04). IMU/DVL/sonar are
+  // never bounded — see this file's header comment.
+  auto check_keyframe_keyed_bound = [&](const std::string& topic, uint64_t keyframe_keyed, uint64_t total) {
+    const uint64_t tick_keyed = total - keyframe_keyed;
+    if (has_stereo && keyframe_keyed > left.count) {
+      fail(topic + " has more keyframe-keyed messages (" + std::to_string(keyframe_keyed) +
+           ") than camera keyframes (" + std::to_string(left.count) +
+           ") — a \"kfN\"-keyed message is written at most once per stereo keyframe");
+    } else if (total > 0) {
+      std::cout << "  " << topic << ": " << keyframe_keyed << " keyframe-keyed"
+                << (has_stereo ? " <= " + std::to_string(left.count) + " camera keyframes" : "") << ", "
+                << tick_keyed << " per-tick (not bounded)\n";
     }
   };
-  check_bounded_by_camera("/gt/state", gt_state.count);
-  check_bounded_by_camera("/evidence/depth", depth_count);
-  check_bounded_by_camera("/raw/imu", imu.count);
-  check_bounded_by_camera("/raw/dvl", dvl.count);
-  // /raw/sonar_frame deliberately NOT bounded by camera count — see this
-  // file's header comment (multiple sonar pings per keyframe is legitimate).
-  if (sonar.count > 0) {
-    std::cout << "  /raw/sonar_frame: " << sonar.count
-              << " messages (not bounded by camera-keyframe count — multiple sonar pings per keyframe "
-                 "is architecturally legitimate, see this file's header comment)\n";
-  }
+  check_keyframe_keyed_bound("/gt/state", gt_state.keyframe_keyed, gt_state.count);
+  check_keyframe_keyed_bound("/evidence/depth", depth.keyframe_keyed, depth.count);
+  auto report_unbounded = [&](const std::string& topic, uint64_t count, const char* why) {
+    if (count > 0) std::cout << "  " << topic << ": " << count << " messages (" << why << ")\n";
+  };
+  report_unbounded("/raw/imu", imu.count, "own rate, not bounded by camera keyframes");
+  report_unbounded("/raw/dvl", dvl.count, "own rate, not bounded by camera keyframes");
+  report_unbounded("/raw/sonar_frame", sonar.count,
+                   "not bounded by camera-keyframe count — multiple sonar pings per keyframe is legitimate");
 
   // --- 3) capture/receive-time monotonicity ---------------------------
   std::cout << "\n== capture/receive-time monotonicity ==\n";
@@ -244,7 +282,7 @@ int main(int argc, char** argv) {
                    "StateSnapshot doesn't carry an ObservationHeader)\n";
     }
   }
-  if (depth_count > 0) {
+  if (depth.count > 0) {
     std::cout << "  /evidence/depth: no timestamp field on MeasurementEvidence — time check does not apply\n";
   }
 

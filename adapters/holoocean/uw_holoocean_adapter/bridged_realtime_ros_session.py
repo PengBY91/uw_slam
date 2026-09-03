@@ -39,7 +39,11 @@ from uw_holoocean_adapter.fault_injector import (
 )
 from uw_holoocean_adapter.pilot_command_model import PilotCommandModel
 from uw_holoocean_adapter.raw_frame_wire import recv_raw_sensor_frame, send_thruster_command
-from uw_holoocean_adapter.realtime_ros_session import _validate_thruster_command, build_realtime_messages
+from uw_holoocean_adapter.realtime_ros_session import (
+    _pilot_axes_to_thrusters,
+    _validate_thruster_command,
+    build_realtime_messages,
+)
 from uw_holoocean_adapter.ros_message_conversion import RosMessageTypes, TopicMap, build_topic_map
 from uw_holoocean_adapter.scenario_manifest import RealtimeScenarioManifest, load_realtime_manifest
 from uw_holoocean_adapter.scenario_randomization import SonarDegradation, VisualDegradation
@@ -81,8 +85,16 @@ class BridgedRealtimeRosSession:
         self._visual_degradation_profile = visual_degradation_profile
         self._sonar_degradation_profile = sonar_degradation_profile
 
+    def on_pilot_command(self, values) -> None:
+        """Callback for the `/uw/pilot/command` subscription (PREP-C-02
+        setpoint-level contract) -- identical to
+        `RealtimeRosSession.on_pilot_command`."""
+        allocated = _pilot_axes_to_thrusters(values, self._pilot_command_model.limit)
+        if allocated is not None:
+            self._last_thruster_command = allocated
+
     def on_thruster_command(self, values) -> None:
-        """Callback for the `/uw/pilot/thrusters` subscription -- identical
+        """Callback for the legacy `/uw/pilot/thrusters` subscription -- identical
         contract to `RealtimeRosSession.on_thruster_command`: never directly
         touches HoloOcean, only updates the value `tick()` sends to the
         Windows host on its next call."""
@@ -255,7 +267,11 @@ def main() -> None:
         )
     }
     node.create_subscription(
-        Float32MultiArray, "/uw/pilot/thrusters", lambda msg: session.on_thruster_command(msg.data),
+        Float32MultiArray, topics.pilot_command, lambda msg: session.on_pilot_command(msg.data),
+        qos_profile_sensor_data,
+    )
+    node.create_subscription(
+        Float32MultiArray, topics.pilot_thrusters, lambda msg: session.on_thruster_command(msg.data),
         qos_profile_sensor_data,
     )
 

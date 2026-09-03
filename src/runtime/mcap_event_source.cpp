@@ -93,6 +93,10 @@ EventSourceReport McapEventSource::Run(const EventConsumer& consumer) {
       continue;
     }
 
+    if (LookupControlTopic(view.channel->topic) != nullptr) {
+      ++report.control_message_count;
+      continue;
+    }
     const auto* topic_info = LookupCanonicalTopic(view.channel->topic);
     if (topic_info == nullptr) {
       ++report.unknown_topic_count;

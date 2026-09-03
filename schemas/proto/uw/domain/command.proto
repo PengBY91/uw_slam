@@ -1,0 +1,75 @@
+syntax = "proto3";
+
+package uw.domain;
+
+import "uw/domain/observation.proto";
+
+// Control-output contract (PREP-C-02, docs/ROV平台到货前准备工作规格-2026-09-02.md
+// D-3): pilot / assist / autonomy commands are expressed at the SETPOINT
+// level, never as per-thruster forces. On the real vehicle ArduSub owns the
+// thrusters and only accepts MANUAL_CONTROL / SET_POSITION_TARGET_* /
+// mode requests over MAVLink; the HoloOcean simulation backend allocates a
+// PilotCommand to its 8 thruster forces internally
+// (adapters/holoocean/uw_holoocean_adapter/thrust_allocation.py). The old
+// `/uw/pilot/thrusters` 8-float topic is a simulation-internal detail.
+//
+// These messages are NOT CanonicalEventKind inputs: they never enter the
+// algorithm lanes (runtime/canonical_topics.hpp registers them in a separate
+// control-topic registry). They may be recorded in MCAP for replay/复盘.
+
+// Manual-axis command: the pilot's stick, an assist correction layered on
+// it, or an autonomy layer driving in MANUAL/STABILIZE/DEPTH_HOLD.
+// Axis conventions follow the vehicle body FRD sense so they map 1:1 onto
+// MAVLink MANUAL_CONTROL (x, y, z, r) after range scaling:
+//   surge    [-1, 1]  +1 = forward
+//   sway     [-1, 1]  +1 = right (starboard)
+//   heave    [-1, 1]  +1 = down (dive); MANUAL_CONTROL z = 500 + 500*heave... sign handled by the adapter
+//   yaw_rate [-1, 1]  +1 = clockwise viewed from above (turn right)
+message PilotCommand {
+  ObservationHeader header = 1;
+  double surge = 2;
+  double sway = 3;
+  double heave = 4;
+  double yaw_rate = 5;
+  uint32 buttons = 6;  // MANUAL_CONTROL button bitmask, opaque to the core
+
+  enum Source {
+    SOURCE_UNSPECIFIED = 0;
+    SOURCE_PILOT = 1;     // human pilot station
+    SOURCE_ASSIST = 2;    // online assist correction (still under pilot authority)
+    SOURCE_AUTONOMY = 3;  // scripted / autonomous driver
+  }
+  Source source = 7;
+}
+
+// Position / velocity setpoint for GUIDED-mode driving (maps onto MAVLink
+// SET_POSITION_TARGET_LOCAL_NED). Fields left empty are ignored; type_mask
+// carries the MAVLink POSITION_TARGET_TYPEMASK semantics so the adapter
+// does not have to re-derive it.
+message MotionSetpoint {
+  ObservationHeader header = 1;
+
+  enum Frame {
+    FRAME_UNSPECIFIED = 0;
+    FRAME_BODY_FRD = 1;   // relative to the current body pose, x forward / y right / z down
+    FRAME_LOCAL_NED = 2;  // EKF local origin, north / east / down
+  }
+  Frame frame = 2;
+  repeated double position_m = 3;      // 3 entries or empty
+  repeated double velocity_mps = 4;    // 3 entries or empty
+  double yaw_rad = 5;
+  bool yaw_valid = 6;
+  double yaw_rate_radps = 7;
+  bool yaw_rate_valid = 8;
+  uint32 type_mask = 9;
+}
+
+// Flight-mode / arming request (MAVLink SET_MODE + COMPONENT_ARM_DISARM).
+// `mode` is the ArduSub mode name ("MANUAL", "STABILIZE", "DEPTH_HOLD",
+// "POSHOLD", "GUIDED", ...) -- a string so the core never has to track the
+// firmware's numeric mode table.
+message FlightModeRequest {
+  ObservationHeader header = 1;
+  string mode = 2;
+  bool arm = 3;
+}

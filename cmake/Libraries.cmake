@@ -15,6 +15,7 @@ add_library(core STATIC
   src/sensor_models/camera_model.cpp
   src/sensor_models/camera_rectifier.cpp
   src/sensor_models/sonar_arc_projector.cpp
+  src/sensor_models/ned_conversion.cpp
 )
 add_library(uw::core ALIAS core)
 target_include_directories(core PUBLIC "${PROJECT_SOURCE_DIR}/include")

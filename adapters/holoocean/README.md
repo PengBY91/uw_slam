@@ -39,6 +39,14 @@ run). Everything else IS tested (`pytest`, 166/166 passing as of this writing):
   (`uw_metadata`, `algorithm_topics`) live alongside HoloOcean's own scenario fields in the same JSON file
   and are stripped by `RealtimeScenarioManifest.holoocean_scenario_cfg()` before the dict is safe to pass
   to `holoocean.make(scenario_cfg=...)`.
+- `thrust_allocation.py` — PREP-C-02 setpoint-level command contract
+  (`schemas/proto/uw/domain/command.proto` `PilotCommand`: surge / sway / heave / yaw_rate in [-1, 1],
+  the same axes MAVLink `MANUAL_CONTROL` takes on the real BlueROV2) allocated to HoloOcean's 8
+  BlueROV2 Heavy thruster forces via the pseudo-inverse of its own thruster-geometry wrench matrix.
+  `/uw/pilot/command` ([surge, sway, heave, yaw_rate] as `Float32MultiArray`) is what the scripted
+  pilot / a pilot station publishes; `/uw/pilot/thrusters` (8 raw forces) is now a sim-internal
+  legacy topic. Axis SIGNS as rendered on screen are still to be confirmed in the running simulator
+  (PREP-A-03 / A-12) — `_AXIS_SIGN` is the one place to flip.
 - `pilot_command_model.py` — `PilotCommandModel` shapes raw thruster commands (deadzone, saturation to
   `ActuatorModelSpec.limit`, first-order lag toward the target at `time_constant_s`) for both the realtime
   ROS gateway's `/uw/pilot/thrusters` handling and `scripted_pilot.py`.

@@ -144,6 +144,14 @@ def test_truth_pose_to_odometry_carries_full_undistorted_pose():
     assert msg.header.stamp.nanosec == pytest.approx(500_000_000, abs=1)
 
 
+def test_topic_map_control_output_topics_are_not_algorithm_inputs():
+    topics = build_topic_map("auv0")
+    assert topics.pilot_command == "/uw/pilot/command"
+    assert topics.pilot_thrusters == "/uw/pilot/thrusters"
+    assert topics.pilot_command not in topics.algorithm_inputs
+    assert topics.pilot_thrusters not in topics.algorithm_inputs
+
+
 def test_topic_map_excludes_pilot_camera_and_clock_from_algorithm_inputs():
     topics = build_topic_map()
     assert topics.pilot_camera not in topics.algorithm_inputs

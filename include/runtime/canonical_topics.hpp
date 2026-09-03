@@ -100,6 +100,42 @@ inline const CanonicalTopicInfo* LookupCanonicalTopic(const std::string& topic) 
   return it == registry.end() ? nullptr : &it->second;
 }
 
+// ---------------------------------------------------------------------------
+// Control-output topics (PREP-C-02). These carry commands FROM the pilot /
+// assist / autonomy layer TO the vehicle (MAVLink adapter on the real ROV,
+// thrust allocation in the HoloOcean backend). They are deliberately NOT in
+// CanonicalTopicRegistry and have no CanonicalEventKind: they never enter an
+// algorithm lane, so a LiveEventSource cannot even be handed one (there is
+// no CanonicalPayload alternative for them), and McapEventSource counts them
+// separately from unknown topics when they show up in a recorded bag.
+inline constexpr char kTopicCmdPilot[] = "/cmd/pilot";
+inline constexpr char kTopicCmdSetpoint[] = "/cmd/setpoint";
+inline constexpr char kTopicCmdMode[] = "/cmd/mode";
+
+struct ControlTopicInfo {
+  const google::protobuf::Descriptor* descriptor;
+};
+
+namespace detail {
+
+inline const std::unordered_map<std::string, ControlTopicInfo>& ControlTopicRegistry() {
+  static const std::unordered_map<std::string, ControlTopicInfo> registry = {
+      {kTopicCmdPilot, ControlTopicInfo{uw::domain::PilotCommand::descriptor()}},
+      {kTopicCmdSetpoint, ControlTopicInfo{uw::domain::MotionSetpoint::descriptor()}},
+      {kTopicCmdMode, ControlTopicInfo{uw::domain::FlightModeRequest::descriptor()}},
+  };
+  return registry;
+}
+
+}  // namespace detail
+
+// Returns metadata for a control-output `topic`, or nullptr if it is not one.
+inline const ControlTopicInfo* LookupControlTopic(const std::string& topic) {
+  const auto& registry = detail::ControlTopicRegistry();
+  const auto it = registry.find(topic);
+  return it == registry.end() ? nullptr : &it->second;
+}
+
 // Resolves `topic` to its CanonicalEventKind only if `descriptor` matches
 // the Protobuf type registered for that topic. Returns std::nullopt for an
 // unknown topic OR a topic/schema mismatch -- callers (e.g.

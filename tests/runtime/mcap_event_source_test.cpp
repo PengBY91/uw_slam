@@ -165,3 +165,34 @@ TEST_F(McapEventSourceTest, StoppedByConsumerStopsEarlyAndClosesCleanly) {
 }
 
 }  // namespace
+
+TEST_F(McapEventSourceTest, CountsRecordedControlCommandsWithoutEmittingEvents) {
+  // PREP-C-02: a bag may carry the pilot's /cmd/pilot commands for 复盘.
+  // They are neither algorithm inputs nor unknown topics.
+  {
+    McapProtobufWriter writer;
+    ASSERT_TRUE(writer.Open(path_));
+    ASSERT_TRUE(writer.WriteMessage(uw::runtime::kTopicCameraLeft, 1000, MakeImageFrame("kf0")));
+    uw::domain::PilotCommand command;
+    command.mutable_header()->mutable_observation_id()->set_value("cmd0");
+    command.set_surge(0.5);
+    command.set_source(uw::domain::PilotCommand::SOURCE_PILOT);
+    ASSERT_TRUE(writer.WriteMessage(uw::runtime::kTopicCmdPilot, 1200, command));
+    writer.Close();
+  }
+
+  McapEventSource source(path_);
+  std::vector<CanonicalEvent> events;
+  const auto report = source.Run([&](const CanonicalEvent& event) {
+    events.push_back(event);
+    return true;
+  });
+
+  EXPECT_EQ(report.status, EventSourceStatus::kCompleted);
+  EXPECT_EQ(report.messages_seen, 2u);
+  EXPECT_EQ(report.events_emitted, 1u);
+  EXPECT_EQ(report.unknown_topic_count, 0u);
+  EXPECT_EQ(report.control_message_count, 1u);
+  ASSERT_EQ(events.size(), 1u);
+  EXPECT_EQ(events[0].topic, uw::runtime::kTopicCameraLeft);
+}

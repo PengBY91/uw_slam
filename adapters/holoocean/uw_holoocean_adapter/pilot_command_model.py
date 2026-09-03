@@ -28,6 +28,12 @@ class PilotCommandModel:
         self._time_constant_s = time_constant_s
         self._output: List[float] = []
 
+    @property
+    def limit(self) -> float:
+        """Saturation limit in raw thruster units -- also the full-scale
+        thrust a PilotAxes value of 1.0 allocates to (thrust_allocation.py)."""
+        return self._limit
+
     def _target(self, commanded: float) -> float:
         if abs(commanded) < self._deadzone:
             return 0.0

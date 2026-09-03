@@ -99,3 +99,25 @@ TEST(CanonicalTopics, GtStateIsMarkedReferenceOnly) {
 }
 
 }  // namespace
+
+TEST(ControlTopics, CommandTopicsAreRegisteredSeparatelyFromCanonicalInputs) {
+  // PREP-C-02: /cmd/* topics carry setpoint-level commands to the vehicle.
+  // They resolve through the control registry with the right descriptor and
+  // are NOT canonical algorithm inputs -- structurally they can never reach a
+  // lane.
+  const auto* pilot = uw::runtime::LookupControlTopic(uw::runtime::kTopicCmdPilot);
+  ASSERT_NE(pilot, nullptr);
+  EXPECT_EQ(pilot->descriptor, uw::domain::PilotCommand::descriptor());
+  const auto* setpoint = uw::runtime::LookupControlTopic(uw::runtime::kTopicCmdSetpoint);
+  ASSERT_NE(setpoint, nullptr);
+  EXPECT_EQ(setpoint->descriptor, uw::domain::MotionSetpoint::descriptor());
+  const auto* mode = uw::runtime::LookupControlTopic(uw::runtime::kTopicCmdMode);
+  ASSERT_NE(mode, nullptr);
+  EXPECT_EQ(mode->descriptor, uw::domain::FlightModeRequest::descriptor());
+
+  EXPECT_EQ(LookupCanonicalTopic(uw::runtime::kTopicCmdPilot), nullptr);
+  EXPECT_EQ(LookupCanonicalTopic(uw::runtime::kTopicCmdSetpoint), nullptr);
+  EXPECT_EQ(LookupCanonicalTopic(uw::runtime::kTopicCmdMode), nullptr);
+  EXPECT_EQ(uw::runtime::LookupControlTopic(uw::runtime::kTopicCameraLeft), nullptr);
+  EXPECT_EQ(uw::runtime::LookupControlTopic(uw::runtime::kTopicGtState), nullptr);
+}
