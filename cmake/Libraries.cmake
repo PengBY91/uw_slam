@@ -16,6 +16,8 @@ add_library(core STATIC
   src/sensor_models/camera_rectifier.cpp
   src/sensor_models/sonar_arc_projector.cpp
   src/sensor_models/ned_conversion.cpp
+  src/sensor_models/so3.cpp
+  src/sensor_models/imu_preintegration.cpp
 )
 add_library(uw::core ALIAS core)
 target_include_directories(core PUBLIC "${PROJECT_SOURCE_DIR}/include")
@@ -63,6 +65,7 @@ add_library(frontends STATIC
   src/frontends/acoustic_optic_associator.cpp
   src/frontends/posterior_depth_optimizer.cpp
   src/frontends/acoustic_optic_depth_fusion_frontend.cpp
+  src/frontends/imu_preintegration_frontend.cpp
 )
 add_library(uw::frontends ALIAS frontends)
 target_include_directories(frontends PUBLIC "${PROJECT_SOURCE_DIR}/include")
@@ -76,6 +79,8 @@ add_library(factor_builders STATIC
   src/factor_builders/depth_factor_builder.cpp
   src/factor_builders/sonar_range_residual.cpp
   src/factor_builders/sonar_range_factor_builder.cpp
+  src/factor_builders/imu_preintegration_residual.cpp
+  src/factor_builders/imu_preintegration_factor_builder.cpp
 )
 add_library(uw::factor_builders ALIAS factor_builders)
 target_include_directories(factor_builders PUBLIC "${PROJECT_SOURCE_DIR}/include")
@@ -127,6 +132,7 @@ add_library(evaluation STATIC
   src/evaluation/depth_metrics.cpp
   src/evaluation/fusion_metrics.cpp
   src/evaluation/map_metrics.cpp
+  src/evaluation/control_point_metrics.cpp
 )
 add_library(uw::evaluation ALIAS evaluation)
 target_include_directories(evaluation PUBLIC "${PROJECT_SOURCE_DIR}/include")

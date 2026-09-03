@@ -17,6 +17,8 @@ add_executable(core_tests
   tests/core/camera_rectifier_test.cpp
   tests/core/sonar_arc_projector_test.cpp
   tests/core/ned_conversion_test.cpp
+  tests/core/so3_test.cpp
+  tests/core/imu_preintegration_test.cpp
 )
 target_link_libraries(core_tests PRIVATE uw::core GTest::gtest GTest::gtest_main)
 uw_register_gtest(core_tests "unit.core" "unit;core")
@@ -38,6 +40,7 @@ add_executable(frontends_tests
   tests/frontends/acoustic_optic_associator_test.cpp
   tests/frontends/posterior_depth_optimizer_test.cpp
   tests/frontends/acoustic_optic_depth_fusion_frontend_test.cpp
+  tests/frontends/imu_preintegration_frontend_test.cpp
 )
 target_link_libraries(frontends_tests PRIVATE uw::frontends GTest::gtest GTest::gtest_main)
 uw_register_gtest(frontends_tests "unit.frontends" "unit;frontends")
@@ -49,6 +52,8 @@ add_executable(factor_builders_tests
   tests/factor_builders/depth_factor_builder_test.cpp
   tests/factor_builders/sonar_range_residual_test.cpp
   tests/factor_builders/sonar_range_factor_builder_test.cpp
+  tests/factor_builders/imu_preintegration_residual_test.cpp
+  tests/factor_builders/imu_preintegration_factor_builder_test.cpp
 )
 target_link_libraries(factor_builders_tests PRIVATE
   uw::factor_builders GTest::gtest GTest::gtest_main
@@ -102,6 +107,7 @@ add_executable(evaluation_tests
   tests/evaluation/depth_metrics_test.cpp
   tests/evaluation/fusion_metrics_test.cpp
   tests/evaluation/map_metrics_test.cpp
+  tests/evaluation/control_point_metrics_test.cpp
 )
 target_link_libraries(evaluation_tests PRIVATE uw::evaluation GTest::gtest GTest::gtest_main)
 uw_register_gtest(evaluation_tests "unit.evaluation" "unit;evaluation")
