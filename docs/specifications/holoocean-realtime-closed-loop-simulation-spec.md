@@ -111,7 +111,24 @@ SV1213 标称“最高 40 Hz”才能通过。
 seed 字段不算有效随机化。
 
 `SIM-TIME-005` 标称传感器和算法配置下，实时因子 `RTF = 仿真时间/墙钟时间` 的运行期 P95
-不得低于 1.0。预加载和场景初始化时间不计入运行期。
+不得低于 1.0。预加载和场景初始化时间不计入运行期。（2026-09-02 修订：本条的"标称配置"
+指 `SIM-PERF-002` 定义的 realtime profile；fidelity profile 按 `SIM-PERF-003` 豁免。）
+
+### 5.1 性能预算（2026-09-02 实测，`adapters/holoocean/docs/perf/tick_budget_2026-09-02.md`）
+
+`SIM-PERF-001` 仿真配置必须显式声明 `ticks_per_sec` 与 `frames_per_sec`，且每个传感器的
+`Hz` 必须整除 `ticks_per_sec`（HoloOcean 把传感器速率量化为整 tick 分频；`frames_per_sec`
+是墙钟帧率上限，数字值会把 tick 率钉死在该值，与算力无关）。实测：RTX 4070 Laptop 上每
+tick 固定开销约 15 ms，1080p 相机帧和 768×512 声呐帧各约 60–65 ms，显存峰值 3.4 GB。
+
+`SIM-PERF-002` **realtime profile**（飞手训练、HMI 演示、SITL 闭环）：`ticks_per_sec: 25`、
+`frames_per_sec: true`、相机 ≤960×540@12.5 Hz、声呐 ≤5 Hz 768×256、IMU/状态 25 Hz。该 profile
+是 `SIM-TIME-005` RTF ≥ 1.0 的适用对象；实现必须在运行清单中记录 profile 名。
+
+`SIM-PERF-003` **fidelity profile**（算法验证、录制回放、场景矩阵）：`ticks_per_sec: 200`、
+`frames_per_sec: false`、IMU 200 Hz、相机 25 Hz 1080p、声呐 40 Hz 768×512。实测 RTF ≈ 0.1，
+明确豁免 `SIM-TIME-005`；所有时间戳必须为仿真时间，消费侧必须使用外部时钟源模式
+（准备规格 PREP-A-13 第 4 步），延迟指标按仿真时间计算。
 
 ## 6. 基线任务场景
 

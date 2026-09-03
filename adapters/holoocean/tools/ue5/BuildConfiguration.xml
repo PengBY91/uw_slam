@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Configuration xmlns="https://www.unrealengine.com/BuildConfiguration">
+  <!-- PREP-A-02 (2026-09-03): UE 5.3 engine headers do not compile with MSVC 14.44
+       (ConcurrentLinearAllocator.h: __has_feature not defined, C4668/C4067).
+       Pin UnrealBuildTool to the 14.38 toolset installed alongside it. -->
+  <WindowsPlatform>
+    <CompilerVersion>14.38.33130</CompilerVersion>
+  </WindowsPlatform>
+</Configuration>

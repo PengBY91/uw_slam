@@ -51,6 +51,7 @@
 | 验证某项功能、判断该加载哪个运行环境 | [测试与验证指南](./testing-and-verification-guide-2026-08-20.md) | `tools/verify_pipeline.sh` |
 | 评估生产就绪度、制定团队里程碑和投入计划 | [生产就绪度审计与阶段路线图](./uw-slam-production-readiness-and-roadmap-2026-08-21.md) | [长期架构设计](./acoustic-optic-slam-platform-architecture-2026-08-17.md) |
 | 查合同平台参数、规划到货前的仿真/SLAM/飞控/IMU 准备工作 | [ROV 平台到货前准备工作规格](./ROV平台到货前准备工作规格-2026-09-02.md) | [ROV 平台参数确认表](./ROV平台参数.md)、[ROV 平台落地路线图](./ROV平台落地路线图.md) |
+| 接手 HoloOcean 仿真工作包（数字孪生、关卡、设备伪装层） | [仿真工作交办说明](./仿真工作交办-2026-09-02.md) | [ROV 平台到货前准备工作规格](./ROV平台到货前准备工作规格-2026-09-02.md) 工作包 A、[HoloOcean 适配器](../adapters/holoocean/README.md) |
 | 开发或验收 ROV 在线驾驶辅助系统 | [ROV 竞赛在线系统需求规格](./specifications/rov-competition-online-system-requirements.md) | [HoloOcean 实时闭环仿真规格](./specifications/holoocean-realtime-closed-loop-simulation-spec.md)、[声光在线融合规格](./specifications/rov-acoustic-optic-online-fusion-spec.md) |
 | 修改 HoloOcean Python 网关 | [HoloOcean 适配器](../adapters/holoocean/README.md) | [Pipeline 工程方案](./holoocean-to-acoustic-optic-slam-pipeline-2026-08-05.md) |
 | 构建或排查 ROS2 接入 | [ROS2 适配器](../adapters/ros2/README.md) | [外部仓库恢复说明](../external_repos/README.md) |

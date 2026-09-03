@@ -1,0 +1,232 @@
+[
+  {
+    "variant": "a_current_stereo720p20_sonar10x512",
+    "sensors": [
+      "LeftCamera@20Hz 1280x720",
+      "RightCamera@20Hz 1280x720",
+      "PilotCamera@20Hz 1280x720",
+      "ImagingSonar@10Hz 768x512",
+      "VehicleOrientation@50Hz",
+      "IMUSensor@50Hz",
+      "DepthSensor@50Hz",
+      "ScoringPose@10Hz"
+    ],
+    "launch_s": 31.1,
+    "ticks_per_sec_configured": 100,
+    "ticks": 300,
+    "wall_s": 15.49,
+    "achieved_ticks_per_s": 19.37,
+    "ms_per_tick_mean": 51.6,
+    "ms_per_tick_p50": 50.0,
+    "ms_per_tick_p95": 75.3,
+    "sim_elapsed_s": 2.99,
+    "real_time_factor": 0.193,
+    "sensor_msgs_per_sim_s": {
+      "LeftCamera": 20.1,
+      "RightCamera": 20.1,
+      "PilotCamera": 20.1,
+      "ImagingSonar": 10.0,
+      "VehicleOrientation": 50.2,
+      "IMUSensor": 50.2,
+      "DepthSensor": 50.2,
+      "ScoringPose": 10.0,
+      "t": 100.3
+    },
+    "gpu_mid_run": {
+      "gpu_mem_used_mib": 3255.0,
+      "gpu_util_pct": 96.0
+    },
+    "gpu_before_run": {
+      "gpu_mem_used_mib": 3255.0,
+      "gpu_util_pct": 72.0
+    }
+  },
+  {
+    "variant": "b_mono960x540_20hz_sonar10x512",
+    "sensors": [
+      "MainCamera@20Hz 960x540",
+      "ImagingSonar@10Hz 768x512",
+      "VehicleOrientation@50Hz",
+      "IMUSensor@50Hz",
+      "DepthSensor@50Hz",
+      "ScoringPose@10Hz"
+    ],
+    "launch_s": 9.3,
+    "ticks_per_sec_configured": 100,
+    "ticks": 300,
+    "wall_s": 14.97,
+    "achieved_ticks_per_s": 20.03,
+    "ms_per_tick_mean": 49.9,
+    "ms_per_tick_p50": 50.0,
+    "ms_per_tick_p95": 50.8,
+    "sim_elapsed_s": 2.99,
+    "real_time_factor": 0.2,
+    "sensor_msgs_per_sim_s": {
+      "MainCamera": 20.1,
+      "ImagingSonar": 10.0,
+      "VehicleOrientation": 50.2,
+      "IMUSensor": 50.2,
+      "DepthSensor": 50.2,
+      "ScoringPose": 10.0,
+      "t": 100.3
+    },
+    "gpu_mid_run": {
+      "gpu_mem_used_mib": 2840.0,
+      "gpu_util_pct": 40.0
+    },
+    "gpu_before_run": {
+      "gpu_mem_used_mib": 2936.0,
+      "gpu_util_pct": 40.0
+    }
+  },
+  {
+    "variant": "c_mono1080p_30hz_sonar10x512",
+    "sensors": [
+      "MainCamera@30Hz 1920x1080",
+      "ImagingSonar@10Hz 768x512",
+      "VehicleOrientation@50Hz",
+      "IMUSensor@50Hz",
+      "DepthSensor@50Hz",
+      "ScoringPose@10Hz"
+    ],
+    "launch_s": 8.9,
+    "ticks_per_sec_configured": 100,
+    "ticks": 300,
+    "wall_s": 14.98,
+    "achieved_ticks_per_s": 20.02,
+    "ms_per_tick_mean": 49.9,
+    "ms_per_tick_p50": 49.7,
+    "ms_per_tick_p95": 52.0,
+    "sim_elapsed_s": 2.99,
+    "real_time_factor": 0.2,
+    "sensor_msgs_per_sim_s": {
+      "ImagingSonar": 10.0,
+      "VehicleOrientation": 50.2,
+      "IMUSensor": 50.2,
+      "DepthSensor": 50.2,
+      "ScoringPose": 10.0,
+      "t": 100.3,
+      "MainCamera": 33.4
+    },
+    "gpu_mid_run": {
+      "gpu_mem_used_mib": 3428.0,
+      "gpu_util_pct": 71.0
+    },
+    "gpu_before_run": {
+      "gpu_mem_used_mib": 3428.0,
+      "gpu_util_pct": 38.0
+    }
+  },
+  {
+    "variant": "c_nosonar_mono1080p_30hz",
+    "sensors": [
+      "MainCamera@30Hz 1920x1080",
+      "VehicleOrientation@50Hz",
+      "IMUSensor@50Hz",
+      "DepthSensor@50Hz",
+      "ScoringPose@10Hz"
+    ],
+    "launch_s": 8.0,
+    "ticks_per_sec_configured": 100,
+    "ticks": 300,
+    "wall_s": 14.98,
+    "achieved_ticks_per_s": 20.03,
+    "ms_per_tick_mean": 49.9,
+    "ms_per_tick_p50": 49.7,
+    "ms_per_tick_p95": 51.8,
+    "sim_elapsed_s": 2.99,
+    "real_time_factor": 0.2,
+    "sensor_msgs_per_sim_s": {
+      "VehicleOrientation": 50.2,
+      "IMUSensor": 50.2,
+      "DepthSensor": 50.2,
+      "ScoringPose": 10.0,
+      "t": 100.3,
+      "MainCamera": 33.4
+    },
+    "gpu_mid_run": {
+      "gpu_mem_used_mib": 3268.0,
+      "gpu_util_pct": 52.0
+    },
+    "gpu_before_run": {
+      "gpu_mem_used_mib": 3364.0,
+      "gpu_util_pct": 44.0
+    }
+  },
+  {
+    "variant": "d_mono1080p_30hz_sonar40x512",
+    "sensors": [
+      "MainCamera@30Hz 1920x1080",
+      "ImagingSonar@40Hz 768x512",
+      "VehicleOrientation@50Hz",
+      "IMUSensor@50Hz",
+      "DepthSensor@50Hz",
+      "ScoringPose@10Hz"
+    ],
+    "launch_s": 8.9,
+    "ticks_per_sec_configured": 100,
+    "ticks": 300,
+    "wall_s": 14.99,
+    "achieved_ticks_per_s": 20.02,
+    "ms_per_tick_mean": 50.0,
+    "ms_per_tick_p50": 49.7,
+    "ms_per_tick_p95": 52.2,
+    "sim_elapsed_s": 2.99,
+    "real_time_factor": 0.2,
+    "sensor_msgs_per_sim_s": {
+      "ImagingSonar": 50.2,
+      "VehicleOrientation": 50.2,
+      "IMUSensor": 50.2,
+      "DepthSensor": 50.2,
+      "ScoringPose": 10.0,
+      "t": 100.3,
+      "MainCamera": 33.4
+    },
+    "gpu_mid_run": {
+      "gpu_mem_used_mib": 3429.0,
+      "gpu_util_pct": 52.0
+    },
+    "gpu_before_run": {
+      "gpu_mem_used_mib": 3429.0,
+      "gpu_util_pct": 67.0
+    }
+  },
+  {
+    "variant": "e_mono1080p_30hz_sonar20x256",
+    "sensors": [
+      "MainCamera@30Hz 1920x1080",
+      "ImagingSonar@20Hz 768x256",
+      "VehicleOrientation@50Hz",
+      "IMUSensor@50Hz",
+      "DepthSensor@50Hz",
+      "ScoringPose@10Hz"
+    ],
+    "launch_s": 8.9,
+    "ticks_per_sec_configured": 100,
+    "ticks": 300,
+    "wall_s": 15.32,
+    "achieved_ticks_per_s": 19.58,
+    "ms_per_tick_mean": 51.1,
+    "ms_per_tick_p50": 49.7,
+    "ms_per_tick_p95": 58.4,
+    "sim_elapsed_s": 2.99,
+    "real_time_factor": 0.195,
+    "sensor_msgs_per_sim_s": {
+      "ImagingSonar": 20.1,
+      "VehicleOrientation": 50.2,
+      "IMUSensor": 50.2,
+      "DepthSensor": 50.2,
+      "ScoringPose": 10.0,
+      "t": 100.3,
+      "MainCamera": 33.4
+    },
+    "gpu_mid_run": {
+      "gpu_mem_used_mib": 3445.0,
+      "gpu_util_pct": 66.0
+    },
+    "gpu_before_run": {
+      "gpu_mem_used_mib": 3429.0,
+      "gpu_util_pct": 43.0
+    }
+  }
+]
