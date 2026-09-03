@@ -1,0 +1,67 @@
+{
+  "_comment": [
+    "PREP-A-05: the leanest HoloOcean scenario that can serve as ArduSub SITL's external",
+    "physics backend. Loaded by holoocean_sitl_physics_host.py as a PLAIN scenario_cfg --",
+    "it deliberately does NOT go through scenario_manifest.load_realtime_manifest, whose",
+    "required-sensor validation exists for the perception loop and would force cameras and",
+    "sonar into a configuration whose whole point is that it has neither.",
+    "",
+    "Why no cameras and no sonar: adapters/holoocean/docs/perf/tick_budget_2026-09-02.md",
+    "measured ~15 ms of fixed cost per tick with nothing rendering, plus ~65 ms per 1080p",
+    "camera frame and ~60 ms per 768x512 sonar frame. The SITL closed loop needs attitude,",
+    "depth and pose -- QGroundControl renders the vehicle, not the water -- so every",
+    "renderer is off and the tick budget goes entirely to physics. Perception is added back",
+    "later, on top of a loop that is already known to work, and pays the RTF cost then.",
+    "",
+    "ticks_per_sec MUST equal the bridge's --step-hz and ArduPilot's SIM_RATE_HZ. One",
+    "HoloOcean tick advances HoloOcean's clock by 1/ticks_per_sec and the bridge advances",
+    "SITL's by 1/step_hz; any mismatch makes the two simulators' clocks drift apart while",
+    "each believes it is in sync. 50 Hz is chosen as the highest rate the ~15 ms/tick floor",
+    "can sustain at RTF ~1 with headroom for the WSL2<->Windows round trip.",
+    "",
+    "frames_per_sec false = no wall-clock cap (the contract base pins 20, which is exactly",
+    "why round 1 of the tick budget measured 20 ticks/s regardless of GPU load).",
+    "",
+    "Sensor set is deliberately minimal and only uses sensors this repo has already read",
+    "from a real install. If the installed HoloOcean exposes a DynamicsSensor, adding one",
+    "named 'DynamicsSensor' lets the bridge take velocity directly instead of differencing",
+    "PoseSensor (ardusub_sitl_bridge._extract_velocity handles both); it is left out here",
+    "so a first run cannot fail on an unrecognised sensor type."
+  ],
+  "name": "uw_ardusub_sitl_bridge",
+  "package_name": "Ocean",
+  "world": "PierHarbor",
+  "main_agent": "auv0",
+  "ticks_per_sec": 50,
+  "frames_per_sec": false,
+  "agents": [
+    {
+      "agent_name": "auv0",
+      "agent_type": "BlueROV2",
+      "control_scheme": 0,
+      "location": [0.0, 0.0, -3.0],
+      "rotation": [0.0, 0.0, 0.0],
+      "sensors": [
+        {
+          "sensor_type": "IMUSensor",
+          "sensor_name": "IMUSensor",
+          "socket": "COM",
+          "location": [0.0, 0.0, 0.0],
+          "Hz": 50
+        },
+        {
+          "sensor_type": "PoseSensor",
+          "sensor_name": "PoseSensor",
+          "socket": "COM",
+          "Hz": 50
+        },
+        {
+          "sensor_type": "DepthSensor",
+          "sensor_name": "DepthSensor",
+          "socket": "COM",
+          "Hz": 50
+        }
+      ]
+    }
+  ]
+}

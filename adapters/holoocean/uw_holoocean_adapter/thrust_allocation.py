@@ -8,23 +8,45 @@ defined at the axis level -- surge / sway / heave / yaw_rate in [-1, 1] --
 and turning that into 8 per-thruster forces is a SIMULATION-BACKEND detail
 that lives here, not something any pilot or assist code should do itself.
 
-Thruster geometry is HoloOcean's own BlueROV2 table (holoocean/agents.py,
-`thruster_d` / `thruster_p`, marked there as "provided for convenience, may
-not be correct -- check the C++"). Because the allocation is computed from
-that same table (pseudo-inverse of the wrench matrix), the commanded wrench
-is self-consistent with whatever HoloOcean actually integrates as long as the
-table matches the engine. The absolute SIGN of each axis as seen on screen
-(does +sway really move the vehicle to starboard in the rendered world?) is
-exactly what PREP-A-03 / A-12 verify in the running simulator -- treat the
-`_AXIS_SIGN` constants as the one place to flip if that check fails.
+Thruster geometry is read from HoloOcean's ENGINE source
+(holoocean-engine `Source/Holodeck/Agents/{Public/BlueROV2.h,
+Private/BlueROV2.cpp}`), NOT from the `thruster_d`/`thruster_p` table in the
+Python client's `holoocean/agents.py`.
 
-HoloOcean thruster order (agents.py BlueROV2 docstring):
+That distinction is load-bearing, not pedantry. The Python table is marked
+upstream as "provided for convenience, may not be correct -- check the C++",
+and checking the C++ (2026-09-03, PREP-A-05) showed it is in fact wrong:
+
+  * every position has its x sign flipped relative to the engine;
+  * the angled thrusters' directions are wrong -- the Python table has the
+    front pair pushing aft (-x) and the back pair forward (+x), while the
+    engine pushes ALL FOUR forward (+x), with the port/starboard split
+    carried entirely by y;
+  * as a result the Python table is not even yaw-symmetric: it gives the
+    back pair a sixth of the front pair's yaw moment arm (0.032 vs 0.189 m),
+    where the engine gives all four the same 0.180 m.
+
+Since `allocate()` is the pseudo-inverse of this matrix, using the Python
+table produced an allocation that did not match what the engine integrates
+-- most visibly, a pure surge command came out as ZERO net force in the
+engine, because the pattern that is "forward" under the Python directions is
+a null vector under the engine's. See
+adapters/holoocean/docs/ardusub-sitl-bridge-feasibility.md.
+
+The engine works in UE's left-handed frame (x forward, y right, z up) in
+centimetres, and converts forces with `ConvertLinearVector(v, ClientToUE)`,
+which reverses y. The table below is therefore already converted to the
+client frame this repo uses everywhere: x forward, y PORT (left), z up,
+metres -- so a "+right" sway is a -y force and a "+clockwise-from-above" yaw
+is a -z torque, which is what `_AXIS_SIGN` encodes.
+
+Thruster order is HoloOcean's own (agents.py BlueROV2 docstring):
   [Vertical Front Starboard, Vertical Front Port, Vertical Back Port,
    Vertical Back Starboard, Angled Front Starboard, Angled Front Port,
    Angled Back Port, Angled Back Starboard]
-In that table starboard positions have negative y, i.e. the body frame is
-x forward, y port (left), z up -- so a "+right" sway is a -y force and a
-"+clockwise-from-above" yaw is a -z torque.
+Note that the engine's positions do not match those names either (its
+"front" verticals sit at +x while the Python table put them at -x); the
+names are kept only because they are the published action-space order.
 """
 from __future__ import annotations
 
@@ -47,31 +69,50 @@ THRUSTER_NAMES = (
 _VERTICAL = (0, 1, 2, 3)
 _ANGLED = (4, 5, 6, 7)
 
-# Unit thrust directions and positions (m) per thruster, HoloOcean frame.
+# Unit thrust directions and positions (m) per thruster, in the client
+# frame (x forward, y port, z up), transcribed from the engine source.
+#
+# BlueROV2.cpp ApplyThrusters(): thrusters 0-3 push +z; 4 and 6 push
+# (+x, +y)/sqrt2 and 5 and 7 push (+x, -y)/sqrt2, all in the CLIENT frame
+# (the code builds LocalForce there, then calls ConvertLinearVector(...,
+# ClientToUE)). All four angled thrusters therefore push FORWARD.
+_SQRT_HALF = float(np.sqrt(0.5))
 _THRUSTER_D = np.array(
     [
         [0.0, 0.0, 1.0],
         [0.0, 0.0, 1.0],
         [0.0, 0.0, 1.0],
         [0.0, 0.0, 1.0],
-        [np.cos(3 * np.pi / 4), np.sin(3 * np.pi / 4), 0.0],
-        [np.cos(-3 * np.pi / 4), np.sin(-3 * np.pi / 4), 0.0],
-        [np.cos(np.pi / 4), np.sin(np.pi / 4), 0.0],
-        [np.cos(-np.pi / 4), np.sin(-np.pi / 4), 0.0],
+        [_SQRT_HALF, _SQRT_HALF, 0.0],
+        [_SQRT_HALF, -_SQRT_HALF, 0.0],
+        [_SQRT_HALF, _SQRT_HALF, 0.0],
+        [_SQRT_HALF, -_SQRT_HALF, 0.0],
     ]
 )
+
+# BlueROV2.h `thrusterLocations` (UE cm, left-handed), minus the CenterMass
+# that BlueROV2.cpp InitializeAgent() subtracts when `Perfect` is true --
+# CenterMass = ((t0 + t2) / 2) with Z taken from t7, i.e. (0, 0, -1.00) cm --
+# then converted to the client frame (y negated) and to metres.
 _THRUSTER_P = np.array(
     [
-        [-0.12, -0.218, 0.0],
-        [-0.12, 0.218, 0.0],
-        [0.12, 0.218, 0.0],
-        [0.12, -0.218, 0.0],
-        [-0.156, -0.111, 0.085],
-        [-0.156, 0.111, 0.085],
-        [0.156, 0.111, 0.085],
-        [0.156, -0.111, 0.085],
+        [0.1200, -0.2181, 0.0809],
+        [0.1200, 0.2181, 0.0809],
+        [-0.1200, 0.2181, 0.0809],
+        [-0.1200, -0.2181, 0.0809],
+        [0.1562, -0.0988, 0.0000],
+        [0.1562, 0.0988, 0.0000],
+        [-0.1562, 0.0988, 0.0000],
+        [-0.1562, -0.0988, 0.0000],
     ]
 )
+
+# The engine clamps every thruster to +/-BR_MAX_THRUST
+# (BlueROV2.h: BR_MAX_LIN_ACCEL * 11.5 / 4 = 10 * 11.5 / 4), i.e. its model
+# is parameterised by a maximum linear acceleration rather than by T200
+# thrust curves. A real T200 at 16 V does 51.5 N forward; commands above
+# this limit are silently clipped by the engine, not scaled.
+ENGINE_MAX_THRUST_N = 28.75
 
 # PilotCommand axis sense -> HoloOcean-frame wrench sense.
 _AXIS_SIGN = {

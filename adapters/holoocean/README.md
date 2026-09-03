@@ -67,7 +67,17 @@ run). Everything else IS tested (`pytest`, 166/166 passing as of this writing):
   per-topic min-heap of drop/duplicate/bounded-reorder/outage events up front from an owned
   `numpy.random.Generator`; `FaultInjector.apply()` drains due events at runtime without ever sleeping the
   simulation loop. `apply_thruster_fault()` scales one already-shaped `PilotCommandModel` output channel
-  to model a degraded thruster.
+  to model a degraded thruster. PREP-E-02 (2026-09-03) adds the `bandwidth` profile:
+  `build_bandwidth_schedule(seed, BandwidthProfile, duration_s)` pre-samples a clamped random walk of the
+  available tether rate (contract band 10–40 Mbps around 20 Mbps nominal) and `BandwidthShaper` applies it
+  at runtime as a deficit token bucket with a priority queue (vehicle state > sonar > pilot video >
+  cameras): over-budget messages are released on later ticks (delay grows with queue depth) or dropped
+  lowest-priority-first once the backlog exceeds `max_queue_s`; `stats()` reports per-topic byte
+  accounting and queue-latency percentiles. `FaultInjector(..., bandwidth=shaper)` chains it after the
+  per-topic faults; `realtime_ros_session --fault-profile bandwidth|critical+bandwidth --bandwidth-*`
+  and `configs/experiment/rov_realtime_tether_limited.yaml` (via `realtime_gate.py`, which now actually
+  forwards a profile's `fault_profile`/`bandwidth` keys to the session) wire it up. Unit-tested only; no
+  gate run on a real HoloOcean host yet.
 - `sensor_perturbation.py` — applies `scenario_randomization.py`'s `VisualDegradation`/`SonarDegradation`
   axes (plus the new motion-blur/particle/overexposure/stereo-mismatch/blind-zone/false-echo/range-bias
   fields that module gained for this task) to real captured image and sonar intensity arrays, using the
@@ -96,6 +106,33 @@ run). Everything else IS tested (`pytest`, 166/166 passing as of this writing):
   requirements,rov-acoustic-optic-online-fusion-spec,holoocean-realtime-closed-loop-simulation-spec}.md`),
   checked by `tools/lint/check_realtime_traceability.py` — completeness against the real spec files is
   itself a passing test (`tests/tools/test_realtime_traceability.py`), not just a hand-maintained claim.
+
+## Tools
+
+Scripts under `tools/` are not part of the installed package; run them with `.venv/bin/python`.
+
+- `tools/tick_budget.py` — PREP-A-01 HoloOcean tick/GPU budget per sensor configuration (runs on the
+  Windows host; results in `docs/perf/tick_budget_2026-09-02.md`).
+- `tools/sonar_stats.py` — PREP-A-10 sonar image statistics (Rayleigh noise floor, signal-to-clutter,
+  range attenuation, per-beam profile) for one bag or an A/B comparison; procedure in
+  `docs/sonar-stats-procedure.md`, tested by `tests/test_sonar_stats.py` on synthetic frames + MCAP.
+- `../../tools/calib/imu_allan.py` — PREP-B-05 Allan-deviation IMU noise identification -> rig
+  `imu_noise` YAML; lives in the repo-level `tools/calib/` but runs under this venv (see
+  `tools/calib/README.md`), tested by `tests/test_imu_allan.py`.
+- `tools/ue5/` — PREP-A-02 UE 5.3 world packaging scripts (own README).
+- `tools/sitl_bridge_check.py` — PREP-A-05 acceptance driver for the ArduSub SITL bridge: clock
+  agreement, depth-sensor sanity, per-axis sign checks and DEPTH_HOLD, against either the bridge's
+  built-in mock physics or real HoloOcean. Findings and the run procedure are in
+  `docs/ardusub-sitl-bridge-feasibility.md`.
+
+The SITL bridge itself is package code, not a tool: `uw_holoocean_adapter/ardusub_sitl_bridge.py`
+runs on the WSL2 side and holds all the logic (SITL JSON wire format, the ArduSub->HoloOcean
+thruster correspondence, the NED/FRD conversions, and a mock rigid body so the whole SITL half is
+testable with no simulator attached), while `uw_holoocean_adapter/holoocean_sitl_physics_host.py`
+is the Windows-side shuttle. `tests/test_ardusub_sitl_bridge.py` covers all of it offline,
+including re-deriving the thruster correspondence from both published thruster tables.
+
+`--plot` on the two stats tools needs the `plot` extra (`uv pip install -e ".[plot]"`).
 
 ## Setup
 
