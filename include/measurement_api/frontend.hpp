@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+#include <Eigen/Core>
+
 #include "domain/domain.hpp"
 #include "sensor_models/geometry.hpp"
 
@@ -72,6 +74,40 @@ class LoopClosureFrontend {
       const CameraFrameBundle& bundle, const uw::domain::RigCalibrationSnapshot& calibration,
       const std::string& current_keyframe_id,
       const uw::sensor_models::Pose3& current_pose_estimate) = 0;
+  virtual uw::domain::HealthReport Health() const = 0;
+};
+
+// One preintegration interval request: which two keyframes, their
+// capture-time boundaries, and the bias linearisation point the deltas
+// should be integrated at (the estimator's current bias estimate for
+// `from_keyframe_id`, or zero before any bias has been estimated).
+struct ImuPreintegrationRequest {
+  std::string from_keyframe_id;
+  std::string to_keyframe_id;
+  uw::domain::Stamp from_time;
+  uw::domain::Stamp to_time;
+  Eigen::Vector3d bias_gyro = Eigen::Vector3d::Zero();
+  Eigen::Vector3d bias_accel = Eigen::Vector3d::Zero();
+};
+
+// IMU samples in, one ImuPreintegrationMeasurement evidence out per
+// keyframe interval (see include/frontends/imu_preintegration_frontend.hpp,
+// the first implementation). Deliberately "a window of samples + an
+// interval request" rather than "one sample in, one evidence out": the
+// physically meaningful unit is the interval between two keyframes, and
+// the caller (replay/online pipeline) owns the sample buffer and the
+// keyframe cadence. `samples` may be any superset of the interval's
+// samples in capture-time order; the implementation selects what it
+// needs. Returns nullopt (and degrades Health()) instead of fabricating a
+// delta when the window has gaps or too few samples — fail-closed, like
+// every other frontend here.
+class InertialFrontend {
+ public:
+  virtual ~InertialFrontend() = default;
+  virtual std::optional<uw::domain::MeasurementEvidence> Process(
+      const std::vector<uw::domain::ImuSample>& samples,
+      const ImuPreintegrationRequest& request,
+      const uw::domain::RigCalibrationSnapshot& calibration) = 0;
   virtual uw::domain::HealthReport Health() const = 0;
 };
 

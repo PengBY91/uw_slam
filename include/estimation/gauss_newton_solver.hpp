@@ -67,19 +67,38 @@ class GaussNewtonSolver {
 
   Summary Solve(PoseGraphProblem& problem, const Options& options = Options{}) const;
 
+  // Flat map key for a (kind, keyframe_id) pair: a keyframe's pose and its
+  // inertial state are two distinct blocks under the same id. Public
+  // because every backend needs the same keying — the Ceres adapter
+  // (adapters/ceres/) reuses it so the two solvers cannot disagree about
+  // which double* belongs to which ParameterRef.
+  static std::string ParameterKey(const PoseGraphProblem::ParameterRef& ref);
+
  private:
+  // One free (non-fixed) parameter block's slot in the normal equations:
+  // its first column and its width (7 for a pose, 9 for an inertial state,
+  // per PoseGraphProblem::ParameterBlockView). Before PREP-B-01 every block
+  // was 7 wide and `offset` was simply 7 * index; that layout is preserved
+  // exactly for pose-only graphs because MutableAllParameterBlocks() lists
+  // all poses before any inertial state.
+  struct FreeBlock {
+    int offset = 0;
+    int size = 0;
+  };
+
   // Evaluates every residual block once. If `jtj`/`jtr` are non-null,
   // accumulates the normal equations restricted to the free (non-fixed)
-  // keyframes indexed by `free_index`. Always returns the total cost
-  // (0.5 * sum ||r||^2). `param_ptrs` maps keyframe id to its raw 7-double
-  // parameter block, obtained once per Solve() call via PoseGraphProblem's
-  // public MutableParameterBlocks() (see pose_graph_problem.hpp) — this
-  // solver has no special/friend access to PoseGraphProblem, so a second
-  // solver can be added the same way.
+  // blocks in `free_blocks`. Always returns the total cost
+  // (0.5 * sum ||r||^2). Both maps are keyed by ParameterKey() below and
+  // obtained once per Solve() call via PoseGraphProblem's public
+  // MutableAllParameterBlocks() (see pose_graph_problem.hpp) — this solver
+  // has no special/friend access to PoseGraphProblem, so a second solver
+  // can be added the same way.
   static double EvaluateAll(PoseGraphProblem& problem,
                             const std::unordered_map<std::string, double*>& param_ptrs,
-                            const std::unordered_map<std::string, int>& free_index,
+                            const std::unordered_map<std::string, FreeBlock>& free_blocks,
                             Eigen::MatrixXd* jtj, Eigen::VectorXd* jtr, double huber_delta);
+
 };
 
 }  // namespace uw::estimation

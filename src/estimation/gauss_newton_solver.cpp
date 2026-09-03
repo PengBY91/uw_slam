@@ -5,14 +5,20 @@
 #include <cmath>
 #include <iostream>
 #include <limits>
+#include <string>
 #include <unordered_map>
+#include <vector>
 
 #include <Eigen/Dense>
 
 namespace uw::estimation {
 
 namespace {
-constexpr int kBlockDim = 7;
+constexpr int kPoseBlockDim = 7;
+// Widest optimizable block, used only to size the per-step backup buffers
+// without a heap allocation per block (pose = 7, inertial = 9).
+constexpr int kMaxBlockDim = PoseGraphProblem::kInertialBlockDim;
+static_assert(kMaxBlockDim >= kPoseBlockDim, "backup buffer must fit a pose block");
 
 void RenormalizeQuaternion(double* params) {
   Eigen::Map<Eigen::Vector4d> q(params + 3);  // [qx,qy,qz,qw]
@@ -21,9 +27,13 @@ void RenormalizeQuaternion(double* params) {
 }
 }  // namespace
 
+std::string GaussNewtonSolver::ParameterKey(const PoseGraphProblem::ParameterRef& ref) {
+  return (ref.kind == PoseGraphProblem::ParameterKind::kPose ? "P:" : "I:") + ref.keyframe_id;
+}
+
 double GaussNewtonSolver::EvaluateAll(PoseGraphProblem& problem,
                                        const std::unordered_map<std::string, double*>& param_ptrs,
-                                       const std::unordered_map<std::string, int>& free_index,
+                                       const std::unordered_map<std::string, FreeBlock>& free_blocks,
                                        Eigen::MatrixXd* jtj, Eigen::VectorXd* jtr, double huber_delta) {
   double cost = 0.0;
 
@@ -36,9 +46,9 @@ double GaussNewtonSolver::EvaluateAll(PoseGraphProblem& problem,
     const auto block_sizes = binding.block->ParameterBlockSizes();
 
     std::vector<const double*> params;
-    params.reserve(binding.involved_keyframes->size());
-    for (const auto& kf_id : *binding.involved_keyframes) {
-      params.push_back(param_ptrs.at(kf_id));
+    params.reserve(binding.involved_parameters->size());
+    for (const auto& ref : *binding.involved_parameters) {
+      params.push_back(param_ptrs.at(ParameterKey(ref)));
     }
 
     std::vector<double> residuals(static_cast<std::size_t>(dim));
@@ -81,22 +91,29 @@ double GaussNewtonSolver::EvaluateAll(PoseGraphProblem& problem,
 
     if (!want_jacobian) continue;
 
-    for (std::size_t b = 0; b < binding.involved_keyframes->size(); ++b) {
-      auto it_b = free_index.find((*binding.involved_keyframes)[b]);
-      if (it_b == free_index.end()) continue;  // fixed keyframe: no column to solve for
-      const int col_b = it_b->second * kBlockDim;
-      Eigen::Map<const Eigen::Matrix<double, Eigen::Dynamic, kBlockDim, Eigen::RowMajor>> Jb(
-          jac_storage[b].data(), dim, kBlockDim);
+    // Column offsets/widths come from free_blocks rather than "index * 7":
+    // a binding may now mix 7-wide pose blocks with 9-wide inertial ones
+    // (PoseGraphProblem option A). For a graph with no inertial states the
+    // offsets are still exactly 7 * keyframe_index, so the assembled normal
+    // equations are bit-identical to the pre-PREP-B-01 solver.
+    for (std::size_t b = 0; b < binding.involved_parameters->size(); ++b) {
+      auto it_b = free_blocks.find(ParameterKey((*binding.involved_parameters)[b]));
+      if (it_b == free_blocks.end()) continue;  // fixed block: no column to solve for
+      const int col_b = it_b->second.offset;
+      const int size_b = it_b->second.size;
+      Eigen::Map<const Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> Jb(
+          jac_storage[b].data(), dim, size_b);
 
-      jtr->segment(col_b, kBlockDim) += Jb.transpose() * r;
+      jtr->segment(col_b, size_b) += Jb.transpose() * r;
 
-      for (std::size_t b2 = 0; b2 < binding.involved_keyframes->size(); ++b2) {
-        auto it_b2 = free_index.find((*binding.involved_keyframes)[b2]);
-        if (it_b2 == free_index.end()) continue;
-        const int col_b2 = it_b2->second * kBlockDim;
-        Eigen::Map<const Eigen::Matrix<double, Eigen::Dynamic, kBlockDim, Eigen::RowMajor>> Jb2(
-            jac_storage[b2].data(), dim, kBlockDim);
-        jtj->block(col_b, col_b2, kBlockDim, kBlockDim) += Jb.transpose() * Jb2;
+      for (std::size_t b2 = 0; b2 < binding.involved_parameters->size(); ++b2) {
+        auto it_b2 = free_blocks.find(ParameterKey((*binding.involved_parameters)[b2]));
+        if (it_b2 == free_blocks.end()) continue;
+        const int col_b2 = it_b2->second.offset;
+        const int size_b2 = it_b2->second.size;
+        Eigen::Map<const Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> Jb2(
+            jac_storage[b2].data(), dim, size_b2);
+        jtj->block(col_b, col_b2, size_b, size_b2) += Jb.transpose() * Jb2;
       }
     }
   }
@@ -108,37 +125,40 @@ GaussNewtonSolver::Summary GaussNewtonSolver::Solve(PoseGraphProblem& problem,
                                                      const Options& options) const {
   Summary summary;
 
-  std::unordered_map<std::string, int> free_index;
-  for (auto& id : problem.KeyframeOrder()) {
-    if (!problem.IsFixed(id)) {
-      free_index[id] = static_cast<int>(free_index.size());
-    }
-  }
-  const int num_free = static_cast<int>(free_index.size());
-
-  // Pointers into PoseGraphProblem's own keyframe storage, valid for this
-  // whole Solve() call (no keyframes are added/removed while solving).
+  // Pointers into PoseGraphProblem's own storage, valid for this whole
+  // Solve() call (no blocks are added/removed while solving). Poses come
+  // first, then inertial states, so a pose-only graph gets exactly the
+  // column layout it got before inertial states existed.
+  const auto all_blocks = problem.MutableAllParameterBlocks();
   std::unordered_map<std::string, double*> param_ptrs;
-  for (auto& block : problem.MutableParameterBlocks()) {
-    param_ptrs.emplace(block.keyframe_id, block.params);
+  std::unordered_map<std::string, FreeBlock> free_blocks;
+  std::vector<const PoseGraphProblem::ParameterBlockView*> free_order;
+  int num_columns = 0;
+  for (const auto& block : all_blocks) {
+    const std::string key = ParameterKey(block.ref);
+    param_ptrs.emplace(key, block.params);
+    if (block.fixed) continue;
+    free_blocks.emplace(key, FreeBlock{num_columns, block.size});
+    free_order.push_back(&block);
+    num_columns += block.size;
   }
 
-  if (num_free == 0) {
+  if (num_columns == 0) {
     summary.initial_cost = summary.final_cost =
-        EvaluateAll(problem, param_ptrs, free_index, nullptr, nullptr, options.huber_delta);
+        EvaluateAll(problem, param_ptrs, free_blocks, nullptr, nullptr, options.huber_delta);
     summary.converged = true;
     return summary;
   }
 
   double lambda = options.initial_lambda;
-  double current_cost = EvaluateAll(problem, param_ptrs, free_index, nullptr, nullptr, options.huber_delta);
+  double current_cost = EvaluateAll(problem, param_ptrs, free_blocks, nullptr, nullptr, options.huber_delta);
   summary.initial_cost = current_cost;
 
   for (int iter = 0; iter < options.max_iterations; ++iter) {
-    Eigen::MatrixXd jtj = Eigen::MatrixXd::Zero(kBlockDim * num_free, kBlockDim * num_free);
-    Eigen::VectorXd jtr = Eigen::VectorXd::Zero(kBlockDim * num_free);
+    Eigen::MatrixXd jtj = Eigen::MatrixXd::Zero(num_columns, num_columns);
+    Eigen::VectorXd jtr = Eigen::VectorXd::Zero(num_columns);
     const double cost_at_linearization =
-        EvaluateAll(problem, param_ptrs, free_index, &jtj, &jtr, options.huber_delta);
+        EvaluateAll(problem, param_ptrs, free_blocks, &jtj, &jtr, options.huber_delta);
 
     bool step_accepted = false;
     for (int retry = 0; retry < options.max_inner_retries; ++retry) {
@@ -148,19 +168,22 @@ GaussNewtonSolver::Summary GaussNewtonSolver::Solve(PoseGraphProblem& problem,
       }
       const Eigen::VectorXd delta = damped.ldlt().solve(-jtr);
 
-      // Backup, apply, evaluate.
-      std::unordered_map<std::string, std::array<double, kBlockDim>> backup;
-      for (auto& [id, idx] : free_index) {
-        double* params = param_ptrs.at(id);
-        std::array<double, kBlockDim> saved;
-        std::copy(params, params + kBlockDim, saved.begin());
-        backup.emplace(id, saved);
-        for (int d = 0; d < kBlockDim; ++d) params[d] += delta(idx * kBlockDim + d);
-        RenormalizeQuaternion(params);
+      // Backup, apply, evaluate. Iterated over free_order (insertion
+      // order) rather than the hash map so the sequence of floating-point
+      // updates is deterministic across runs and libstdc++ versions.
+      std::vector<std::array<double, kMaxBlockDim>> backup(free_order.size());
+      for (std::size_t b = 0; b < free_order.size(); ++b) {
+        const auto& view = *free_order[b];
+        double* params = view.params;
+        std::copy(params, params + view.size, backup[b].begin());
+        const FreeBlock& slot = free_blocks.at(ParameterKey(view.ref));
+        for (int d = 0; d < view.size; ++d) params[d] += delta(slot.offset + d);
+        // Only poses carry a quaternion; inertial blocks are a plain R^9.
+        if (view.ref.kind == PoseGraphProblem::ParameterKind::kPose) RenormalizeQuaternion(params);
       }
 
       const double trial_cost =
-          EvaluateAll(problem, param_ptrs, free_index, nullptr, nullptr, options.huber_delta);
+          EvaluateAll(problem, param_ptrs, free_blocks, nullptr, nullptr, options.huber_delta);
       if (trial_cost <= cost_at_linearization) {
         current_cost = trial_cost;
         lambda = std::max(lambda / options.lambda_down_factor, 1e-12);
@@ -168,9 +191,9 @@ GaussNewtonSolver::Summary GaussNewtonSolver::Solve(PoseGraphProblem& problem,
         break;
       }
       // Reject: restore and increase damping.
-      for (auto& [id, saved] : backup) {
-        double* params = param_ptrs.at(id);
-        std::copy(saved.begin(), saved.end(), params);
+      for (std::size_t b = 0; b < free_order.size(); ++b) {
+        const auto& view = *free_order[b];
+        std::copy(backup[b].begin(), backup[b].begin() + view.size, view.params);
       }
       lambda *= options.lambda_up_factor;
     }

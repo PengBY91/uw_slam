@@ -1,5 +1,8 @@
 #include <cmath>
+#include <cstdint>
 #include <functional>
+#include <stdexcept>
+#include <utility>
 #include <memory>
 #include <string>
 #include <vector>
@@ -9,7 +12,9 @@
 #include "estimation/gauss_newton_solver.hpp"
 #include "estimation/pose_graph_problem.hpp"
 #include "factor_builders/depth_residual.hpp"
+#include "factor_builders/imu_preintegration_residual.hpp"
 #include "factor_builders/relative_pose_residual.hpp"
+#include "sensor_models/so3.hpp"
 
 using uw::estimation::GaussNewtonSolver;
 using uw::estimation::PoseGraphProblem;
@@ -108,13 +113,28 @@ TEST(PoseGraphProblem, ResidualBindingsMatchAddOrderAndInvolvedKeyframes) {
   problem.AddResidualBlock(std::unique_ptr<DepthResidual>(depth_block), {"kf2"});
 
   const auto bindings = problem.ResidualBindings();
+  auto ids = [](const std::vector<PoseGraphProblem::ParameterRef>& refs) {
+    std::vector<std::string> out;
+    for (const auto& ref : refs) out.push_back(ref.keyframe_id);
+    return out;
+  };
+  auto all_pose = [](const std::vector<PoseGraphProblem::ParameterRef>& refs) {
+    for (const auto& ref : refs) {
+      if (ref.kind != PoseGraphProblem::ParameterKind::kPose) return false;
+    }
+    return true;
+  };
   ASSERT_EQ(bindings.size(), 2u);
   EXPECT_EQ(bindings[0].block, relative_block);
-  ASSERT_NE(bindings[0].involved_keyframes, nullptr);
-  EXPECT_EQ(*bindings[0].involved_keyframes, (std::vector<std::string>{"kf0", "kf1"}));
+  ASSERT_NE(bindings[0].involved_parameters, nullptr);
+  EXPECT_EQ(ids(*bindings[0].involved_parameters), (std::vector<std::string>{"kf0", "kf1"}));
+  // The string overload must tag every entry kPose -- that is what keeps
+  // every pre-PREP-B-01 factor_builder call site working unchanged.
+  EXPECT_TRUE(all_pose(*bindings[0].involved_parameters));
   EXPECT_EQ(bindings[1].block, depth_block);
-  ASSERT_NE(bindings[1].involved_keyframes, nullptr);
-  EXPECT_EQ(*bindings[1].involved_keyframes, (std::vector<std::string>{"kf2"}));
+  ASSERT_NE(bindings[1].involved_parameters, nullptr);
+  EXPECT_EQ(ids(*bindings[1].involved_parameters), (std::vector<std::string>{"kf2"}));
+  EXPECT_TRUE(all_pose(*bindings[1].involved_parameters));
 
   // Default-constructed bindings (2-arg AddResidualBlock, used by every
   // pre-existing factor call site) must report kNone -- this is the
@@ -257,4 +277,235 @@ TEST(PoseGraphSolver, HuberInlierResidualUnaffected) {
       SolveConflictingEdgesKf1X(PoseGraphProblem::RobustPolicy::kHuber, /*huber_delta=*/1000.0);
 
   EXPECT_DOUBLE_EQ(kf1_x_no_robust, kf1_x_huber_generous_delta);
+}
+
+// ---------------------------------------------------------------------------
+// PREP-B-01 state extension (docs/imu-preintegration-design-2026-09-03.md
+// section 6, option A): keyframes may carry a second, 9-dim inertial
+// parameter block [v(3), bg(3), ba(3)] that the solver optimizes alongside
+// their 7-dim pose.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+using uw::factor_builders::ImuPreintegrationResidual;
+using uw::sensor_models::PreintegratedImuDelta;
+namespace so3 = uw::sensor_models::so3;
+
+struct InertialTruth {
+  Pose3 pose;
+  PoseGraphProblem::InertialState inertial;
+};
+
+// Propagates a keyframe state through one preintegrated delta using the
+// exact delta definitions (imu_preintegration.hpp), so a graph built from
+// these deltas has a zero-residual solution at the propagated truth.
+InertialTruth Propagate(const InertialTruth& from, const PreintegratedImuDelta& delta) {
+  const Eigen::Matrix3d R_i = from.pose.rotation.toRotationMatrix();
+  const double dt = delta.delta_time_s;
+  const Eigen::Vector3d gravity(0.0, 0.0, -delta.gravity_mps2);
+
+  InertialTruth to;
+  to.pose.rotation = Eigen::Quaterniond(R_i * delta.delta_rotation).normalized();
+  to.pose.translation = from.pose.translation + from.inertial.velocity_W * dt +
+                        0.5 * gravity * dt * dt + R_i * delta.delta_position;
+  to.inertial.velocity_W =
+      from.inertial.velocity_W + gravity * dt + R_i * delta.delta_velocity;
+  to.inertial.bias_gyro = from.inertial.bias_gyro;
+  to.inertial.bias_accel = from.inertial.bias_accel;
+  return to;
+}
+
+PreintegratedImuDelta MakeChainDelta(double dt, const Eigen::Vector3d& rotvec,
+                                      const Eigen::Vector3d& dv, const Eigen::Vector3d& dp,
+                                      const PoseGraphProblem::InertialState& bias_point) {
+  PreintegratedImuDelta delta;
+  delta.delta_time_s = dt;
+  delta.sample_count = static_cast<uint32_t>(dt * 200.0);
+  delta.gravity_mps2 = 9.80665;
+  delta.delta_rotation = so3::Exp(rotvec);
+  delta.delta_velocity = dv;
+  delta.delta_position = dp;
+  delta.bias_gyro = bias_point.bias_gyro;
+  delta.bias_accel = bias_point.bias_accel;
+  delta.d_rotation_d_bias_gyro = -dt * Eigen::Matrix3d::Identity();
+  delta.d_velocity_d_bias_gyro = 0.02 * dt * Eigen::Matrix3d::Identity();
+  delta.d_velocity_d_bias_accel = -dt * Eigen::Matrix3d::Identity();
+  delta.d_position_d_bias_gyro = 0.01 * dt * dt * Eigen::Matrix3d::Identity();
+  delta.d_position_d_bias_accel = -0.5 * dt * dt * Eigen::Matrix3d::Identity();
+  delta.covariance = Eigen::Matrix<double, 15, 15>::Identity();
+  return delta;
+}
+
+}  // namespace
+
+// The concrete proof that the option-A extension works end to end: a chain
+// whose ONLY edges are 15-dim IMU factors, with the anchor keyframe's pose
+// AND inertial state fixed (30 residuals, 30 free parameters), must recover
+// the propagated truth for both the poses and the velocities/biases.
+TEST(PoseGraphSolver, ImuOnlyChainRecoversPosesAndInertialStates) {
+  InertialTruth kf0;
+  kf0.pose.translation = Eigen::Vector3d(0.4, -0.2, -2.0);
+  kf0.pose.rotation = so3::ExpQuaternion(Eigen::Vector3d(0.02, -0.05, 0.10));
+  kf0.inertial.velocity_W = Eigen::Vector3d(0.9, 0.1, -0.05);
+  kf0.inertial.bias_gyro = Eigen::Vector3d(0.0012, -0.0004, 0.0009);
+  kf0.inertial.bias_accel = Eigen::Vector3d(0.011, -0.023, 0.006);
+
+  const auto delta_01 = MakeChainDelta(0.5, {0.01, -0.02, 0.06}, {0.30, -0.05, 0.08},
+                                        {0.075, -0.012, 0.020}, kf0.inertial);
+  const InertialTruth kf1 = Propagate(kf0, delta_01);
+  const auto delta_12 = MakeChainDelta(0.5, {-0.03, 0.01, 0.04}, {0.10, 0.12, -0.06},
+                                        {0.025, 0.030, -0.015}, kf1.inertial);
+  const InertialTruth kf2 = Propagate(kf1, delta_12);
+
+  PoseGraphProblem problem;
+  problem.AddKeyframe("kf0", kf0.pose, /*fixed=*/true);
+  problem.AddInertialState("kf0", kf0.inertial, /*fixed=*/true);
+
+  // Deliberately wrong initial guesses for everything that is free.
+  Pose3 init_kf1 = kf1.pose;
+  init_kf1.translation += Eigen::Vector3d(0.20, -0.15, 0.10);
+  init_kf1.rotation = (init_kf1.rotation * so3::ExpQuaternion({0.03, 0.02, -0.04})).normalized();
+  Pose3 init_kf2 = kf2.pose;
+  init_kf2.translation += Eigen::Vector3d(-0.25, 0.18, -0.12);
+  init_kf2.rotation = (init_kf2.rotation * so3::ExpQuaternion({-0.02, 0.04, 0.03})).normalized();
+
+  PoseGraphProblem::InertialState init_inertial;
+  init_inertial.velocity_W = Eigen::Vector3d(0.0, 0.0, 0.0);
+  init_inertial.bias_gyro = Eigen::Vector3d::Zero();
+  init_inertial.bias_accel = Eigen::Vector3d::Zero();
+
+  problem.AddKeyframe("kf1", init_kf1);
+  problem.AddInertialState("kf1", init_inertial);
+  problem.AddKeyframe("kf2", init_kf2);
+  problem.AddInertialState("kf2", init_inertial);
+
+  problem.AddResidualBlockOnParameters(
+      std::make_unique<ImuPreintegrationResidual>(delta_01,
+                                                  Eigen::Matrix<double, 15, 15>::Identity()),
+      {PoseGraphProblem::PoseRef("kf0"), PoseGraphProblem::InertialRef("kf0"),
+       PoseGraphProblem::PoseRef("kf1"), PoseGraphProblem::InertialRef("kf1")});
+  problem.AddResidualBlockOnParameters(
+      std::make_unique<ImuPreintegrationResidual>(delta_12,
+                                                  Eigen::Matrix<double, 15, 15>::Identity()),
+      {PoseGraphProblem::PoseRef("kf1"), PoseGraphProblem::InertialRef("kf1"),
+       PoseGraphProblem::PoseRef("kf2"), PoseGraphProblem::InertialRef("kf2")});
+
+  GaussNewtonSolver solver;
+  const auto summary = solver.Solve(problem);
+  EXPECT_TRUE(summary.converged);
+  EXPECT_LT(summary.final_cost, 1e-12);
+
+  for (const auto& [id, truth] : std::vector<std::pair<std::string, InertialTruth>>{{"kf1", kf1},
+                                                                                    {"kf2", kf2}}) {
+    const Pose3 solved_pose = problem.GetKeyframePose(id);
+    EXPECT_LT((solved_pose.translation - truth.pose.translation).norm(), 1e-4) << id;
+    EXPECT_LT(so3::Log(solved_pose.rotation.toRotationMatrix().transpose() *
+                       truth.pose.rotation.toRotationMatrix())
+                  .norm(),
+              1e-4)
+        << id;
+    const auto solved = problem.GetInertialState(id);
+    EXPECT_LT((solved.velocity_W - truth.inertial.velocity_W).norm(), 1e-4) << id;
+    EXPECT_LT((solved.bias_gyro - truth.inertial.bias_gyro).norm(), 1e-5) << id;
+    EXPECT_LT((solved.bias_accel - truth.inertial.bias_accel).norm(), 1e-5) << id;
+  }
+}
+
+TEST(PoseGraphProblem, FixedInertialStateIsNotMovedByTheSolver) {
+  InertialTruth kf0;
+  kf0.pose.translation = Eigen::Vector3d(0.0, 0.0, -1.0);
+  kf0.inertial.velocity_W = Eigen::Vector3d(0.5, 0.0, 0.0);
+  kf0.inertial.bias_gyro = Eigen::Vector3d(0.001, 0.0, 0.0);
+  kf0.inertial.bias_accel = Eigen::Vector3d(0.0, 0.01, 0.0);
+  const auto delta = MakeChainDelta(0.4, {0.0, 0.0, 0.02}, {0.1, 0.0, 0.0}, {0.02, 0.0, 0.0},
+                                     kf0.inertial);
+  const InertialTruth kf1 = Propagate(kf0, delta);
+
+  PoseGraphProblem problem;
+  problem.AddKeyframe("kf0", kf0.pose, /*fixed=*/true);
+  problem.AddInertialState("kf0", kf0.inertial, /*fixed=*/true);
+  Pose3 init_kf1 = kf1.pose;
+  init_kf1.translation += Eigen::Vector3d(0.3, 0.3, 0.3);
+  problem.AddKeyframe("kf1", init_kf1);
+  PoseGraphProblem::InertialState wrong;
+  problem.AddInertialState("kf1", wrong);
+  problem.AddResidualBlockOnParameters(
+      std::make_unique<ImuPreintegrationResidual>(delta,
+                                                  Eigen::Matrix<double, 15, 15>::Identity()),
+      {PoseGraphProblem::PoseRef("kf0"), PoseGraphProblem::InertialRef("kf0"),
+       PoseGraphProblem::PoseRef("kf1"), PoseGraphProblem::InertialRef("kf1")});
+
+  GaussNewtonSolver solver;
+  solver.Solve(problem);
+
+  const auto anchor = problem.GetInertialState("kf0");
+  EXPECT_LT((anchor.velocity_W - kf0.inertial.velocity_W).norm(), 1e-15);
+  EXPECT_LT((anchor.bias_gyro - kf0.inertial.bias_gyro).norm(), 1e-15);
+  EXPECT_LT((anchor.bias_accel - kf0.inertial.bias_accel).norm(), 1e-15);
+  EXPECT_LT((problem.GetKeyframePose("kf0").translation - kf0.pose.translation).norm(), 1e-15);
+}
+
+// A graph with no inertial state at all must present exactly the parameter
+// blocks (and therefore the exact column layout) it presented before the
+// extension existed — this is the property the whole "synthetic_smoke ATE
+// cannot move" argument rests on.
+TEST(PoseGraphProblem, PoseOnlyGraphExposesTheSameBlocksThroughBothAccessors) {
+  PoseGraphProblem problem;
+  Pose3 pose1;
+  pose1.translation = Eigen::Vector3d(1.0, 2.0, 3.0);
+  problem.AddKeyframe("kf0", Pose3{}, /*fixed=*/true);
+  problem.AddKeyframe("kf1", pose1);
+
+  const auto pose_blocks = problem.MutableParameterBlocks();
+  const auto all_blocks = problem.MutableAllParameterBlocks();
+  ASSERT_EQ(all_blocks.size(), pose_blocks.size());
+  for (std::size_t i = 0; i < all_blocks.size(); ++i) {
+    EXPECT_EQ(all_blocks[i].ref.kind, PoseGraphProblem::ParameterKind::kPose);
+    EXPECT_EQ(all_blocks[i].ref.keyframe_id, pose_blocks[i].keyframe_id);
+    EXPECT_EQ(all_blocks[i].params, pose_blocks[i].params);
+    EXPECT_EQ(all_blocks[i].size, 7);
+    EXPECT_EQ(all_blocks[i].fixed, pose_blocks[i].fixed);
+  }
+  EXPECT_EQ(problem.NumInertialStates(), 0u);
+  EXPECT_FALSE(problem.HasInertialState("kf0"));
+}
+
+// Inertial states come AFTER every pose in the block ordering, so adding
+// one cannot shift an existing pose's columns.
+TEST(PoseGraphProblem, InertialBlocksAreOrderedAfterAllPoses) {
+  PoseGraphProblem problem;
+  problem.AddKeyframe("kf0", Pose3{});
+  problem.AddKeyframe("kf1", Pose3{});
+  problem.AddInertialState("kf0", PoseGraphProblem::InertialState{});
+  problem.AddKeyframe("kf2", Pose3{});
+  problem.AddInertialState("kf2", PoseGraphProblem::InertialState{});
+
+  const auto blocks = problem.MutableAllParameterBlocks();
+  ASSERT_EQ(blocks.size(), 5u);
+  EXPECT_EQ(blocks[0].ref.keyframe_id, "kf0");
+  EXPECT_EQ(blocks[1].ref.keyframe_id, "kf1");
+  EXPECT_EQ(blocks[2].ref.keyframe_id, "kf2");
+  for (int i = 0; i < 3; ++i) EXPECT_EQ(blocks[i].ref.kind, PoseGraphProblem::ParameterKind::kPose);
+  EXPECT_EQ(blocks[3].ref.kind, PoseGraphProblem::ParameterKind::kInertial);
+  EXPECT_EQ(blocks[3].ref.keyframe_id, "kf0");
+  EXPECT_EQ(blocks[3].size, 9);
+  EXPECT_EQ(blocks[4].ref.kind, PoseGraphProblem::ParameterKind::kInertial);
+  EXPECT_EQ(blocks[4].ref.keyframe_id, "kf2");
+}
+
+TEST(PoseGraphProblem, InertialStateApiRejectsUnknownKeyframesAndUnbackedRefs) {
+  PoseGraphProblem problem;
+  problem.AddKeyframe("kf0", Pose3{});
+  EXPECT_THROW(problem.AddInertialState("nope", PoseGraphProblem::InertialState{}),
+               std::out_of_range);
+  EXPECT_THROW(problem.GetInertialState("kf0"), std::out_of_range);
+  EXPECT_THROW(problem.SetInertialState("kf0", PoseGraphProblem::InertialState{}),
+               std::out_of_range);
+  // A ParameterRef naming an inertial state that was never added must be
+  // refused at bind time, not silently produce a dangling parameter block.
+  EXPECT_THROW(problem.AddResidualBlockOnParameters(
+                   std::make_unique<DepthResidual>(1.0, 1.0),
+                   {PoseGraphProblem::InertialRef("kf0")}),
+               std::out_of_range);
 }

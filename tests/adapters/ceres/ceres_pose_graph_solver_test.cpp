@@ -1,11 +1,14 @@
 #include <cmath>
+#include <memory>
 
 #include <gtest/gtest.h>
 
 #include "adapters/ceres/ceres_pose_graph_solver.hpp"
 #include "estimation/pose_graph_problem.hpp"
 #include "factor_builders/depth_residual.hpp"
+#include "factor_builders/imu_preintegration_residual.hpp"
 #include "factor_builders/relative_pose_residual.hpp"
+#include "sensor_models/so3.hpp"
 
 using uw::adapters::ceres_solver::CeresPoseGraphSolver;
 using uw::estimation::PoseGraphProblem;
@@ -133,4 +136,83 @@ TEST(CeresPoseGraphSolver, SingleThreadedSolveIsBitDeterministic) {
   const Pose3 kf1_b = problem_b.GetKeyframePose("kf1");
   EXPECT_EQ(kf1_a.translation, kf1_b.translation);
   EXPECT_TRUE(kf1_a.rotation.coeffs() == kf1_b.rotation.coeffs());
+}
+
+// PREP-B-01: the 9-dim inertial parameter blocks must reach Ceres as plain
+// Euclidean blocks (no manifold) while poses keep the quaternion manifold.
+// Mirrors tests/estimation/pose_graph_solver_test.cpp's
+// PoseGraphSolver.ImuOnlyChainRecoversPosesAndInertialStates so the two
+// backends are checked against the same ground truth — the residual's
+// quaternion columns are chained so that Ceres's manifold projection
+// recovers exactly the minimal Jacobian the hand-rolled solver uses.
+TEST(CeresPoseGraphSolver, ImuOnlyChainRecoversPosesAndInertialStates) {
+  namespace so3 = uw::sensor_models::so3;
+  using uw::factor_builders::ImuPreintegrationResidual;
+  using uw::sensor_models::PreintegratedImuDelta;
+
+  Pose3 kf0_pose;
+  kf0_pose.translation = Eigen::Vector3d(0.4, -0.2, -2.0);
+  kf0_pose.rotation = so3::ExpQuaternion(Eigen::Vector3d(0.02, -0.05, 0.10));
+  PoseGraphProblem::InertialState kf0_inertial;
+  kf0_inertial.velocity_W = Eigen::Vector3d(0.9, 0.1, -0.05);
+  kf0_inertial.bias_gyro = Eigen::Vector3d(0.0012, -0.0004, 0.0009);
+  kf0_inertial.bias_accel = Eigen::Vector3d(0.011, -0.023, 0.006);
+
+  PreintegratedImuDelta delta;
+  delta.delta_time_s = 0.5;
+  delta.sample_count = 100;
+  delta.gravity_mps2 = 9.80665;
+  delta.delta_rotation = so3::Exp(Eigen::Vector3d(0.01, -0.02, 0.06));
+  delta.delta_velocity = Eigen::Vector3d(0.30, -0.05, 0.08);
+  delta.delta_position = Eigen::Vector3d(0.075, -0.012, 0.020);
+  delta.bias_gyro = kf0_inertial.bias_gyro;
+  delta.bias_accel = kf0_inertial.bias_accel;
+  delta.d_rotation_d_bias_gyro = -0.5 * Eigen::Matrix3d::Identity();
+  delta.d_velocity_d_bias_gyro = 0.01 * Eigen::Matrix3d::Identity();
+  delta.d_velocity_d_bias_accel = -0.5 * Eigen::Matrix3d::Identity();
+  delta.d_position_d_bias_gyro = 0.0025 * Eigen::Matrix3d::Identity();
+  delta.d_position_d_bias_accel = -0.125 * Eigen::Matrix3d::Identity();
+  delta.covariance = Eigen::Matrix<double, 15, 15>::Identity();
+
+  const Eigen::Matrix3d R_0 = kf0_pose.rotation.toRotationMatrix();
+  const double dt = delta.delta_time_s;
+  const Eigen::Vector3d gravity(0.0, 0.0, -delta.gravity_mps2);
+  Pose3 true_kf1;
+  true_kf1.rotation = Eigen::Quaterniond(R_0 * delta.delta_rotation).normalized();
+  true_kf1.translation = kf0_pose.translation + kf0_inertial.velocity_W * dt +
+                         0.5 * gravity * dt * dt + R_0 * delta.delta_position;
+  const Eigen::Vector3d true_v1 =
+      kf0_inertial.velocity_W + gravity * dt + R_0 * delta.delta_velocity;
+
+  PoseGraphProblem problem;
+  problem.AddKeyframe("kf0", kf0_pose, /*fixed=*/true);
+  problem.AddInertialState("kf0", kf0_inertial, /*fixed=*/true);
+  Pose3 init_kf1 = true_kf1;
+  init_kf1.translation += Eigen::Vector3d(0.20, -0.15, 0.10);
+  init_kf1.rotation = (init_kf1.rotation * so3::ExpQuaternion({0.03, 0.02, -0.04})).normalized();
+  problem.AddKeyframe("kf1", init_kf1);
+  problem.AddInertialState("kf1", PoseGraphProblem::InertialState{});
+  problem.AddResidualBlockOnParameters(
+      std::make_unique<ImuPreintegrationResidual>(delta,
+                                                  Eigen::Matrix<double, 15, 15>::Identity()),
+      {PoseGraphProblem::PoseRef("kf0"), PoseGraphProblem::InertialRef("kf0"),
+       PoseGraphProblem::PoseRef("kf1"), PoseGraphProblem::InertialRef("kf1")});
+
+  CeresPoseGraphSolver solver;
+  const auto summary = solver.Solve(problem);
+  EXPECT_LT(summary.final_cost, 1e-14);
+
+  const Pose3 solved = problem.GetKeyframePose("kf1");
+  EXPECT_LT((solved.translation - true_kf1.translation).norm(), 1e-6);
+  EXPECT_LT(so3::Log(solved.rotation.toRotationMatrix().transpose() *
+                     true_kf1.rotation.toRotationMatrix())
+                .norm(),
+            1e-6);
+  const auto solved_inertial = problem.GetInertialState("kf1");
+  EXPECT_LT((solved_inertial.velocity_W - true_v1).norm(), 1e-6);
+  EXPECT_LT((solved_inertial.bias_gyro - kf0_inertial.bias_gyro).norm(), 1e-7);
+  EXPECT_LT((solved_inertial.bias_accel - kf0_inertial.bias_accel).norm(), 1e-7);
+  // The anchor's fixed inertial block must be untouched.
+  const auto anchor = problem.GetInertialState("kf0");
+  EXPECT_LT((anchor.velocity_W - kf0_inertial.velocity_W).norm(), 1e-15);
 }

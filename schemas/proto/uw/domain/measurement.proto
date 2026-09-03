@@ -73,13 +73,40 @@ message SonarRegistrationMeasurement {
   double inlier_ratio = 4;
 }
 
+// On-manifold IMU preintegration between two keyframes (Forster et al.,
+// "On-Manifold Preintegration for Real-Time Visual-Inertial Odometry",
+// T-RO 2017), produced by include/frontends/imu_preintegration_frontend.hpp
+// from the math in include/sensor_models/imu_preintegration.hpp. All
+// deltas are expressed in the BODY frame of `from_keyframe` (base_link, not
+// imu_link — the frontend already applied the rig's imu_link extrinsic):
+//   delta_pose.R  = R_i^T R_j
+//   delta_velocity = R_i^T (v_j - v_i - g dt)
+//   delta_pose.t   = R_i^T (p_j - p_i - v_i dt - 0.5 g dt^2)
+// with g = (0, 0, -gravity_mps2) in the Z-up world frame. They are
+// linearized at (bias_gyro, bias_accel); the five 3x3 Jacobians let a
+// residual re-linearize for a small bias change without re-integrating.
+// Covariance / residual ordering is [dR(3), dv(3), dp(3), bg(3), ba(3)];
+// the bias 6x6 block is the random-walk covariance accumulated over
+// delta_time_s, off-diagonal bias blocks are zero.
 message ImuPreintegrationMeasurement {
   Transform3D delta_pose = 1;
   repeated double delta_velocity_mps = 2;   // 3 entries
   double delta_time_s = 3;
   repeated double covariance_15x15_row_major = 4;
-  repeated double bias_gyro = 5;            // 3 entries
-  repeated double bias_accel = 6;           // 3 entries
+  repeated double bias_gyro = 5;            // 3 entries, rad/s, linearization point
+  repeated double bias_accel = 6;           // 3 entries, m/s^2, linearization point
+  KeyframeId from_keyframe = 7;
+  KeyframeId to_keyframe = 8;
+  // 3x3 row-major bias Jacobians of the deltas above w.r.t. the
+  // linearization bias (9 entries each). Missing (size 0) means the
+  // producer did not compute them and consumers must re-integrate instead.
+  repeated double d_rotation_d_bias_gyro = 9;
+  repeated double d_velocity_d_bias_gyro = 10;
+  repeated double d_velocity_d_bias_accel = 11;
+  repeated double d_position_d_bias_gyro = 12;
+  repeated double d_position_d_bias_accel = 13;
+  double gravity_mps2 = 14;    // the constant the deltas were integrated with
+  uint32 sample_count = 15;    // raw ImuSample count inside (from, to]
 }
 
 enum OpticalDepthScaleStatus {

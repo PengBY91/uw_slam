@@ -59,18 +59,29 @@ uw::estimation::GaussNewtonSummary CeresPoseGraphSolver::Solve(uw::estimation::P
 
   ::ceres::Problem ceres_problem;
 
+  // Poses AND inertial states (PREP-B-01 option A): a pose gets the 7-dim
+  // ambient block with the quaternion manifold below, an inertial state
+  // [v(3), bg(3), ba(3)] is a plain 9-dim Euclidean block with no manifold.
+  // Keyed by kind + id, since a keyframe's pose and inertial state are two
+  // distinct blocks under the same keyframe id.
   std::unordered_map<std::string, double*> param_ptrs;
-  for (const auto& kf : problem.MutableParameterBlocks()) {
-    ceres_problem.AddParameterBlock(kf.params, 7, new PoseManifold());
-    if (kf.fixed) ceres_problem.SetParameterBlockConstant(kf.params);
-    param_ptrs.emplace(kf.keyframe_id, kf.params);
+  for (const auto& block : problem.MutableAllParameterBlocks()) {
+    const bool is_pose = block.ref.kind == uw::estimation::PoseGraphProblem::ParameterKind::kPose;
+    if (is_pose) {
+      ceres_problem.AddParameterBlock(block.params, block.size, new PoseManifold());
+    } else {
+      ceres_problem.AddParameterBlock(block.params, block.size);
+    }
+    if (block.fixed) ceres_problem.SetParameterBlockConstant(block.params);
+    param_ptrs.emplace(uw::estimation::GaussNewtonSolver::ParameterKey(block.ref), block.params);
   }
 
   for (const auto& binding : problem.ResidualBindings()) {
     std::vector<double*> parameter_blocks;
-    parameter_blocks.reserve(binding.involved_keyframes->size());
-    for (const auto& keyframe_id : *binding.involved_keyframes) {
-      parameter_blocks.push_back(param_ptrs.at(keyframe_id));
+    parameter_blocks.reserve(binding.involved_parameters->size());
+    for (const auto& ref : *binding.involved_parameters) {
+      parameter_blocks.push_back(
+          param_ptrs.at(uw::estimation::GaussNewtonSolver::ParameterKey(ref)));
     }
     // No robust loss (nullptr): matches this repo's current, deliberate
     // scope — see docs/superpowers/specs/2026-08-23-frontend-correctness-
