@@ -1,4 +1,4 @@
-// docs/rov-realtime-closed-loop-code-review-2026-08-27.md finding A2:
+// docs/archive/rov-realtime-closed-loop-code-review-2026-08-27.md finding A2:
 // realtime_gate.py's evaluate_gate() needs ~15 runtime metrics that
 // nothing in the C++ gateway ever collected. This tests the collector in
 // isolation, with fake RSS/CPU readers standing in for real /proc access

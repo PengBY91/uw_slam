@@ -28,7 +28,7 @@ output:
   trajectory_format: tum
   write_run_manifest: true
 
-# P0 非放空 gate（见 docs/uw-slam-production-readiness-and-roadmap-2026-08-21.md
+# P0 非放空 gate（见 docs/archive/uw-slam-production-readiness-and-roadmap-2026-08-21.md
 # 5.5/7）：实测 ATE rmse≈0.1013m、11/11 matched poses（2026-08-26，
 # apps/synth_bag_gen.cpp 拆分 pose/sonar/landmark 独立 RNG 流之后的新基线，
 # 同一次拆流修复也顺带修了 estimation/gauss_newton_solver.cpp 一个真实存在的

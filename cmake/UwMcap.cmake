@@ -16,7 +16,7 @@ include(FetchContent)
 # Pinned to the commit this workspace was already building against (verified
 # working) rather than tracking `main`, so a from-scratch checkout can't
 # silently pick up an incompatible upstream change (P0 gate: pin external
-# deps, see docs/uw-slam-production-readiness-and-roadmap-2026-08-21.md).
+# deps, see docs/archive/uw-slam-production-readiness-and-roadmap-2026-08-21.md).
 # Bump deliberately, not implicitly, when there's a reason to.
 FetchContent_Declare(
   mcap_src

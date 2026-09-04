@@ -1,6 +1,6 @@
 // Ceres-backed PoseGraphProblem solver — the benchmark-decision-gate
 // candidate described in
-// docs/superpowers/specs/2026-08-23-solver-and-mapping-oss-adoption.md
+// docs/archive/superpowers/specs/2026-08-23-solver-and-mapping-oss-adoption.md
 // (§5.1/§6.1), evaluated against uw::estimation::GaussNewtonSolver, the
 // hand-rolled v1 solver `include/estimation/gauss_newton_solver.hpp`
 // documents as a deliberate, deferred choice (platform architecture

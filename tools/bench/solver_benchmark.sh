@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Wall-clock/iteration/cost/ATE comparison between gauss_newton_v1 (the
 # current default) and ceres_v1 (the benchmark-decision-gate candidate) —
-# the data docs/superpowers/specs/2026-08-23-solver-and-mapping-oss-adoption.md
+# the data docs/archive/superpowers/specs/2026-08-23-solver-and-mapping-oss-adoption.md
 # §5.1/§9 says is missing before "should the default solver change?" can be
 # revisited. Not a pass/fail gate: prints a comparison table and exits 0 as
 # long as both binaries ran, regardless of which backend looks better or

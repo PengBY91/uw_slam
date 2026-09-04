@@ -2,7 +2,7 @@
 // stereo/sonar detection frontends and OnlineAssistPipeline behind the same
 // LiveEventSource -> PumpEvents wiring live_ingress_smoke already exercises
 // for raw ingestion, so this is where the fused-track output actually gets
-// produced and checked. See docs/superpowers/plans/2026-08-24-acoustic-
+// produced and checked. See docs/archive/superpowers/plans/2026-08-24-acoustic-
 // optic-online-tracking.md Task 8.
 #include <algorithm>
 #include <array>

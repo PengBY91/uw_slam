@@ -701,7 +701,7 @@ ExperimentConfig LoadExperimentConfig(const std::string& path) {
 
   // Experiment-level gate overrides: what counts as an acceptable run
   // differs sharply between a known-good synthetic scenario and a
-  // real-data experiment still being brought up (docs/uw-slam-production-
+  // real-data experiment still being brought up (docs/archive/uw-slam-production-
   // readiness-and-roadmap-2026-08-21.md section 5.5). Rather than fork
   // defaults/platform.yaml per experiment, the experiment file — the most
   // specific layer — can override individual defaults.* gate fields here.
@@ -756,7 +756,7 @@ std::optional<std::string> ValidateExperimentConfigSelections(const ExperimentCo
            "' (must be bright_blob or harris_corner)";
   }
   // defaults.solver: genuinely dispatched in apps/replay_demo.cpp
-  // (docs/superpowers/specs/2026-08-23-solver-and-mapping-oss-adoption.md
+  // (docs/archive/superpowers/specs/2026-08-23-solver-and-mapping-oss-adoption.md
   // §7) — "ceres_v1" is a recognized value regardless of whether this
   // binary was built with UW_BUILD_CERES_SOLVER; that build-time capability
   // check happens separately, at the point of actually constructing the

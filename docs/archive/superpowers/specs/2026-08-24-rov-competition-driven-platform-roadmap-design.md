@@ -18,7 +18,7 @@ ROV 比赛是未来一年的牵引场景和阶段性验证目标，而不是近�
 整机进行水池实时闭环，并把后半年主要留给任务专项、可靠性、操作手训练和联合演练。
 
 本设计不替代现有
-`docs/uw-slam-production-readiness-and-roadmap-2026-08-21.md`。后者继续维护长期技术债、
+`docs/archive/uw-slam-production-readiness-and-roadmap-2026-08-21.md`。后者继续维护长期技术债、
 成熟度和生产就绪度；重写后的 ROV 路线图负责未来一年由比赛场景牵引的平台落地。
 
 ## 2. 路线图定位与交付边界

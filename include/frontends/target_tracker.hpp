@@ -32,7 +32,7 @@ struct TargetTrackerParams {
   // hit, transient visual noise) that never merges into a real track would
   // sit in tracks_ forever, growing memory and per-publish Predict() cost
   // without bound over a multi-hour run -- see
-  // docs/rov-realtime-closed-loop-code-review-2026-08-27.md finding C2.
+  // docs/archive/rov-realtime-closed-loop-code-review-2026-08-27.md finding C2.
   double retention_after_s = 5.0;
 };
 

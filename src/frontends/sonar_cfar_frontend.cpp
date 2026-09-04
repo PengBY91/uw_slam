@@ -114,7 +114,7 @@ std::string HashActiveConfig(const SonarCfarFrontendParams& params) {
 // a floor for narrow/single-beam clusters, where extent alone would
 // understate the sensor's own base resolution. Without this, every
 // detection reported the same fixed sigma regardless of beam width or
-// cluster spread -- see docs/rov-realtime-closed-loop-code-review-2026-08-
+// cluster spread -- see docs/archive/rov-realtime-closed-loop-code-review-2026-08-
 // 27.md finding D3: an overconfident (too-tight) sigma makes TargetAssociator::
 // Fuse() over-trust sonar relative to vision when the two disagree.
 constexpr double kUniformStdDenominator = 3.4641016151377544;  // sqrt(12.0)

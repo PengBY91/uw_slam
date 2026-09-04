@@ -1,9 +1,9 @@
 # uw_slam 离线 SLAM 管线深度走读（主线一）
 
 > 逐文件、逐阶段拆解离线 SLAM 管线（`synth_bag_gen` → `replay_demo`）的代码与逻辑，
-> 是[两条主线代码走读](./uw-slam-two-mainlines-walkthrough-2026-08-26.md)主线一部分的
-> 深化版：那篇按主线串讲，本文只讲主线一，但对每个阶段给出更细的机制、数学和
-> "为什么这么写"。
+> 与[新人上手指南](./uw-slam-newcomer-guide.md)互补：那篇先建立"两条主线共享的地基"
+> （消息模型、规范 topic、统一事件契约、分层依赖）和 60–90 分钟上手路径，本文只讲
+> 主线一，但对每个阶段给出更细的机制、数学和"为什么这么写"。
 > 核对于当前工作树（HEAD `f4d3f3e`），2026-08-28。文中 `file:line` 以该版本为准，
 > 后续会漂移——以函数名/文件为准。
 
@@ -449,7 +449,7 @@ SonarFrame(极坐标 intensity tensor, num_ranges × num_beams)
 `ExtentAdaptiveSigma(extent, default_sigma) = max(default_sigma, extent/√12)`
 （√12 是均匀分布方差分母——把簇成员近似看作在簇 own range/angular extent 上均匀
 分布，均值的 std ≈ extent/√12）。`default_*_sigma` 是窄/单波束簇的下限——只看
-extent 会低估传感器基础分辨率。动机（见 `docs/rov-realtime-closed-loop-code-
+extent 会低估传感器基础分辨率。动机（见 `docs/archive/rov-realtime-closed-loop-code-
 review-2026-08-27.md` finding D3）：过紧的 sigma 会让下游 TargetAssociator 在
 声呐与视觉矛盾时过度信任声呐。
 

@@ -2,7 +2,7 @@ option(UW_BUILD_ROS2 "Build the ROS2 adapter (requires a sourced ROS2 install)" 
 option(UW_BUILD_TESTS "Build the contract, unit, and integration tests" ON)
 # Default OFF, unlike UwNanoflann's always-on FetchContent: Ceres is a heavy
 # external dependency (SuiteSparse, glog, gflags), and per
-# docs/superpowers/specs/2026-08-23-solver-and-mapping-oss-adoption.md this
+# docs/archive/superpowers/specs/2026-08-23-solver-and-mapping-oss-adoption.md this
 # is a benchmark-decision-gate candidate, not (yet) the default solver — see
 # that doc's §5.1/§11.1 for why find_package (conda-forge), not FetchContent.
 option(UW_BUILD_CERES_SOLVER "Build the Ceres pose-graph solver adapter (requires Ceres on CMAKE_PREFIX_PATH)" OFF)

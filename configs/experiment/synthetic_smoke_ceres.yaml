@@ -1,7 +1,7 @@
 # 跟 synthetic_smoke.yaml 完全一样，只是求解器换成 ceres_v1（需要这个二进制编译时
 # 打开 UW_BUILD_CERES_SOLVER；没打开会在启动时直接报错退出，不会静默回退到
 # gauss_newton_v1）——用于对拍两个后端在同一合成场景下是否收敛到一致的解，见
-# docs/superpowers/specs/2026-08-23-solver-and-mapping-oss-adoption.md §6.1.1
+# docs/archive/superpowers/specs/2026-08-23-solver-and-mapping-oss-adoption.md §6.1.1
 # 和 configs/README.md 的"第三个例外"。
 
 rig: rig/example_auv.yaml

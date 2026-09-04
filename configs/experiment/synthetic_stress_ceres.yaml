@@ -1,6 +1,6 @@
 # 求解器规模基准场景（ceres_v1）：跟 synthetic_stress.yaml 完全一样（含不带相机的
 # rig，见该文件注释），只是 estimation.solver 换成 ceres_v1（需要
-# UW_BUILD_CERES_SOLVER=ON 编译）。见 docs/superpowers/specs/2026-08-23-solver-and-
+# UW_BUILD_CERES_SOLVER=ON 编译）。见 docs/archive/superpowers/specs/2026-08-23-solver-and-
 # mapping-oss-adoption.md §6.1.1/§9、tools/bench/solver_benchmark.sh。
 
 rig: rig/example_auv_sonar_only.yaml

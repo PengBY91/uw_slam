@@ -3,7 +3,7 @@
 // not translate rather than silently dropping it. McapEventSource
 // (mcap_event_source.hpp) is the first implementation; a later
 // implementation package adds a vendor SDK live source behind this same
-// interface (see docs/superpowers/plans/2026-08-24-live-replay-unified-
+// interface (see docs/archive/superpowers/plans/2026-08-24-live-replay-unified-
 // ingress.md section 1.2).
 #pragma once
 

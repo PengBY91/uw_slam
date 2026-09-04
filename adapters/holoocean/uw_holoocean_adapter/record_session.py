@@ -346,8 +346,8 @@ def main() -> None:
     # (see _default_command()'s comment) — constant for the whole session
     # (record_session() applies the same command every tick; there is no
     # time-varying command schedule). Omit to keep the existing mild-
-    # forward-thrust default. See docs/uw-slam-real-recording-spec-
-    # 2026-08-22.md for the three fixed scenarios' concrete values.
+    # forward-thrust default. Per-scenario command values live in the
+    # scenario/task manifests under adapters/holoocean/scenarios/.
     parser.add_argument("--command", type=float, nargs=8, default=None, metavar="V")
     args = parser.parse_args()
 

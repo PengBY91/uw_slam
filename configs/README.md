@@ -30,7 +30,7 @@
 （`HarrisCornerDetector`）是给真实相机画面（没有理由出现孤立高亮色块）用的，见两者各自的头文件
 注释。**第三个例外**：`estimation.solver`（`gauss_newton_v1` 默认值 / `ceres_v1`）真的会被
 消费，选择 `PoseGraphProblem` 实际用哪个求解器求解——这是
-`docs/superpowers/specs/2026-08-23-solver-and-mapping-oss-adoption.md` 描述的基准决策门
+`docs/archive/superpowers/specs/2026-08-23-solver-and-mapping-oss-adoption.md` 描述的基准决策门
 工作单元：`ceres_v1` 需要编译时打开 `UW_BUILD_CERES_SOLVER`（默认关闭，因为 Ceres 依赖较重
 ——SuiteSparse/glog/gflags），选了 `ceres_v1` 但没编译进 Ceres 支持会在启动时直接报错退出，
 不会静默回退到 `gauss_newton_v1`。默认值目前仍是 `gauss_newton_v1`，切换默认值本身是一个

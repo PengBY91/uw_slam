@@ -224,7 +224,7 @@ RANSAC rigid fit 返回 pose 之外，还返回：
 
 StateSnapshot 填充 `capture_timestamp`、`calibration_version` 和 contributing evidence IDs。系统不得仅因函数返回了 Pose3 就宣称 tracking。
 
-`DEGRADED` 是诚实上报机制，不代表 solver stalled 在真实数据上是可接受的终态：roadmap 文档（`docs/uw-slam-production-readiness-and-roadmap-2026-08-21.md` P1 验收）明确要求真实数据 solver 必须收敛、不得 stalled，且不能被"轨迹和地图非空"掩盖过去。本节只负责状态语义不失真（第 12 节的 gate 非零是配套的强制手段），收敛问题本身的修复不在本规格范围内（见 2.2 非目标）。
+`DEGRADED` 是诚实上报机制，不代表 solver stalled 在真实数据上是可接受的终态：roadmap 文档（`docs/archive/uw-slam-production-readiness-and-roadmap-2026-08-21.md` P1 验收）明确要求真实数据 solver 必须收敛、不得 stalled，且不能被"轨迹和地图非空"掩盖过去。本节只负责状态语义不失真（第 12 节的 gate 非零是配套的强制手段），收敛问题本身的修复不在本规格范围内（见 2.2 非目标）。
 
 ## 11. 配置
 

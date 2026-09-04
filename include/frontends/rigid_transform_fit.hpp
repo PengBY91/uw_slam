@@ -67,7 +67,7 @@ struct CovarianceEstimationParams {
   // consensus had inlier_rmse_m roughly 2-3x the fits landing on a genuine
   // majority (~0.11-0.25m vs ~0.01-0.09m, with RansacParams's default
   // inlier_threshold_m=0.3m as the per-point classification threshold —
-  // see docs/uw-slam-production-readiness-and-roadmap-2026-08-21.md 2.4).
+  // see docs/archive/uw-slam-production-readiness-and-roadmap-2026-08-21.md 2.4).
   // Defaults to effectively disabled (matches this codebase's convention of
   // opt-in gates that don't retroactively change synthetic-scenario
   // behavior) — see VisualOdometryConfig::max_inlier_rmse_m for where a

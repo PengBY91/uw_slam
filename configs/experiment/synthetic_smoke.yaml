@@ -28,7 +28,7 @@ output:
   trajectory_format: tum
   write_run_manifest: true
 
-# P0 非放空 gate（见 docs/uw-slam-production-readiness-and-roadmap-2026-08-21.md
+# P0 非放空 gate（见 docs/archive/uw-slam-production-readiness-and-roadmap-2026-08-21.md
 # 5.5/7）：实测 ATE rmse≈0.0999m、12/12 matched poses（2026-08-26，
 # apps/synth_bag_gen.cpp 给 pose/sonar/landmark 噪声拆分独立 RNG 流之后的新
 # 基线——拆流前的 0.0666m 依赖的是三路噪声共享一个 mt19937_64、彼此消耗顺序

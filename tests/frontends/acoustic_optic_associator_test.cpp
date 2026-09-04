@@ -213,7 +213,7 @@ TEST(AcousticOpticAssociator, ReturnsNoRecordsWhenHypothesisSetIsEmpty) {
 }
 
 // Regression test for the associator scoring bug found via
-// docs/uw-slam-production-readiness-and-roadmap-2026-08-21.md's P0
+// docs/archive/uw-slam-production-readiness-and-roadmap-2026-08-21.md's P0
 // investigation: near boresight, bearing is exactly independent of
 // elevation and range only picks up a tiny sec(phi) correction, so two arc
 // samples a few rows apart can tie almost exactly on geometric score even

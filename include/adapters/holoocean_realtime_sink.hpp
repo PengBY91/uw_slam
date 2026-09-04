@@ -67,7 +67,7 @@ class HoloOceanRealtimeOutput {
 // cannot load either YAML file itself. It passes paths instead; the
 // application-role .cpp behind this header does the actual loading.
 //
-// See docs/rov-realtime-closed-loop-code-review-2026-08-27.md findings B1
+// See docs/archive/rov-realtime-closed-loop-code-review-2026-08-27.md findings B1
 // (rig) and D2 (platform defaults): the gateway used to always wire in a
 // placeholder identity-extrinsic rig (FUS-CAL-001 forbids that reaching
 // real-machine acceptance) AND always default-construct
@@ -102,7 +102,7 @@ struct HoloOceanRealtimeSinkConfig {
   // RSS growth, CPU headroom, recovery duration, detection/fused-track
   // counts, and guidance-marked-stale-when-overdue. Empty (the default)
   // means no report is written -- see
-  // docs/rov-realtime-closed-loop-code-review-2026-08-27.md finding A2.
+  // docs/archive/rov-realtime-closed-loop-code-review-2026-08-27.md finding A2.
   std::string run_report_path;
   // Result-age budget (ms) a published state must not exceed to count as
   // "on time" for deadline_miss_fraction -- realtime_gate.py should pass

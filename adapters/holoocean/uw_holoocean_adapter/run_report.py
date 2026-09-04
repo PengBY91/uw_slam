@@ -188,7 +188,7 @@ def _get_required(report: Dict[str, Any], field: str) -> Any:
     """Same role as `report[field]`, but a missing field raises the same
     `GateFailure` every other check in this function raises -- a run report
     that never populated a required field (e.g. the gateway telemetry
-    collector work docs/rov-realtime-closed-loop-code-review-2026-08-27.md
+    collector work docs/archive/rov-realtime-closed-loop-code-review-2026-08-27.md
     finding A2 tracks) is itself a gate failure, not a crash. See that
     finding for why this mattered: `run_gate()` used to return a 4-field
     stub dict here, and evaluate_gate's first `report[...]` lookup raised an

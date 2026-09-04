@@ -372,7 +372,7 @@ ctest --test-dir build_task -R 'integration\.(imu_preintegration_smoke|synthetic
 - Modify: `docs/imu-preintegration-design-2026-09-03.md`
 - Modify: `docs/ROV平台到货前准备工作规格-2026-09-02.md`
 - Modify: `docs/traceability/rov-realtime-closed-loop.csv`
-- Modify: `docs/superpowers/plans/2026-09-03-week4-pre-delivery-prep.md`
+- Modify: `docs/archive/superpowers/plans/2026-09-03-week4-pre-delivery-prep.md`
 
 ### Step 1：完整验证
 

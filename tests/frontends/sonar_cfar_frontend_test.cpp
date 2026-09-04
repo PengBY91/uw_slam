@@ -94,7 +94,7 @@ TEST(SonarCfarFrontend, DetectsSyntheticTargetNearExpectedRangeBearing) {
   EXPECT_NEAR(first.bearing_rad(), expected_bearing, 0.05);
 }
 
-// docs/rov-realtime-closed-loop-code-review-2026-08-27.md finding D3: every
+// docs/archive/rov-realtime-closed-loop-code-review-2026-08-27.md finding D3: every
 // detection used to report the same fixed default_bearing_sigma_rad/
 // default_range_sigma_m regardless of cluster spread, over-trusting sonar
 // relative to vision in TargetAssociator::Fuse() whenever a cluster was

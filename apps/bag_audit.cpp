@@ -18,8 +18,8 @@
 // _write_keyframe and apps/synth_bag_gen.cpp's own keyframe-anchored
 // writes). Every other topic is optional unless named via --require (e.g.
 // --require /raw/sonar_frame --require /raw/imu --require /raw/dvl to audit
-// a full B4-style recording against docs/uw-slam-real-recording-spec-
-// 2026-08-22.md).
+// a full sensor-complete recording against
+// docs/specifications/holoocean-realtime-closed-loop-simulation-spec.md).
 //
 // Not every canonical topic carries the same fields — this is a real schema
 // constraint, not an oversight, and drives which checks run on which topic:

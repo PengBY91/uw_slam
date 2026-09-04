@@ -108,7 +108,7 @@ std::string ToTumLine(double timestamp_s, const Pose3& pose) {
   return out.str();
 }
 
-// RunManifest population helpers (docs/uw-slam-production-readiness-and-
+// RunManifest population helpers (docs/archive/uw-slam-production-readiness-and-
 // roadmap-2026-08-21.md section 5.6: these fields were all silently empty
 // before). Kept deliberately simple — no new dependency pulled in just to
 // fill provenance metadata.
@@ -421,7 +421,7 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
   }
   if (opt.max_iterations > 0) defaults.max_iterations = opt.max_iterations;  // CLI wins last
 
-  // Single ordered pass over the bag (docs/superpowers/plans/2026-08-24-
+  // Single ordered pass over the bag (docs/archive/superpowers/plans/2026-08-24-
   // live-replay-unified-ingress.md Task 4): every ReadMcapMessages<T> call
   // this function used to make per-topic, per-payload-type is now a filter
   // over this one ReplayInputData -- see each consumption point below for
@@ -1236,7 +1236,7 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
   std::cout << "added " << num_depth_factors << " depth factors\n";
 
   // defaults.solver: "gauss_newton_v1" (default) or "ceres_v1" — see
-  // docs/superpowers/specs/2026-08-23-solver-and-mapping-oss-adoption.md §7.
+  // docs/archive/superpowers/specs/2026-08-23-solver-and-mapping-oss-adoption.md §7.
   // Already validated as one of these two by ValidateExperimentConfigSelections
   // above; a "ceres_v1" selection in a binary that wasn't built with
   // UW_BUILD_CERES_SOLVER is a fatal startup error here, not a silent
@@ -1539,7 +1539,7 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
     std::cout << "wrote " << opt.out_prefix << "_trajectory.tum (run_manifest disabled by config)\n";
   }
 
-  // P0 non-void gates (docs/uw-slam-production-readiness-and-roadmap-2026-
+  // P0 non-void gates (docs/archive/uw-slam-production-readiness-and-roadmap-2026-
   // 08-21.md section 5.5): outputs above are always written for
   // diagnosability even on failure — only the exit code changes — so a CI
   // gate failure still leaves a trajectory/manifest to inspect. Each gate

@@ -1,5 +1,5 @@
 # 跟 real_holoocean_vo.yaml 完全一样，只是求解器换成 ceres_v1——真实数据求解器
-# 交叉验证用，见 docs/superpowers/specs/2026-08-23-solver-and-mapping-oss-
+# 交叉验证用，见 docs/archive/superpowers/specs/2026-08-23-solver-and-mapping-oss-
 # adoption.md §6.1.1、tools/bench/solver_benchmark.sh。需要
 # UW_BUILD_CERES_SOLVER=ON 编译。
 

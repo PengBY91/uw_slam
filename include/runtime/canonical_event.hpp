@@ -2,7 +2,7 @@
 // a vendor SDK live source in a later implementation package) and consumed
 // by application::PipelineInputPort. This is a std::variant wrapper around
 // the existing schemas/proto/uw/domain/ messages -- it never serializes and
-// never carries a vendor/algorithm type (see docs/superpowers/plans/
+// never carries a vendor/algorithm type (see docs/archive/superpowers/plans/
 // 2026-08-24-live-replay-unified-ingress.md section 1.1/10 stop conditions).
 #pragma once
 

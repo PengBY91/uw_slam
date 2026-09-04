@@ -3,7 +3,7 @@
 // caller). Split out so this pure string-building logic -- previously
 // anonymous-namespace-private inside holoocean_realtime_sink.cpp with zero
 // test coverage -- can be unit tested directly; only depends on domain
-// types, no runtime/opencv/ROS2. See docs/rov-realtime-closed-loop-code-
+// types, no runtime/opencv/ROS2. See docs/archive/rov-realtime-closed-loop-code-
 // review-2026-08-27.md finding B2 for why the queue_health section exists:
 // LiveEventSource::HealthReports() already computed per-lane backpressure/
 // drop stats, but nothing surfaced them to the operator before.

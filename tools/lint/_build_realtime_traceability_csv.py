@@ -246,10 +246,10 @@ ROWS: dict[str, tuple[str, str, str, str, str]] = {
         "gated",
     ),
     # ---- SYS-PROC: hardware SDK gate, explicitly out of this plan's reach ----
-    "SYS-PROC-001": ("n/a (hardware)", "AI-D hardware SDK gate", "n/a", "docs/superpowers/plans/2026-08-24-rov-realtime-closed-loop-master.md", "gated"),
-    "SYS-PROC-002": ("n/a (hardware)", "SV1213 hardware SDK gate", "n/a", "docs/superpowers/plans/2026-08-24-rov-realtime-closed-loop-master.md", "gated"),
-    "SYS-PROC-003": ("n/a (hardware)", "BlueROV2 hardware interface gate", "n/a", "docs/superpowers/plans/2026-08-24-rov-realtime-closed-loop-master.md", "gated"),
-    "SYS-PROC-004": ("n/a (hardware)", "hardware device acceptance policy", "n/a", "docs/superpowers/plans/2026-08-24-rov-realtime-closed-loop-master.md", "gated"),
+    "SYS-PROC-001": ("n/a (hardware)", "AI-D hardware SDK gate", "n/a", "docs/archive/superpowers/plans/2026-08-24-rov-realtime-closed-loop-master.md", "gated"),
+    "SYS-PROC-002": ("n/a (hardware)", "SV1213 hardware SDK gate", "n/a", "docs/archive/superpowers/plans/2026-08-24-rov-realtime-closed-loop-master.md", "gated"),
+    "SYS-PROC-003": ("n/a (hardware)", "BlueROV2 hardware interface gate", "n/a", "docs/archive/superpowers/plans/2026-08-24-rov-realtime-closed-loop-master.md", "gated"),
+    "SYS-PROC-004": ("n/a (hardware)", "hardware device acceptance policy", "n/a", "docs/archive/superpowers/plans/2026-08-24-rov-realtime-closed-loop-master.md", "gated"),
 }
 
 

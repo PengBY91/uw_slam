@@ -334,7 +334,7 @@ TEST(TargetTracker, ThreeMissesDegradeAndLaterQueryStalesWithoutAnotherUpdate) {
             uw::domain::TARGET_TRACK_STATUS_STALE);
 }
 
-// docs/rov-realtime-closed-loop-code-review-2026-08-27.md finding C2:
+// docs/archive/rov-realtime-closed-loop-code-review-2026-08-27.md finding C2:
 // TargetTracker never evicted stale tracks -- a track that goes STALE
 // (marked via Tracks()) stayed in tracks_ forever, growing memory and
 // per-publish Predict() cost without bound over a long run. retention_

@@ -4,7 +4,7 @@ gate-spec selection, and the SIM-ACC-003 seed-campaign pass fraction.
 session, the C++ gateway, rclpy-based pilot/scorer bridges) and are not
 exercised here -- same "needs a real native host" status as every other
 process-launching piece in this package (see
-docs/rov-realtime-closed-loop-code-review-2026-08-27.md finding A2's "still
+docs/archive/rov-realtime-closed-loop-code-review-2026-08-27.md finding A2's "still
 open" note for what remains gateway-side telemetry work)."""
 import time
 

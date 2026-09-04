@@ -6,7 +6,7 @@
 // simulation time -- HoloOcean's sim clock starts near zero each episode
 // while wall time is ~1.7e9s, so every staleness check would see an
 // astronomical age and the pipeline would report itself permanently
-// STATUS_UNAVAILABLE. See docs/rov-realtime-closed-loop-code-review-
+// STATUS_UNAVAILABLE. See docs/archive/rov-realtime-closed-loop-code-review-
 // 2026-08-27.md finding A1.
 #pragma once
 

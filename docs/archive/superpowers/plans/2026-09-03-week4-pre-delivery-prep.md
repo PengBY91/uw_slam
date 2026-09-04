@@ -1,14 +1,14 @@
 # ROV 到货前准备第四周总控计划
 
 > 状态：v2 · 2026-09-03 · 总控索引，不直接作为代码执行清单
-> 设计依据：`docs/superpowers/specs/2026-09-03-week4-pre-delivery-prep-design.md`
-> 当前执行计划：`docs/superpowers/plans/2026-09-03-imu-preintegration-closure.md`
+> 设计依据：`docs/archive/superpowers/specs/2026-09-03-week4-pre-delivery-prep-design.md`
+> 当前执行计划：`docs/archive/superpowers/plans/2026-09-03-imu-preintegration-closure.md`
 
 ## 本周交付边界
 
 第四周按工作流独立推进，不再把算法、飞控、设备伪装、UE5 关卡和飞手训练塞进同一实现批次。
 
-**B-01 阻断已解除（2026-09-03，本地验证）**：`docs/superpowers/plans/2026-09-03-imu-preintegration-closure.md` 的 7 个任务在 `.worktrees/week4-b01-clean` 上全部执行完毕。四次算法轨迹（原始 / 删除 GT / GT 位姿偏移 / GT 时间偏移）逐字节相同，三类因子均非零（imu 11 / sonar_range 36 / depth 12）、`relative_pose_factor_count=0`、`initialization=stationary`、13 迭代收敛、**ATE rmse = 0.0858 m ≤ 0.15 m**；全仓 708 条 CTest 全绿，独立代码审查的 9 条发现已全部处理。B-02 回放接线与 C-03 外部导航回灌的**本地**前置条件已满足；C-03 W5 另有"W4 adapter 已外部验证"这一条独立前置，不因本次解除。HoloOcean 200 Hz / 30 s 逐秒漂移报告仍为外部待验收，不阻断 B-02/C-03 的编码工作。
+**B-01 阻断已解除（2026-09-03，本地验证）**：`docs/archive/superpowers/plans/2026-09-03-imu-preintegration-closure.md` 的 7 个任务在 `.worktrees/week4-b01-clean` 上全部执行完毕。四次算法轨迹（原始 / 删除 GT / GT 位姿偏移 / GT 时间偏移）逐字节相同，三类因子均非零（imu 11 / sonar_range 36 / depth 12）、`relative_pose_factor_count=0`、`initialization=stationary`、13 迭代收敛、**ATE rmse = 0.0858 m ≤ 0.15 m**；全仓 708 条 CTest 全绿，独立代码审查的 9 条发现已全部处理。B-02 回放接线与 C-03 外部导航回灌的**本地**前置条件已满足；C-03 W5 另有"W4 adapter 已外部验证"这一条独立前置，不因本次解除。HoloOcean 200 Hz / 30 s 逐秒漂移报告仍为外部待验收，不阻断 B-02/C-03 的编码工作。
 
 | 工作流 | 第四周目标 | 当前状态 | 本周完成门槛 |
 |---|---|---|---|

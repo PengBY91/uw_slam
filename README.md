@@ -293,7 +293,7 @@ EuRoC 实验不设 gate、不写 GT（转换器刻意不转换 GT/IMU）：它�
 角点/时序匹配/RANSAC 只在近乎平行基线的合成数据上验证过，在这组主点大幅偏移、需要
 真实旋转对齐的真实标定上表现变差——跟 `camera_rectifier` 此前因双线性重采样削弱
 纹理被搁置的已知风险是同一类问题，需要后续联合调参才能恢复，详见
-[生产就绪度路线图 2.4 节](./docs/uw-slam-production-readiness-and-roadmap-2026-08-21.md#24-真实-holoocean-录制回放)
+[生产就绪度路线图 2.4 节](./docs/archive/uw-slam-production-readiness-and-roadmap-2026-08-21.md#24-真实-holoocean-录制回放)
 的复核记录。这证明录制数据能进入离线 VO 管线，不代表真实重建已经跑通。
 
 ### 6. 求解器基准（可选）
@@ -508,7 +508,7 @@ event_source_parity_test.cpp` 验证同一批事件经 MCAP 与内存两种 `Eve
 | `baselines/` | 外部基线（如 `sonar_camera_reconstruction`）运行脚本，不链接进本仓库构建 |
 | `configs/` | `defaults → rig → scenario → experiment` 分层配置 |
 | `tools/` | 环境安装、代码生成、lint、求解器基准（`bench/`）和完整验证脚本 |
-| `docs/` | 文档中心、架构/参考/路线图文档、`specifications/` 规范、`traceability/` 追溯矩阵 |
+| `docs/` | 文档中心、架构/参考/路线图文档、`specifications/` 规范、`traceability/` 追溯矩阵、`archive/` 历史过程记录 |
 | `external_repos/` | 只读参考/移植来源，不纳入本仓库版本控制 |
 
 ## 开发指南
@@ -758,14 +758,17 @@ target 按架构层合并，不要为单个实现新建 target 或 `CMakeLists.t
 |---|---|
 | 不确定应该先读哪份文档 | [文档中心](./docs/README.md) |
 | 作为新贡献者第一次读代码、理清调用链 | [新人上手指南](./docs/uw-slam-newcomer-guide.md) |
-| 按执行顺序逐阶段读懂两条主线的代码块与机制 | [两条主线代码走读](./docs/uw-slam-two-mainlines-walkthrough-2026-08-26.md) |
+| 逐阶段读懂离线 SLAM 管线（主线一）的机制与数学 | [离线 SLAM 管线深度走读](./docs/uw-slam-offline-slam-pipeline-deep-dive-2026-08-28.md) |
+| 逐阶段读懂 ROV 在线驾驶辅助（主线二）的实时闭环与降级语义 | [ROV 实时闭环深度走读](./docs/uw-slam-rov-realtime-closed-loop-deep-dive-2026-08-28.md) |
+| 不读代码，先弄懂这套系统在做什么 | [两条主线通俗讲解](./docs/两条主线通俗讲解-2026-08-28.md) |
+| 两条主线各自用了什么估计理论、为什么这么选 | [声光融合 SLAM 技术剖析](./docs/声光融合SLAM技术剖析-2026-08-28.md) |
 | 长期模块边界、状态机、可靠性和 Gate 设计 | [声光 SLAM 平台架构](./docs/acoustic-optic-slam-platform-architecture-2026-08-17.md) |
 | 当前代码里实际存在的类型、算法和数据流 | [代码库参考](./docs/uw-slam-codebase-reference-2026-08-18.md) |
 | 验证某个功能、该加载什么环境 | [测试与验证指南](./docs/testing-and-verification-guide-2026-08-20.md) |
-| 生产就绪度差距与阶段路线图 | [生产就绪度审计与路线图](./docs/uw-slam-production-readiness-and-roadmap-2026-08-21.md) |
 | ROV 竞赛牵引的一年期平台路线 | [ROV 平台落地路线图](./docs/ROV平台落地路线图.md) |
 | ROV 在线系统的需求/仿真/融合规格（规范性） | [docs/specifications/](./docs/specifications/) 三份规格 |
-| 第一阶段工程方案及既有代码审计 | [HoloOcean 到声光 SLAM 管线](./docs/holoocean-to-acoustic-optic-slam-pipeline-2026-08-05.md) |
+| 合同平台参数与到货前准备工作 | [ROV 平台到货前准备工作规格](./docs/ROV平台到货前准备工作规格-2026-09-02.md) |
+| 某个设计当初为什么这么定（实施计划、代码审查、早期方案） | [docs/archive/](./docs/archive/) 历史过程记录 |
 | 配置字段与覆盖关系 | [配置说明](./configs/README.md) |
 | HoloOcean Python 入口 | [HoloOcean 适配器](./adapters/holoocean/README.md) |
 | 公共数据集转换 | [数据集适配器](./adapters/datasets/README.md) |
@@ -774,5 +777,6 @@ target 按架构层合并，不要为单个实现新建 target 或 `CMakeLists.t
 | 移植许可证与 provenance | [NOTICE](./NOTICE) |
 | 仓库开发约定与工程陷阱 | [CLAUDE.md](./CLAUDE.md) |
 
-> 提示：代码库参考（2026-08-18 版）与新人上手指南最后核对于 2026-08-22；此后新增
-> 的实时闭环/在线辅助能力以本 README、`docs/specifications/` 和源码为准。
+> 提示：代码库参考（2026-08-18 版）最后核对于 2026-08-22；此后新增的实时闭环/在线
+> 辅助能力以本 README、两份深度走读、`docs/specifications/` 和源码为准。
+> `docs/archive/` 下的内容是历史过程记录，其中的数字与任务状态不代表现状。

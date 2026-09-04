@@ -56,13 +56,13 @@ frontends:
     merge_range_threshold_m: 0.30
     # 航迹超过这个时长没有命中就从 tracks_ 里彻底删除（不只是标 STALE）——必须
     # 大于 stale_after_s，留够余量避免短暂丢失后立刻用新 ID 重新出现打断连续性。
-    # 见 docs/rov-realtime-closed-loop-code-review-2026-08-27.md finding C2。
+    # 见 docs/archive/rov-realtime-closed-loop-code-review-2026-08-27.md finding C2。
     retention_after_s: 5.0
 
 online_assist:
   # 本地稠密立体深度补全默认关闭：视觉+声呐目标检测已经能独立驱动 tracking，
   # 稠密深度对 distance/path-offset 的实际收益要等配对场景/水池数据验证后再开，
-  # 见 docs/superpowers/plans/2026-08-24-acoustic-optic-online-tracking.md Task 6。
+  # 见 docs/archive/superpowers/plans/2026-08-24-acoustic-optic-online-tracking.md Task 6。
   dense:
     enabled: false
     budget_ms: 100.0

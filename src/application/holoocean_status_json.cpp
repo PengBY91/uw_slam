@@ -47,7 +47,7 @@ std::string HealthReportToJson(const uw::domain::HealthReport& health) {
 // dropped/rejected/sequence-gap counts and oldest-message age per lane, but
 // previously nothing consumed it -- an operator had no visible signal that
 // a lane was backpressuring/dropping until data age eventually tripped
-// downstream staleness, which per docs/rov-realtime-closed-loop-code-
+// downstream staleness, which per docs/archive/rov-realtime-closed-loop-code-
 // review-2026-08-27.md finding B2 violates FUS-Q-002/FUS-RT-001's
 // observability requirement. This mirrors HealthReportToJson's shape but
 // adds the queue-specific fields that struct doesn't carry.

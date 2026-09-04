@@ -28,7 +28,7 @@ struct LaneQueueConfig {
   // per FUS-Q-004, a message that already exceeds the system's own data-
   // age budget must be dropped before expensive processing, not paid for
   // and then discarded downstream anyway. See
-  // docs/rov-realtime-closed-loop-code-review-2026-08-27.md findings B3/C3.
+  // docs/archive/rov-realtime-closed-loop-code-review-2026-08-27.md findings B3/C3.
   std::optional<double> max_residence_s;
 };
 

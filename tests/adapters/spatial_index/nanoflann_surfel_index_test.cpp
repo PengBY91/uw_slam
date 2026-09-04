@@ -44,7 +44,7 @@ void ExpectSameSurfelSet(const std::vector<Surfel>& a, const std::vector<Surfel>
 // exactly, same contract already proven against a test-only fake in
 // tests/mapping/surfel_map_test.cpp (SurfelSpatialIndex.* there) — this
 // file proves the REAL third-party-backed implementation honors it too.
-// docs/superpowers/specs/2026-08-23-solver-and-mapping-oss-adoption.md §9.
+// docs/archive/superpowers/specs/2026-08-23-solver-and-mapping-oss-adoption.md §9.
 
 TEST(NanoflannSurfelIndex, MergeCreateAndCarveMatchBruteForceExactly) {
   SurfelMapParams params;

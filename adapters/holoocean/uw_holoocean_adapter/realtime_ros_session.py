@@ -538,7 +538,7 @@ def main() -> None:
     parser.add_argument("--sonar-degradation", choices=("clear", "critical"), default="clear")
     parser.add_argument("--thruster-fault-index", type=int, default=None)
     parser.add_argument("--thruster-fault-effectiveness", type=float, default=1.0)
-    # Finding B4 additions (docs/rov-realtime-closed-loop-code-review-2026-
+    # Finding B4 additions (docs/archive/rov-realtime-closed-loop-code-review-2026-
     # 08-27.md): --sensor-fault-schedule scheduled turns --visual-degradation/
     # --sonar-degradation critical from "on for the whole run" into
     # scheduled windows with an actual start/duration/recovery, matching
@@ -662,7 +662,7 @@ def main() -> None:
 
     try:
         # NOT node.create_rate(...).sleep() -- confirmed against a real
-        # sourced ROS2 install (see docs/rov-realtime-closed-loop-code-
+        # sourced ROS2 install (see docs/archive/rov-realtime-closed-loop-code-
         # review-2026-08-27.md) that it deadlocks here: rclpy's Rate.sleep()
         # blocks on a timer callback that only fires while something spins
         # this node, and nothing spins it while sleep() itself is blocking

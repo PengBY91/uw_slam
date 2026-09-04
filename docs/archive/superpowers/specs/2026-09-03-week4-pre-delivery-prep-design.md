@@ -2,7 +2,7 @@
 
 > 状态：v2 · 2026-09-03 · 已按会话复审结论批准
 > 上游规格：`docs/ROV平台到货前准备工作规格-2026-09-02.md` v1.3
-> 总控计划：`docs/superpowers/plans/2026-09-03-week4-pre-delivery-prep.md`
+> 总控计划：`docs/archive/superpowers/plans/2026-09-03-week4-pre-delivery-prep.md`
 
 ## 目标
 

@@ -235,7 +235,7 @@ def _run_scripted_pilot_process(scenario_path: str, task_path: str) -> None:
     # Runs entirely within its own forked process (see module docstring for
     # why this isn't a second CLI module). Delegates to pilot_ros_bridge's
     # real rclpy node -- subscribes /uw/hmi/status, publishes
-    # /uw/pilot/thrusters -- see docs/rov-realtime-closed-loop-code-review-
+    # /uw/pilot/thrusters -- see docs/archive/rov-realtime-closed-loop-code-review-
     # 2026-08-27.md finding A3 for why this used to be an inert placeholder.
     from uw_holoocean_adapter.pilot_ros_bridge import run_scripted_pilot_bridge
     from uw_holoocean_adapter.scenario_manifest import load_realtime_manifest as _load

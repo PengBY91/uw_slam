@@ -1,7 +1,7 @@
 // Assembles the online acoustic-optic target-assist slice: images/sonar/
 // vehicle state in through the canonical PipelineInputPort, source-aware
 // TargetTracks and a HealthReport-backed degradation summary out through a
-// replace-latest AssistOutputSink. See docs/superpowers/plans/2026-08-24-
+// replace-latest AssistOutputSink. See docs/archive/superpowers/plans/2026-08-24-
 // acoustic-optic-online-tracking.md Task 6.
 //
 // Visual and sonar target detection each run independently of the other --

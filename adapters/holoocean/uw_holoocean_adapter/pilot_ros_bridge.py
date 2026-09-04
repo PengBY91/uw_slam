@@ -3,7 +3,7 @@
 (PREP-C-02 setpoint-level contract [surge, sway, heave, yaw_rate]; the
 HoloOcean backend allocates it to thrusters itself)
 -- the piece `realtime_gate.py`'s `_run_scripted_pilot_process` was missing
-(see docs/rov-realtime-closed-loop-code-review-2026-08-27.md finding A3).
+(see docs/archive/rov-realtime-closed-loop-code-review-2026-08-27.md finding A3).
 
 Thin and intentionally NOT unit tested directly here, same status as
 `realtime_ros_session.py`'s `main()` -- this machine has no rclpy/ROS2

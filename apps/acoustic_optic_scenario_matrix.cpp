@@ -326,7 +326,7 @@ int main(int argc, char** argv) {
       any_gate_failed = true;
     }
 
-    // Minimum effective coverage gate (docs/uw-slam-production-readiness-
+    // Minimum effective coverage gate (docs/archive/uw-slam-production-readiness-
     // and-roadmap-2026-08-21.md 2.3/5.5): the false-fusion gate above is
     // silently skipped whenever accepted < min_accepted_for_gate, which
     // previously let a scenario with 0/N accepted (no candidates at all —

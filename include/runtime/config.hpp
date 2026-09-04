@@ -116,7 +116,7 @@ struct TargetTrackerConfig {
 };
 
 // Gates OnlineAssistPipeline's local dense stereo depth completion (block
-// matching, expensive). Disabled by default per docs/superpowers/plans/
+// matching, expensive). Disabled by default per docs/archive/superpowers/plans/
 // 2026-08-24-acoustic-optic-online-tracking.md Task 6: bearing/range from
 // visual + sonar target detections already drive tracking without it, and
 // dense's real distance/path-offset benefit needs paired scenario/pool
@@ -142,7 +142,7 @@ struct OnlineAssistPipelineConfig {
   // to AssistOutputSink is throttled. Without this, the highest-rate input
   // (vehicle state, up to 100 Hz overload) drove a full HMI overlay
   // render + JSON rebuild on every single message -- see
-  // docs/rov-realtime-closed-loop-code-review-2026-08-27.md finding C1.
+  // docs/archive/rov-realtime-closed-loop-code-review-2026-08-27.md finding C1.
   // Default 0.1s (10 Hz) matches FUS-RT-003's nominal target/HMI update
   // rate; Flush() and UpdateRig()'s "recovering" transition always publish
   // regardless of this gate (a shutdown flush or a calibration-change
@@ -196,7 +196,7 @@ struct PlatformDefaultsConfig {
   // "ceres_v1" (uw::adapters::ceres_solver::CeresPoseGraphSolver — only
   // usable if this binary was built with UW_BUILD_CERES_SOLVER=ON; selected
   // but not compiled in is a fatal startup error, not a silent fallback).
-  // See docs/superpowers/specs/2026-08-23-solver-and-mapping-oss-adoption.md.
+  // See docs/archive/superpowers/specs/2026-08-23-solver-and-mapping-oss-adoption.md.
   std::string solver = "gauss_newton_v1";
   int max_iterations = 30;
   double initial_lambda = 1e-3;
@@ -220,7 +220,7 @@ struct PlatformDefaultsConfig {
   // for exactly how this is applied).
   double warmup_seconds = 0.0;
 
-  // P0 non-void replay gates (docs/uw-slam-production-readiness-and-roadmap-
+  // P0 non-void replay gates (docs/archive/uw-slam-production-readiness-and-roadmap-
   // 2026-08-21.md section 5.5/7): apps/replay_demo checks these after
   // solving and exits non-zero when violated, instead of always returning 0
   // regardless of output quality. All threshold gates default to disabled
@@ -333,7 +333,7 @@ ExperimentConfig LoadExperimentConfig(const std::string& path);
 // (sonar_frontend/optical_frontend/map_backend/estimator_mode/
 // landmark_detector/defaults.solver) names an implementation this binary
 // actually has,
-// instead of being silently ignored — see docs/uw-slam-production-
+// instead of being silently ignored — see docs/archive/uw-slam-production-
 // readiness-and-roadmap-2026-08-21.md section 10's "配置存在但不驱动实现"
 // risk. Returns the reason the first unrecognized field is invalid, or
 // std::nullopt if every field is recognized. apps/replay_demo (the only

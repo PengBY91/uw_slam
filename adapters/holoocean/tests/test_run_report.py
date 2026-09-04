@@ -47,7 +47,7 @@ def valid_overload_report():
 
 
 def test_incomplete_report_raises_gate_failure_not_key_error():
-    # docs/rov-realtime-closed-loop-code-review-2026-08-27.md finding A2:
+    # docs/archive/rov-realtime-closed-loop-code-review-2026-08-27.md finding A2:
     # run_gate() used to return a report missing ~20 required fields, and
     # evaluate_gate's first plain report[...] lookup crashed with an
     # uncaught KeyError instead of a named, catchable GateFailure.

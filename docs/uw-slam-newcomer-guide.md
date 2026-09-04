@@ -1,7 +1,11 @@
 # `uw_slam` 代码逻辑与新人快速上手指南
 
-> 适用范围：`8df083b` 及 2026-08-22 当前工作树。工作树中的 P1 配置校验和有限
-> plumb-bob 去畸变原语已重新构建、测试；尚未提交的事实不等同于发布基线。
+> 适用范围：当前工作树，2026-09-04 核对目录职责与共享地基一节；调用链细节最后逐行
+> 核对于 `8df083b`（2026-08-22），此后新增的实时闭环能力见
+> [ROV 实时闭环深度走读](./uw-slam-rov-realtime-closed-loop-deep-dive-2026-08-28.md)。
+> 本文覆盖两条主线共享的地基与入门调用链；每条主线的逐阶段机制、数学与设计原因见
+> [离线 SLAM 管线深度走读](./uw-slam-offline-slam-pipeline-deep-dive-2026-08-28.md)
+> 和上面那份实时闭环走读。
 
 ## 一句话概括
 
@@ -56,16 +60,21 @@ MeasurementEvidence / HypothesisSet
 | `include/factor_builders`、`src/factor_builders` | 相对位姿、深度、声呐距离残差 |
 | `include/estimation`、`src/estimation` | 位姿图和 Eigen 实现的 Gauss-Newton/LM |
 | `include/mapping`、`src/mapping` | 局部地图证据管理、融合深度到点云的转换 |
-| `include/runtime`、`src/runtime` | MCAP、配置、同步、队列、状态机、RunManifest 等 runtime 支持原语；尚无已组合的在线调度器 |
+| `include/runtime`、`src/runtime` | MCAP、配置、同步、队列、状态机、RunManifest 等 runtime 支持原语；`live_event_source.hpp` 提供在线四车道有界队列入口 |
 | `include/adapters`、`src/adapters`、`adapters/ros2` | HoloOcean、ROS2、SVIn 等外部系统边界 |
 | `include/evaluation`、`src/evaluation` | ATE、深度/融合和点云地图质量指标（尚无 RPE） |
-| `include/application`、`src/application` | 跨算法、runtime 与评测层的用例编排；当前包含离线回放管线 |
+| `include/application`、`src/application` | 跨算法、runtime 与评测层的用例编排；当前包含离线回放管线（`replay_pipeline`）与在线辅助管线（`online_assist_pipeline`） |
 | `apps` | 参数解析和进程入口；调用 `application` 服务或单一用途的共享原语 |
 | `tests` | 消息格式与接口一致性测试（`contracts/`）、按层单元测试、确定性回放（`integration/`） |
 | `external_repos` | 只读参考代码，不是本系统运行主体 |
 
 最重要的设计规则是：算法层不能知道 ROS2、HoloOcean 或 vendor 类型；外部数据进入
-算法层前，必须先转换成 Protobuf 规范化消息类型。
+算法层前，必须先转换成 Protobuf 规范化消息类型。第三方依赖各自隔离在一个 adapter 里
+——ROS2 在 `adapters/ros2/`、OpenCV 在 `adapters/opencv/`、Ceres 在 `adapters/ceres/`、
+nanoflann 在 `adapters/spatial_index/`；`estimation`/`mapping` 只看得到纯虚接口
+（`Solver`、`SurfelSpatialIndex`），具体实现由 `application` 注入。这条不变量由
+`tools/lint/check_no_ros_in_core.sh`（实际实现 `tools/lint/check_layer_dependencies.py`）
+强制检查，改完代码顺手跑一下。
 
 `schemas/proto/` 只定义可跨语言传递的消息类型；`include/measurement_api` 则定义
 C++ 进程内接口。后者的 `ResidualBlock` 是求解器接口，不属于 Protobuf 的唯一事实源。
@@ -98,6 +107,59 @@ C++ 进程内接口。后者的 `ResidualBlock` 是求解器接口，不属于 P
 除 `ResidualBlock` 外，表中的核心消息类型的唯一事实源位于
 [`schemas/proto/uw/domain/`](../schemas/proto/uw/domain/)；`ResidualBlock` 及其同类进程内
 接口位于 [`include/measurement_api/`](../include/measurement_api/)。
+
+## 两条主线共享的地基
+
+两条主线（离线 SLAM 管线、ROV 在线驾驶辅助）不是两套代码，而是**同一套消息模型和同一个
+事件入口**的两种事件来源（回放 vs 实时）。
+
+### 规范消息模型（Protobuf）
+
+`schemas/proto/uw/domain/*.proto` 是 C++/Python 跨语言消息的唯一事实源：
+
+| 文件 | 内容 |
+|---|---|
+| `observation.proto`/`image.proto`/`sonar.proto` | 观测头（`ObservationHeader`：sensor_id / sensor_frame / observation_id / capture_time / calibration_version）、`ImageFrame`、`SonarFrame` |
+| `measurement.proto` | `MeasurementEvidence` + 各 payload（`RelativePoseMeasurement`、`PressureDepthMeasurement`、`OpticalDepthPriorMeasurement`、`FusedDepthMeasurement`、`SonarRangeBearing`…） |
+| `factor.proto`/`hypothesis.proto` | `FactorCandidate`（含 `robust_policy_hint`）、`HypothesisSet`（前端输出） |
+| `state.proto` | `StateSnapshot`（估计状态）、`VehicleState`（车辆状态输入） |
+| `map.proto` | `MapEvidence`（局部点云/surfel 载荷，`representation_type` + `reintegration_policy`） |
+| `health.proto` | `HealthReport`（HEALTHY/SUSPECT/UNAVAILABLE/RECOVERING + reason_code） |
+| `target.proto` | `TargetDetection` / `TargetTrack` / `TargetTrackSet` / `OperatorAssistState`（主线二输出契约） |
+| `calibration.proto` | `RigCalibrationSnapshot`（rig 配置层的解析目标） |
+| `ids.proto`/`time.proto`/`vehicle.proto`/`imu.proto`/`dvl.proto` | 标识、时间戳、`ImuSample`、`DvlSample` |
+
+C++ 侧统一经 `include/domain/domain.hpp` 使用；Python 侧由 `tools/codegen/gen_py.sh` 生成
+`schema_pb2`（不入库）。
+
+两条铁律写在字段层面：位姿一律 `Pose3`（平移 + xyzw 四元数，禁欧拉角）；
+`PressureDepthMeasurement.depth_m` 正向下（world Z-up，位姿 z = `-depth_m`），光学 `depth_m`
+是 optical frame 正向前——同名不同义，不可混用（见
+[坐标系与符号约定](../README.md#坐标系与符号约定)）。
+
+### 规范 topic 词表与统一事件契约
+
+`include/runtime/canonical_topics.hpp` 定义全部规范 topic 及其消息类型与角色：
+
+| Topic | 消息 | 角色 |
+|---|---|---|
+| `/raw/camera/left`、`/raw/camera/right` | `ImageFrame` | 算法输入 |
+| `/raw/sonar_frame` | `SonarFrame` | 算法输入 |
+| `/raw/imu`、`/raw/dvl`、`/raw/vehicle_state` | `ImuSample` / `DvlSample` / `VehicleState` | 算法输入 |
+| `/evidence/depth`、`/evidence/relative_pose` | `MeasurementEvidence` | 算法输入 |
+| `/health` | `HealthReport` | 算法输入 |
+| `/evidence/map` | `MapEvidence` | 算法输入 |
+| `/gt/state` | `StateSnapshot` | **仅评测支路**（`CanonicalTopicRole::kReferenceOnly`） |
+
+`runtime/canonical_event.hpp` 把"topic + payload 变体 + capture/receive 时戳 + 序号"捆成
+`CanonicalEvent`；`runtime/event_source.hpp` 定义与来源无关的 `EventSource` 契约；
+`application/event_pump.hpp` 的 `PumpEvents(source, port)` 从任一 EventSource 取事件、按 topic
+分发到 `application/pipeline_input_port.hpp` 的 `PipelineInputPort::OnXxx(...)`。离线回放用
+MCAP EventSource，在线闭环用 `runtime/live_event_source.hpp` 的四车道有界队列，应用层代码
+两边共用。
+
+一致性由 `tests/integration/event_source_parity_test.cpp` 把关：同一批事件经 MCAP 与内存两种
+EventSource 注入，应用侧观察到的顺序必须完全一致。
 
 ## 当前三条真实执行链
 

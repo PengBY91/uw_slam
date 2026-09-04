@@ -11,7 +11,7 @@
 #
 # ALSO now enforces the matrix binary's own exit code (its minimum-effective-
 # coverage gate — see acoustic_optic_scenario_matrix.cpp), rather than
-# swallowing it with `|| true`, per docs/uw-slam-production-readiness-and-
+# swallowing it with `|| true`, per docs/archive/uw-slam-production-readiness-and-
 # roadmap-2026-08-21.md 5.5's "gates that pass on no output" critique: this
 # used to be masking a real associator scoring bug (near-boresight elevation
 # was legitimately-but-wrongly rejected as AMBIGUOUS on clean_textured/

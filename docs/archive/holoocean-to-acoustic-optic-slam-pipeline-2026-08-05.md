@@ -20,8 +20,8 @@ verified_against: "8df083b + current worktree"
 
 > **文档定位**：本文记录第一阶段 HoloOcean baseline 的工程方案，以及它向当前
 > `uw_slam` 架构演进的过程。当前代码事实以
-> [代码库参考](./uw-slam-codebase-reference-2026-08-18.md) 为准；长期模块边界和技术
-> 决策以[平台架构设计](./acoustic-optic-slam-platform-architecture-2026-08-17.md)为准。
+> [代码库参考](../uw-slam-codebase-reference-2026-08-18.md) 为准；长期模块边界和技术
+> 决策以[平台架构设计](../acoustic-optic-slam-platform-architecture-2026-08-17.md)为准。
 > 本文中的早期时间表和串联方案属于历史工程背景，不代表当前功能已经全部接通。
 
 ## 三十秒摘要
@@ -62,7 +62,7 @@ VO 回放；后者没有 sonar/IMU/DVL、求解器仍 stalled，因此不能表�
 
 > 2026-08-17 架构定位更新：现有“SVIn VIO 位姿 → `sonar_camera_reconstruction` 点云”的串联方案保留为第一阶段 baseline，但不作为最终系统。目标架构升级为“VIO 先验驱动的声光 pose-graph SLAM + 自适应双前端稠密建图”：SVIn 提供连续局部里程计，成像声纳、depth 与回环约束在上层 pose graph 中修正关键帧位姿；双目视觉精细重建与 sonar-grounded 抗退化重建生成局部几何，再由 submap manager 维护全局一致地图。
 
-> 长期平台边界、领域契约、AI 模型生命周期、运行时状态机和分阶段决策门以[水下声光融合 SLAM 平台长期架构设计](./acoustic-optic-slam-platform-architecture-2026-08-17.md)为准。本文继续保留为 HoloOcean 集成与第一阶段 baseline 的工程方案。
+> 长期平台边界、领域契约、AI 模型生命周期、运行时状态机和分阶段决策门以[水下声光融合 SLAM 平台长期架构设计](../acoustic-optic-slam-platform-architecture-2026-08-17.md)为准。本文继续保留为 HoloOcean 集成与第一阶段 baseline 的工程方案。
 
 ## 1. 总体目标
 
@@ -858,7 +858,7 @@ HoloOcean 可以证明实时 pipeline、可控退化、工程闭环、消融和�
 
 ## 11. 代码审计修订附录：2026-08-18
 
-> 本节基于对 `SVIn`、`sonar_camera_reconstruction`、`ocean_t` 三个仓库的逐文件代码审计（此前多处判断仅基于 README 或早期抽样审阅）。完整分析见[平台架构设计第 22 节](./acoustic-optic-slam-platform-architecture-2026-08-17.md#22-2026-08-18-三方代码库审计与架构细化)，本节只列出对本文 Phase 划分和执行顺序有直接影响的修订；这些修订优先于正文中的早期事实假设。
+> 本节基于对 `SVIn`、`sonar_camera_reconstruction`、`ocean_t` 三个仓库的逐文件代码审计（此前多处判断仅基于 README 或早期抽样审阅）。完整分析见[平台架构设计第 22 节](../acoustic-optic-slam-platform-architecture-2026-08-17.md#22-2026-08-18-三方代码库审计与架构细化)，本节只列出对本文 Phase 划分和执行顺序有直接影响的修订；这些修订优先于正文中的早期事实假设。
 
 ### 11.1 对本文既有判断的修正
 

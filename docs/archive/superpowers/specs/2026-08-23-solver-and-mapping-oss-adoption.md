@@ -3,7 +3,7 @@
 > 日期：2026-08-23
 > 状态：设计复核通过，§11 三项开放问题已拍板（见该节结论），待排期实施
 > 范围：求解器后端（Ceres 适配器 + 基准决策门）、SurfelMap 空间索引加速（nanoflann 适配器）
-> 关联：`docs/superpowers/specs/2026-08-23-frontend-correctness-closure-design.md`（OpenCV 双目
+> 关联：`docs/archive/superpowers/specs/2026-08-23-frontend-correctness-closure-design.md`（OpenCV 双目
 > 适配层，同一“核心保持无第三方类型、适配层隔离、应用层编排”方案在这里被复用到另外两个模块）；
 > `docs/acoustic-optic-slam-platform-architecture-2026-08-17.md` 第 20 节（本文档处理的两项都是
 > 该节明确列出的“延后到实施计划用实测选择”项：“第一版图优化库”“TSDF/occupancy 的具体实现库”，

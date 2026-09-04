@@ -416,7 +416,7 @@ class OnlineAssistPipeline::Impl {
   // + state 100Hz) that's up to ~145 calls/sec. Without throttling, each
   // one drove a full HMI overlay render + JSON status rebuild in
   // AssistOutputSink::Publish, none of which is free -- see
-  // docs/rov-realtime-closed-loop-code-review-2026-08-27.md finding C1.
+  // docs/archive/rov-realtime-closed-loop-code-review-2026-08-27.md finding C1.
   // Internal tracking state (fusion_, pending_*, last_*_capture_s_) is
   // still updated by the caller before this runs regardless of throttling;
   // only the actual publish to `sink_` is rate-limited.

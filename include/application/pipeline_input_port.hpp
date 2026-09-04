@@ -3,7 +3,7 @@
 // through PumpEvents (event_pump.hpp) -- this is what lets algorithm code
 // stay unaware of where its input came from. Implementations must never
 // leak MCAP/ROS2/vendor SDK types back out through this interface (see
-// docs/superpowers/plans/2026-08-24-live-replay-unified-ingress.md section
+// docs/archive/superpowers/plans/2026-08-24-live-replay-unified-ingress.md section
 // 4/1.1).
 #pragma once
 

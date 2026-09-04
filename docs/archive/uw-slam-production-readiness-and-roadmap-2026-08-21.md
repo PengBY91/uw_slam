@@ -8,7 +8,7 @@
 
 本文回答两个问题：当前仓库距离“水下声光融合、SLAM、重建研发团队可长期依赖的生产
 与测试工具链”还有多远，以及应该按什么顺序补齐。它不替代
-[长期架构设计](./acoustic-optic-slam-platform-architecture-2026-08-17.md)；架构文档定义
+[长期架构设计](../acoustic-optic-slam-platform-architecture-2026-08-17.md)；架构文档定义
 长期边界，本文负责记录当前差距、阶段优先级和验收门。
 
 ## 1. 执行摘要

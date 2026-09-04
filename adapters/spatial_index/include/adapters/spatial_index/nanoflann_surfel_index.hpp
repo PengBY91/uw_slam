@@ -8,7 +8,7 @@
 // rule allows to depend on everything) is meant to construct this and
 // inject it into a SurfelMap.
 //
-// docs/superpowers/specs/2026-08-23-solver-and-mapping-oss-adoption.md
+// docs/archive/superpowers/specs/2026-08-23-solver-and-mapping-oss-adoption.md
 // §6.2/§5.2 is the design this implements — nanoflann accelerates
 // SurfelMap's existing FindNearest/CarveFreeSpace scans, it does not
 // change SurfelMap's semantics or replace its Surfel representation.

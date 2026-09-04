@@ -28,7 +28,7 @@ message ImageFrame {
   // stereo_optical_depth_frontend, stereo_landmark_vo_frontend) assume
   // rectified input and compute depth/disparity accordingly, but do not
   // check this flag, and only synthetic generators set it (always to
-  // true). See docs/uw-slam-production-readiness-and-roadmap-2026-08-21.md
+  // true). See docs/archive/uw-slam-production-readiness-and-roadmap-2026-08-21.md
   // P1 ("建立去畸变和双目极线校正，明确 raw/rectified 图像契约") for the
   // planned enforcement work.
   bool is_rectified = 7;

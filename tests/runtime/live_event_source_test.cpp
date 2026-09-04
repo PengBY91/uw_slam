@@ -262,7 +262,7 @@ TEST(LiveEventSource, CameraDropOldestKeepsTheTwoNewestEvents) {
   EXPECT_EQ(stats.mapping.dropped_oldest_count, 1u);
 }
 
-// docs/rov-realtime-closed-loop-code-review-2026-08-27.md findings B3/C3:
+// docs/archive/rov-realtime-closed-loop-code-review-2026-08-27.md findings B3/C3:
 // lanes had capacity + overflow policy but no max-residence-time dimension
 // -- a message already past the system's own data-age budget would still
 // be fully handed to the (potentially expensive) consumer before being

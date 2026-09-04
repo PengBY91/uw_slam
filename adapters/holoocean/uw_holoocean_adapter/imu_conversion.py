@@ -1,6 +1,6 @@
 """HoloOcean IMUSensor reading -> canonical uw.domain.ImuSample conversion —
 the raw-IMU counterpart to camera_conversion.py/state_conversion.py. No
-frontend in this repo consumes IMU data yet (see docs/uw-slam-production-
+frontend in this repo consumes IMU data yet (see docs/archive/uw-slam-production-
 readiness-and-roadmap-2026-08-21.md P1/P2); this exists so a real IMU
 stream can be recorded now.
 """

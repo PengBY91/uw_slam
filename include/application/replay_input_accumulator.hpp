@@ -1,7 +1,7 @@
 // Turns an ordered CanonicalEvent stream (from any EventSource -- MCAP
 // replay today, a live SDK source later) into the flat, identity-validated
 // ReplayInputData that RunReplayPipeline's existing solve/map/evaluate
-// logic consumes. See docs/superpowers/plans/2026-08-24-live-replay-
+// logic consumes. See docs/archive/superpowers/plans/2026-08-24-live-replay-
 // unified-ingress.md Task 4: this replaces RunReplayPipeline's old
 // `capture_time / 0.2s` keyframe-id derivation -- every identity here comes
 // from a wire field (ObservationHeader.observation_id, MeasurementEvidence.

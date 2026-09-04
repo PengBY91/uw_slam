@@ -1,7 +1,7 @@
 """rclpy wrapper closing the realtime loop's scoring leg: subscribes BOTH
 `/uw/sim/ground_truth` and `/uw/hmi/status`, drives one `TaskScorer`, and
 periodically writes its report to disk -- the piece `realtime_gate.py`'s
-`_run_scorer_process` was missing (see docs/rov-realtime-closed-loop-code-
+`_run_scorer_process` was missing (see docs/archive/rov-realtime-closed-loop-code-
 review-2026-08-27.md finding A3). This is the ONE process in the realtime
 closed loop allowed to see ground truth (SIM-ARCH-002/SYS-ARCH-003) -- see
 `task_scorer.py`'s own docstring.
@@ -11,7 +11,7 @@ Thin and intentionally NOT unit tested directly here, same status as
 install. `hmi_status_bridge.parse_track_observation` and `TaskScorer` itself
 are the portable, tested pieces this module drives.
 
-Clock-domain note (mirrors docs/rov-realtime-closed-loop-code-review-2026-
+Clock-domain note (mirrors docs/archive/rov-realtime-closed-loop-code-review-2026-
 08-27.md finding A1, same root cause, same fix shape, reimplemented in
 Python since this module cannot depend on the C++ `adapters` library):
 `TaskScorer.observe_truth`/`observe_assist` both feed one internal "when did

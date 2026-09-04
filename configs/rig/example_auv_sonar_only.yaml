@@ -1,4 +1,4 @@
-# 求解器规模基准专用（docs/superpowers/specs/2026-08-23-solver-and-mapping-oss-
+# 求解器规模基准专用（docs/archive/superpowers/specs/2026-08-23-solver-and-mapping-oss-
 # adoption.md §9/§11.2）：rig/example_auv.yaml 去掉 cameras 块和两个相机的
 # frame_tree 条目，只保留 IMU/声呐/深度。
 #

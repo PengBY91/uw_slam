@@ -1,4 +1,4 @@
-# 求解器基准专用的规模压力场景（docs/superpowers/specs/2026-08-23-solver-and-
+# 求解器基准专用的规模压力场景（docs/archive/superpowers/specs/2026-08-23-solver-and-
 # mapping-oss-adoption.md §11.2）：跟 scenario/synthetic_smoke.yaml 逐字段相同，
 # 只放大 num_keyframes——synth_bag_gen.cpp 里 theta = (i/(num_keyframes-1)) *
 # arc_radians，轨迹参数化本来就是按 [0,1] 归一化再乘 arc_radians，不随

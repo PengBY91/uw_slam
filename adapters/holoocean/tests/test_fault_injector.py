@@ -141,7 +141,7 @@ def test_apply_thruster_fault_is_a_no_op_when_no_fault_configured():
     assert apply_thruster_fault(command, None) == command
 
 
-# docs/rov-realtime-closed-loop-code-review-2026-08-27.md finding B4: visual/
+# docs/archive/rov-realtime-closed-loop-code-review-2026-08-27.md finding B4: visual/
 # sonar degradation used to be a static per-run parameter, not a runtime-
 # schedulable fault with start/duration/recovery like the timing/outage
 # faults above already were.

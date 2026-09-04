@@ -87,7 +87,7 @@ struct HoloOceanSonarCalibration {
 // sound_speed_assumption fields ValidateCanonicalEvent requires -- omitting
 // those is a real, previously-hit failure mode (silently rejects every
 // sonar event with "sonar range and field-of-view geometry must be finite
-// and ordered"; see docs/superpowers/plans/2026-08-24-acoustic-optic-
+// and ordered"; see docs/archive/superpowers/plans/2026-08-24-acoustic-optic-
 // online-tracking.md Task 8 notes).
 uw::domain::SonarFrame ConvertHoloSonar(const RawHoloSonar& raw,
                                          const HoloOceanSonarCalibration& calibration,

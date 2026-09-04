@@ -1,4 +1,4 @@
-// Standalone integration check (docs/superpowers/plans/2026-08-24-live-
+// Standalone integration check (docs/archive/superpowers/plans/2026-08-24-live-
 // replay-unified-ingress.md Task 6): the same ordered CanonicalEvent
 // sequence, delivered through McapEventSource (replay) and a trivial
 // in-memory EventSource (standing in for a future vendor SDK live source),

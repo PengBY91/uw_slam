@@ -1,4 +1,4 @@
-// Regression coverage for docs/rov-realtime-closed-loop-code-review-
+// Regression coverage for docs/archive/rov-realtime-closed-loop-code-review-
 // 2026-08-27.md finding A1: OnlineAssistPipelineDependencies::now must
 // track HoloOcean's CLOCK_DOMAIN_SIMULATION capture times, not wall time
 // directly, or every staleness check downstream sees an astronomical age.

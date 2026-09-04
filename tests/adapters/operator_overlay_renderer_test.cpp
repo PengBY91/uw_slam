@@ -47,7 +47,7 @@ uw::domain::SonarFrame MakeSonarViewFrame() {
 
 // Single SONAR-only track, publish_time exactly 120ms after last_capture_time,
 // and a SUSPECT/visual_unavailable system health -- matches the exact label
-// strings from docs/superpowers/plans/2026-08-24-acoustic-optic-online-
+// strings from docs/archive/superpowers/plans/2026-08-24-acoustic-optic-online-
 // tracking.md Task 7's own example test.
 uw::domain::OperatorAssistState MakeDegradedAssistState() {
   uw::domain::OperatorAssistState state;

@@ -12,7 +12,7 @@ import "uw/domain/observation.proto";
 // summary between two keyframes (delta pose/velocity/covariance/bias) —
 // this message is the raw, unprocessed per-tick reading a preintegration
 // frontend would consume to build that summary. No such frontend exists in
-// this repo yet (see docs/uw-slam-production-readiness-and-roadmap-
+// this repo yet (see docs/archive/uw-slam-production-readiness-and-roadmap-
 // 2026-08-21.md P1/P2); this message exists so a real IMU stream can be
 // recorded now and consumed once one does.
 //

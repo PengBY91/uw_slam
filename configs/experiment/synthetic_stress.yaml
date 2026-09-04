@@ -2,7 +2,7 @@
 # scenario 换成 synthetic_stress.yaml（1000 关键帧），rig 换成
 # example_auv_sonar_only.yaml（不含相机——见该文件注释：稠密双目/acoustic-optic
 # 融合是逐像素处理，会在这个关键帧数量级下压过求解器本身耗时，把对比数据完全
-# 淹没）。见 docs/superpowers/specs/2026-08-23-solver-and-mapping-oss-adoption.md
+# 淹没）。见 docs/archive/superpowers/specs/2026-08-23-solver-and-mapping-oss-adoption.md
 # §6.1.1/§9、tools/bench/solver_benchmark.sh。
 #
 # gates.require_converged 显式关闭：这是一个基准/诊断场景，不是质量门禁——是否收敛

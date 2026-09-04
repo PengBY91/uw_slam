@@ -1,4 +1,4 @@
-// docs/rov-realtime-closed-loop-code-review-2026-08-27.md finding B2: this
+// docs/archive/rov-realtime-closed-loop-code-review-2026-08-27.md finding B2: this
 // JSON-building logic previously lived anonymous-namespace-private inside
 // holoocean_realtime_sink.cpp with zero test coverage (that whole file was
 // only ever compile-verified against a real ROS2 toolchain, never unit

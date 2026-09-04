@@ -12,7 +12,7 @@
 
 ## 依据、边界与执行规则
 
-- 设计依据：`docs/superpowers/specs/2026-08-23-frontend-correctness-closure-design.md`。若实施中发现本计划与该规格冲突，以规格为准并先更新计划，不在代码里静默改变语义。
+- 设计依据：`docs/archive/superpowers/specs/2026-08-23-frontend-correctness-closure-design.md`。若实施中发现本计划与该规格冲突，以规格为准并先更新计划，不在代码里静默改变语义。
 - 三个单元必须顺序完成；单元 2 依赖 rectified bundle/derived rig，单元 3 依赖单元 2 的 VO 失败计数和状态语义。
 - `external_repos/` 只读；OpenCV 类型只允许出现在 `adapters/opencv/` 的私有实现和该适配器自己的测试中。
 - 每个红灯步骤只运行指定测试并确认失败原因就是缺失行为；实现后先跑相同测试，再跑该 target 全部测试。
@@ -1061,7 +1061,7 @@ git commit -m "feat: gate replay on real acoustic optic contribution"
 **Files:**
 - Modify: `README.md`
 - Modify: `docs/uw-slam-codebase-reference-2026-08-18.md`
-- Modify: `docs/uw-slam-production-readiness-and-roadmap-2026-08-21.md`
+- Modify: `docs/archive/uw-slam-production-readiness-and-roadmap-2026-08-21.md`
 - Modify: `configs/README.md`
 
 - [ ] **Step 1: 先跑静态边界和格式检查**
@@ -1140,7 +1140,7 @@ ctest --test-dir build -N
 
 ```bash
 git add README.md docs/uw-slam-codebase-reference-2026-08-18.md \
-  docs/uw-slam-production-readiness-and-roadmap-2026-08-21.md configs/README.md
+  docs/archive/uw-slam-production-readiness-and-roadmap-2026-08-21.md configs/README.md
 git commit -m "docs: close frontend correctness implementation"
 ```
 

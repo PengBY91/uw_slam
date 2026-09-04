@@ -130,7 +130,7 @@ message OpticalDepthPriorMeasurement {
   // require both source ImageFrames to have `is_rectified == true`; no
   // frontend currently enforces that flag itself (is_rectified is
   // write-only from synthetic generators as of 2026-08-21 — see
-  // docs/uw-slam-production-readiness-and-roadmap-2026-08-21.md P1 item on
+  // docs/archive/uw-slam-production-readiness-and-roadmap-2026-08-21.md P1 item on
   // establishing a raw/rectified image contract).
   repeated float depth_m = 4 [packed = true];
   repeated float variance_m2 = 5 [packed = true];  // (depth_m units)^2, same optical-frame convention.

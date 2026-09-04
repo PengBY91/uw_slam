@@ -497,7 +497,7 @@ TEST(OnlineAssistPipeline, AllModalitiesSilentReportsAllUnavailable) {
   EXPECT_EQ(latest->system_health().status(), uw::domain::HealthReport::STATUS_UNAVAILABLE);
 }
 
-// docs/rov-realtime-closed-loop-code-review-2026-08-27.md finding C1: every
+// docs/archive/rov-realtime-closed-loop-code-review-2026-08-27.md finding C1: every
 // OnVehicleState call used to call PublishNow() unconditionally, driving a
 // full HMI render + JSON rebuild on every single message -- up to ~145/sec
 // at overload. min_publish_interval_s throttles the actual publish while
@@ -633,7 +633,7 @@ TEST(OnlineAssistPipeline, CalibrationChangeResetsAndRecovers) {
   EXPECT_NE(recovered->system_health().reason_code(), "recovering");
 }
 
-// docs/rov-realtime-closed-loop-code-review-2026-08-27.md finding B5:
+// docs/archive/rov-realtime-closed-loop-code-review-2026-08-27.md finding B5:
 // FUS-HEALTH-002's "recovery must not silently reuse pre-fault cached
 // state" was only ever enforced on a calibration-version change
 // (UpdateRig). A plain sensor dropout+recovery had no equivalent -- this
@@ -656,7 +656,7 @@ TEST(OnlineAssistPipeline, CalibrationChangeResetsAndRecovers) {
 // immediately-reconfirmed hit rather than trusting it unconditionally);
 // it is just not reliably observable as a separate published tick from
 // outside. The counter is what reliably proves the trigger itself fired.
-// docs/rov-realtime-closed-loop-code-review-2026-08-27.md finding A2:
+// docs/archive/rov-realtime-closed-loop-code-review-2026-08-27.md finding A2:
 // realtime_gate.py's acceptance evidence needs non-zero sonar/visual
 // detection counts and a non-zero fused track count, which nothing
 // tracked cumulatively before -- these three counters are what the C++

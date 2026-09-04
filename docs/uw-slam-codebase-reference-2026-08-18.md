@@ -22,7 +22,7 @@ P1 配置校验与 `camera_rectifier` 已用干净构建验证，但尚未提交
 | [`docs/README.md`](./README.md) | 文档路由 | 遇到具体任务应该先读哪份文档、冲突时以谁为准 |
 | [`README.md`](../README.md) | 项目门面 | 这是什么、怎么编译、怎么跑 demo |
 | [`acoustic-optic-slam-platform-architecture-2026-08-17.md`](./acoustic-optic-slam-platform-architecture-2026-08-17.md) | 长期架构设计（已批准） | 系统**应该**长成什么样、为什么这么设计 |
-| [`holoocean-to-acoustic-optic-slam-pipeline-2026-08-05.md`](./holoocean-to-acoustic-optic-slam-pipeline-2026-08-05.md) | 演进中/历史工程方案 | 第一阶段 baseline 如何设计，以及为什么演变成当前架构 |
+| [`holoocean-to-acoustic-optic-slam-pipeline-2026-08-05.md`](./archive/holoocean-to-acoustic-optic-slam-pipeline-2026-08-05.md) | 演进中/历史工程方案 | 第一阶段 baseline 如何设计，以及为什么演变成当前架构 |
 | 本文 | 代码参考 | 代码**现在**长什么样：真实类型、真实函数、真实数据怎么流动 |
 
 架构文档描述的是目标状态，很多设计尚未实现或只实现了一部分；本文只记录"读一遍

@@ -137,7 +137,7 @@ class SensorDegradationSchedule:
     real turbidity events and real sonar multipath/gain events have no
     reason to coincide, and testing them separately exercises the
     single-modality-degraded paths the fault matrix table actually cares
-    about (see docs/rov-realtime-closed-loop-code-review-2026-08-27.md
+    about (see docs/archive/rov-realtime-closed-loop-code-review-2026-08-27.md
     finding B4)."""
 
     visual_windows: Tuple[SensorDegradationWindow, ...] = ()

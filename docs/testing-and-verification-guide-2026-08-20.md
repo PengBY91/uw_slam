@@ -113,7 +113,7 @@ queue_capacity_violations=0 flush_count=1`；同时必须看到 `reference_rejec
 ### 在线声光辅助 gate（真实前端，非计数桩）
 
 跟上面 live ingress gate 的区别：这一个把 `LiveEventSource → PumpEvents` 接的换成
-真正的 `OnlineAssistPipeline`（`docs/superpowers/plans/2026-08-24-acoustic-optic-
+真正的 `OnlineAssistPipeline`（`docs/archive/superpowers/plans/2026-08-24-acoustic-optic-
 online-tracking.md` Task 8），消费端也换成真实的 `OpenCvVisualAssistFrontend` +
 `SonarCfarFrontend`，不是只数包的 `CountingPort`——验证的是"在线闭环真的能把
 合成双目+声呐证据融合成一条 track"，而不只是"消息按速率送达"。
@@ -152,7 +152,7 @@ extrinsics），偏轴角度在两侧不代表同一个物理方向，这个坑�
 
 ### HoloOcean 实时闭环 gate（版本化 manifest、故障注入、truth-isolated 评分）
 
-跟上面两个 gate 的区别：这一整套（`docs/superpowers/plans/2026-08-24-holoocean-realtime-closed-loop.md`）
+跟上面两个 gate 的区别：这一整套（`docs/archive/superpowers/plans/2026-08-24-holoocean-realtime-closed-loop.md`）
 把消费端换成真实的 HoloOcean 仿真器 + 本仓库自己的 C++ ROS2 网关（`holoocean_realtime_node`），而不是
 本机合成生成器——验证的是"版本化 BlueROV2/AI-D/SV1213 场景真的能通过 HoloOcean → ROS2 → 在线算法链跑
 出正确的目标航迹和任务评分"，不只是"消息按速率送达"。这套 gate 分三层，前两层能在本沙箱跑，第三层

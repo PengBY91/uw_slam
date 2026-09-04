@@ -1,7 +1,7 @@
 # ROV 平台落地路线图
 
 > 一年期技术成熟路线图 · 由 ROV 竞赛场景牵引，不是某届赛事的冲刺排期
-> 设计依据：`docs/superpowers/specs/2026-08-24-rov-competition-driven-platform-roadmap-design.md`（状态：设计已确认）
+> 设计依据：`docs/archive/superpowers/specs/2026-08-24-rov-competition-driven-platform-roadmap-design.md`（状态：设计已确认）
 > 草案日期：2026-08-24 · 状态：讨论稿 · 待定案
 > 2026-09-02 修订：合同已签，硬件状态以 `docs/ROV平台参数.md` 为准；本次按 `docs/ROV平台到货前准备工作规格-2026-09-02.md`（下称"准备规格"）PREP-F-01 更新第 2、5、6、9、10 节，并同步第 2 节里已过时的代码基线描述
 
@@ -11,7 +11,7 @@
 
 `uw_slam` 是水下声光感知、定位、地图、录制回放和评测的**通用核心框架与工具链**，不是为某一届 ROV 大赛写的参赛代码。团队当前处于技术沉淀阶段，ROV 比赛是未来一年的牵引场景和阶段性验证目标——用比赛任务倒逼底座尽快接入真实硬件、尽快形成可复盘闭环，而不是反过来让比赛截止日期决定架构该怎么搭。
 
-本文档不替代 `docs/uw-slam-production-readiness-and-roadmap-2026-08-21.md`：后者继续记录长期技术债、成熟度和生产就绪度；本文档负责未来一年、由比赛场景牵引的平台落地节奏。比赛具体日期、正式规则和评分表冻结之后，再另建一份约 2–3 个月的参赛冲刺计划——本文档到那时候不改，冲刺计划是它的下游产物。
+本文档不替代 `docs/archive/uw-slam-production-readiness-and-roadmap-2026-08-21.md`：后者继续记录长期技术债、成熟度和生产就绪度；本文档负责未来一年、由比赛场景牵引的平台落地节奏。比赛具体日期、正式规则和评分表冻结之后，再另建一份约 2–3 个月的参赛冲刺计划——本文档到那时候不改，冲刺计划是它的下游产物。
 
 **团队规模**（2026-08-24 更正）：**3 名全职 + 1 名兼职 + 1 名实习生**，不是早期设计假设的 5 名全职——这是全文最重要的一次更正，第 5、7 节的周计划和人力分工已按这个实际规模重新核算，不是简单打折。同时覆盖软件/算法和机械电气集成；采购、商务与产品运营由外围团队支持。
 
@@ -37,7 +37,7 @@
 ### 2.2 已经设计但尚未打通的关键缺口
 
 - **`BoundedQueue`/`Lane` 四车道有界队列原语已经实现**（`kLocalization`/`kCorrection`/`kMapping`/`kEvidence`，配套 `configs/defaults/platform.yaml` 的 `runtime.lanes`），**但没有真正的调度器把它们串起来**——这正是本文档第 3 节"有界在线运行时"这个方框在代码里的落点。S1 阶段要交付的是把已有原语接上调度循环，不是从零设计队列模型。（2026-09-02 更新：`LiveEventSource` + `OnlineAssistPipeline` 已实现，并于 2026-08-27 在 Windows HoloOcean 上实跑 14 分钟；**未在真机上验证**。）
-- **`apps/replay_demo` 的执行体 `RunReplayPipeline()`（`src/application/replay_pipeline.cpp`，1051 行）是严格的多遍批处理**：按 topic 对同一个 MCAP 文件重复调用 `ReadMcapMessages<T>`（现存代码里至少 10 处独立调用），关键帧身份靠固定 `kKeyframeIntervalS = 0.2` 常量反推（第 339、421 行），全部关键帧处理完才调用一次 `GaussNewtonSolver::Solve()`。这不是"把读 bag 换成读实时 topic"就能解决的，需要把"多遍扫描 + 单次求解"的批处理控制流改造成"单次有序读取 + 增量身份关联"的结构。好消息：frontend/factor_builder/solver 这些数学核心可以原样复用，工作量集中在一个新的输入/编排层。**这项工作已经有具体实施计划**：`docs/superpowers/plans/2026-08-24-live-replay-unified-ingress.md`，TDD 任务分解到文件级别，预计 2–3 周，是 S1 阶段的第一个软件实施包。（2026-09-02 更新：该计划已完成并归档至 `docs/superpowers/plans/archive/`，`replay_pipeline.cpp` 已改为单遍 `MCAP EventSource` 读取，与 live 共用 `event_source.hpp` 契约。）
+- **`apps/replay_demo` 的执行体 `RunReplayPipeline()`（`src/application/replay_pipeline.cpp`，1051 行）是严格的多遍批处理**：按 topic 对同一个 MCAP 文件重复调用 `ReadMcapMessages<T>`（现存代码里至少 10 处独立调用），关键帧身份靠固定 `kKeyframeIntervalS = 0.2` 常量反推（第 339、421 行），全部关键帧处理完才调用一次 `GaussNewtonSolver::Solve()`。这不是"把读 bag 换成读实时 topic"就能解决的，需要把"多遍扫描 + 单次求解"的批处理控制流改造成"单次有序读取 + 增量身份关联"的结构。好消息：frontend/factor_builder/solver 这些数学核心可以原样复用，工作量集中在一个新的输入/编排层。**这项工作已经有具体实施计划**：`docs/archive/superpowers/plans/2026-08-24-live-replay-unified-ingress.md`，TDD 任务分解到文件级别，预计 2–3 周，是 S1 阶段的第一个软件实施包。（2026-09-02 更新：该计划已完成并归档至 `docs/archive/superpowers/plans/`，`replay_pipeline.cpp` 已改为单遍 `MCAP EventSource` 读取，与 live 共用 `event_source.hpp` 契约。）
 - **ROS2 adapter 目前只有 HoloOcean 声呐桥接节点是真实代码**（编译通过、从未接过真实仿真数据流），SVIn 桥接节点整个类体注释掉、从未编译。面向真实硬件的 adapter 代码一行都没有，需要新写——但这正是 `providers.hpp` 接口存在的意义，是新增工作，不是重新设计接口。（2026-09-02 更新：HoloOcean 实时网关已接真实仿真数据流；真机 adapter 清单改为 **MAVLink adapter（BlueROV2/ArduSub 遥测、命令、外部导航回灌，准备规格 PREP-C-03）排在最前**，因为 ArduSub SITL 让它不等到货就能开发和验证；其后是声呐 SDK 接收端（PREP-B-04）、HWT9053 IMU 数据链（PREP-D-02/D-03）、相机流接收（PREP-E-04）。AI-D 相机 adapter 已不在方案内。）
 - **`HealthReport`/`HealthStatus` protobuf 已定义，但全仓库零生产者/消费者**——本文档第 8 节要求的"健康/延迟/丢帧可观测"，需要真正把这条数据通路点亮，不是新发明格式。（2026-09-02 更新：声呐 CFAR、双目深度、回环前端和 HoloOcean 状态 JSON 已产出 `HealthReport`；真机侧的生产者——MAVLink 外部导航、IMU 转发服务——随对应 adapter 新增。）
 
@@ -342,4 +342,4 @@ SLAM、地图或智能辅助功能必须通过对照测试证明至少改善搜�
 
 ---
 
-*草案 · 供内部讨论，不构成采购或合同承诺 · 依据 `docs/ROV综合选型采购方案.docx`、`docs/superpowers/specs/2026-08-24-rov-competition-driven-platform-roadmap-design.md`、`docs/superpowers/plans/archive/2026-08-24-live-replay-unified-ingress.md`（已归档）、`docs/ROV平台参数.md`、`docs/ROV平台到货前准备工作规格-2026-09-02.md`*
+*草案 · 供内部讨论，不构成采购或合同承诺 · 依据 `docs/ROV综合选型采购方案.docx`、`docs/archive/superpowers/specs/2026-08-24-rov-competition-driven-platform-roadmap-design.md`、`docs/archive/superpowers/plans/2026-08-24-live-replay-unified-ingress.md`（已归档）、`docs/ROV平台参数.md`、`docs/ROV平台到货前准备工作规格-2026-09-02.md`*

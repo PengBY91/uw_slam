@@ -1,4 +1,4 @@
-// docs/rov-realtime-closed-loop-code-review-2026-08-27.md finding B6:
+// docs/archive/rov-realtime-closed-loop-code-review-2026-08-27.md finding B6:
 // docs/traceability/rov-realtime-closed-loop.csv's FUS-OUT-002 row cited
 // "tests/application/*" (a glob, not a real test) for LatestAssistSink's
 // replace-latest guarantee -- no test actually exercised it directly. This

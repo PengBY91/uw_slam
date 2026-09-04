@@ -853,7 +853,7 @@ TEST(Config, RejectsUnsafeAssociationAndTrackerThresholds) {
 }
 
 // estimation.solver at the experiment-file level (not nested under a
-// separate defaults/*.yaml) — see docs/superpowers/specs/2026-08-23-solver-
+// separate defaults/*.yaml) — see docs/archive/superpowers/specs/2026-08-23-solver-
 // and-mapping-oss-adoption.md §7 and configs/README.md's "第三个例外".
 TEST(Config, ExperimentLevelEstimationSolverOverridesTheDefault) {
   const auto path = std::filesystem::temp_directory_path() / "uw_solver_override_experiment.yaml";

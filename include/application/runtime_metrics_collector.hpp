@@ -2,7 +2,7 @@
 // (run_report.py) needs to render an actual pass/fail verdict --
 // previously nothing in the C++ gateway populated any of this, so
 // run_gate() returned a 4-field stub and evaluate_gate's first lookup
-// crashed (see docs/rov-realtime-closed-loop-code-review-2026-08-27.md
+// crashed (see docs/archive/rov-realtime-closed-loop-code-review-2026-08-27.md
 // findings A2). This is a SCOPED first version: result/state age
 // percentiles, deadline-miss fraction, queue backpressure stats (already
 // computed by LiveEventSource per finding B2, just not aggregated over a
@@ -126,7 +126,7 @@ class RuntimeMetricsCollector {
   // collector's concern (realtime_gate.py's run_gate() already has them
   // and merges this object's fields into its own report dict). Fields
   // this collector never got a sample for are OMITTED (not zero-filled)
-  // -- evaluate_gate() (see docs/rov-realtime-closed-loop-code-review-
+  // -- evaluate_gate() (see docs/archive/rov-realtime-closed-loop-code-review-
   // 2026-08-27.md finding A2's earlier fix) already turns a missing
   // required field into a clean, named GateFailure rather than crashing,
   // which is the correct, honest outcome for a metric this collector

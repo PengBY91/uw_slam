@@ -1,4 +1,4 @@
-# RunManifest provenance (docs/uw-slam-production-readiness-and-roadmap-
+# RunManifest provenance (docs/archive/uw-slam-production-readiness-and-roadmap-
 # 2026-08-21.md section 5.6): captured once at CMake configure time, not at
 # build/run time, so a fresh commit needs a reconfigure (not just a rebuild)
 # to show up in a manifest — acceptable for v1, and simpler than plumbing a

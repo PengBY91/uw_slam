@@ -2,9 +2,9 @@
 
 > 逐文件、逐阶段拆解 ROV 在线驾驶辅助（HoloOcean ROS2 话题 → 实时网关 → 四车道
 > 事件源 → 在线融合管线 → HMI/飞手回注）的代码与逻辑，是
-> [两条主线代码走读](./uw-slam-two-mainlines-walkthrough-2026-08-26.md)主线二部分的
-> 深化版，与[离线 SLAM 管线深度走读](./uw-slam-offline-slam-pipeline-deep-dive-2026-08-28.md)
-> （主线一）配对。
+> 与[离线 SLAM 管线深度走读](./uw-slam-offline-slam-pipeline-deep-dive-2026-08-28.md)
+> （主线一）配对；两条主线共享的消息模型、规范 topic 与统一事件契约见
+> [新人上手指南](./uw-slam-newcomer-guide.md)的「两条主线共享的地基」一节。
 >
 > **最重要的前提**（CLAUDE.md 原话）：这条线的代码写完了，但**没在真实
 > HoloOcean/UE5 上跑过**（本机没装仿真器）。别把"有实现 + 有单测"当成

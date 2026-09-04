@@ -158,7 +158,7 @@ AssociationAuditResult AcousticOpticAssociator::Associate(
       // picks up a second-order sec(phi) correction — so on a locally flat
       // target, several arc-sample pixels legitimately tie on geometric
       // score even though there is no real competing hypothesis (see
-      // docs/uw-slam-production-readiness-and-roadmap-2026-08-21.md 2.3 for
+      // docs/archive/uw-slam-production-readiness-and-roadmap-2026-08-21.md 2.3 for
       // the investigation that found this: clean_textured/elevation_stress
       // scenarios were rejecting 100% of associations as AMBIGUOUS despite
       // being the "should just work" cases). What actually matters for

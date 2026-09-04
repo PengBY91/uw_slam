@@ -196,7 +196,7 @@ uw_apply_library_defaults(application)
 if(UW_BUILD_CERES_SOLVER)
   # replay_pipeline.cpp #ifdef-guards its Ceres call site on this macro so
   # the same source file builds correctly whether or not Ceres is present
-  # (see docs/superpowers/specs/2026-08-23-solver-and-mapping-oss-adoption.md
+  # (see docs/archive/superpowers/specs/2026-08-23-solver-and-mapping-oss-adoption.md
   # §8: selecting solver_backend: ceres_v1 in a binary built without this
   # must fail loudly at startup, not silently fall back).
   target_compile_definitions(application PRIVATE UW_HAVE_CERES_SOLVER)

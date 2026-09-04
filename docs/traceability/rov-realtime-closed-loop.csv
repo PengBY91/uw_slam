@@ -118,10 +118,10 @@ SYS-IN-003,n/a (architecture),include/runtime/canonical_event_validation.hpp,tes
 SYS-PER-001,n/a (architecture),"include/frontends/target_tracker.hpp, schemas/proto/uw/domain/target.proto (TargetTrack)",tests/frontends/target_tracker_test.cpp,tests/frontends/target_tracker_test.cpp,verified
 SYS-PER-002,n/a (architecture),"include/application/online_assist_pipeline.hpp (DenseDepthProvider, dense.enabled gate)",tests/application/online_assist_pipeline_test.cpp,tests/application/online_assist_pipeline_test.cpp,verified
 SYS-PER-003,n/a (architecture),adapters/opencv/include/adapters/operator_overlay_renderer.hpp (SOURCE label: ACOUSTIC_OPTIC/VISUAL/SONAR),tests/adapters/operator_overlay_renderer_test.cpp,tests/adapters/operator_overlay_renderer_test.cpp,verified
-SYS-PROC-001,n/a (hardware),AI-D hardware SDK gate,n/a,docs/superpowers/plans/2026-08-24-rov-realtime-closed-loop-master.md,gated
-SYS-PROC-002,n/a (hardware),SV1213 hardware SDK gate,n/a,docs/superpowers/plans/2026-08-24-rov-realtime-closed-loop-master.md,gated
-SYS-PROC-003,n/a (hardware),BlueROV2 hardware interface gate,n/a,docs/superpowers/plans/2026-08-24-rov-realtime-closed-loop-master.md,gated
-SYS-PROC-004,n/a (hardware),hardware device acceptance policy,n/a,docs/superpowers/plans/2026-08-24-rov-realtime-closed-loop-master.md,gated
+SYS-PROC-001,n/a (hardware),AI-D hardware SDK gate,n/a,docs/archive/superpowers/plans/2026-08-24-rov-realtime-closed-loop-master.md,gated
+SYS-PROC-002,n/a (hardware),SV1213 hardware SDK gate,n/a,docs/archive/superpowers/plans/2026-08-24-rov-realtime-closed-loop-master.md,gated
+SYS-PROC-003,n/a (hardware),BlueROV2 hardware interface gate,n/a,docs/archive/superpowers/plans/2026-08-24-rov-realtime-closed-loop-master.md,gated
+SYS-PROC-004,n/a (hardware),hardware device acceptance policy,n/a,docs/archive/superpowers/plans/2026-08-24-rov-realtime-closed-loop-master.md,gated
 SYS-RT-001,n/a (architecture),"include/runtime/bounded_queue.hpp, include/runtime/live_event_source.hpp",tests/runtime/live_event_source_test.cpp,tests/runtime/live_event_source_test.cpp,verified
 SYS-RT-002,rov_realtime_nominal,include/runtime/live_event_source.hpp (drop-oldest overflow policy),tests/runtime/live_event_source_test.cpp,tests/runtime/live_event_source_test.cpp,verified
 SYS-RT-003,rov_realtime_nominal,adapters/holoocean/uw_holoocean_adapter/run_report.py (rss_growth_after_warmup_mib gate),adapters/holoocean/tests/test_run_report.py,adapters/holoocean/tests/test_run_report.py,implemented
