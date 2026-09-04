@@ -15,6 +15,17 @@
 | [HoloOcean 实时闭环仿真规格](./specifications/holoocean-realtime-closed-loop-simulation-spec.md) | 仿真资产、传感器、时间、随机化、故障、真值隔离和仿真验收 |
 | [ROV 声光在线融合链路规格](./specifications/rov-acoustic-optic-online-fusion-spec.md) | 在线输入、校验、缓存、同步、前端、关联、航迹、输出与健康契约 |
 
+```mermaid
+flowchart TB
+    R["正式赛事规则（未冻结）"] --> S1["ROV 竞赛在线系统需求规格"]
+    S1 --> S2["HoloOcean 实时闭环仿真规格"]
+    S1 --> S3["ROV 声光在线融合规格"]
+    S2 --> LOW["路线图 / 实施计划 / 配置 / 测试<br/>不得覆盖上位规格的系统边界、接口与验收要求"]
+    S3 --> LOW
+    style R fill:#e8eaf6,stroke:#3f51b5
+    style S1 fill:#e8eaf6,stroke:#3f51b5
+```
+
 三者的权威顺序是：正式赛事规则 → 在线系统需求规格 → 两份下位规格 → 路线图、实施计划、
 配置和测试。正式规则未冻结期间，两项基线任务是“寻找养殖区”和“按规定路径巡检水下
 结构物”；其他任务作为规则驱动扩展。
@@ -22,7 +33,9 @@
 ## 从这里开始
 
 - **第一次接触项目**：先读根目录 [README](../README.md)，运行合成数据 Demo，再回到
-  本页选择专题资料。
+  本页选择专题资料。想先建立全局印象，看根 README 里的
+  [代码与框架逻辑图](../README.md#一张图看懂代码与框架)（图片源文件
+  [`docs/architecture.png`](./architecture.png)）。
 - **准备作为新贡献者动手改代码**：读[新人上手指南](./uw-slam-newcomer-guide.md)，
   它按调用链把 `synth_bag_gen → replay_demo` 整条流程串起来，并给出"改某类代码该看
   哪个文件、对应哪类测试"的速查表。
@@ -50,6 +63,7 @@
 | 配置或复现实验 | [配置说明](../configs/README.md) | [根 README](../README.md#运行端到端-demo) |
 | 验证某项功能、判断该加载哪个运行环境 | [测试与验证指南](./testing-and-verification-guide-2026-08-20.md) | `tools/verify_pipeline.sh` |
 | 评估生产就绪度、制定团队里程碑和投入计划 | [生产就绪度审计与阶段路线图](./uw-slam-production-readiness-and-roadmap-2026-08-21.md) | [长期架构设计](./acoustic-optic-slam-platform-architecture-2026-08-17.md) |
+| 给某一节文档补一张图、或想知道哪些段落已判定「不值得画」 | [文档图示化候选清单](./diagram-backlog-2026-09-04.md) | [代码与框架逻辑图](../README.md#一张图看懂代码与框架) |
 | 查合同平台参数、规划到货前的仿真/SLAM/飞控/IMU 准备工作 | [ROV 平台到货前准备工作规格](./ROV平台到货前准备工作规格-2026-09-02.md) | [ROV 平台参数确认表](./ROV平台参数.md)、[ROV 平台落地路线图](./ROV平台落地路线图.md) |
 | 实现 IMU 预积分因子、扩展估计器的速度/偏置状态 | [IMU 预积分设计短文](./imu-preintegration-design-2026-09-03.md) | [ROV 平台到货前准备工作规格](./ROV平台到货前准备工作规格-2026-09-02.md) PREP-B-01 |
 | 选型/设计双目相机机械与电气方案（交采购、结构） | [双目安装约束](./calibration/stereo-mounting-constraints.md) | [双目到货验收与标定](./calibration/stereo-acceptance.md) |

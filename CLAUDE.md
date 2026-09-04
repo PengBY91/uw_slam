@@ -147,7 +147,8 @@ ctest --test-dir build -R integration.acoustic_optic_scenario_matrix_determinism
 - `PressureDepthMeasurement.depth_m` 是**正向下**的水深量；仓库 world/body frame 是
   Z-up，所以位姿 z 使用 `-depth_m`。`OpticalDepthPriorMeasurement`、
   `FusedDepthMeasurement` 和关联记录中的 `depth_m` 则是相机 optical frame 的
-  **正向前**距离。字段同名但坐标与符号语义不同，不要直接混用。
+  **正向前**距离。字段同名但坐标与符号语义不同，不要直接混用。两条约定画在同一张
+  图上：`docs/frames-and-sign-conventions.svg`（README「坐标系与符号约定」一节引用）。
 - `ValidateExperimentConfigSelections()` 会拒绝未知的 frontend/map backend/estimator/
   detector/solver 标识符。真正驱动分支的选择器有三个：`estimator_mode`
   （相对位姿来源）、`frontends.landmark_detector`（VO 检测器双模）、
@@ -213,7 +214,7 @@ ctest --test-dir build -R integration.acoustic_optic_scenario_matrix_determinism
   （`T_body = T_cam_body * T_cam * T_cam_body^-1`）才能喂给以 body frame 定义的
   相对位姿因子；第一版把方向搞反，单元测试全绿但实跑 demo 时 ATE 停在 6.67m 不收敛，
   修对之后降到 0.061m——这也是**实跑 demo** 而非单元测试才发现的问题，同一类坑见
-  上面的 z 轴 anchor bug。
+  上面的 z 轴 anchor bug。共轭方向见 `docs/frames-and-sign-conventions.svg` 右半张。
 - **声光关联的并列几何分数不必然表示两个真实假设**：近 boresight 时 elevation 对
   bearing 无影响、对 range 只有二阶影响，同一平面上的弧采样点会合理打平。关联器只有
   在前两名深度也不满足 `depth_agreement_sigma` 合并方差门时才返回 `AMBIGUOUS`；不要

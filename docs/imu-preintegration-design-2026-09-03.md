@@ -28,6 +28,32 @@
 - **扰动模型**：右扰动 `R ← R·Exp(δφ)`，与 `rigid_transform_fit.hpp`、`camera_body_conjugation.hpp` 注释一致；残差里位姿块仍用现有 7 参数 `[t, q_xyzw]` 布局。
 - **证据**：`estimated_noise_scale = 1.0`（估计器可再缩放）；`source_observations` 只放区间内首末样本 id（200 Hz × 数秒否则上百条）；`quality_features`：`sample_count`、`delta_time_s`、`max_hold_s`、`mean_rate_hz`、`held_backwards_at_start`、`lever_arm_m`。
 
+下图把本节几个容易混淆的时间跨度画在同一条轴上——**区间**（关键帧边界之间）、
+**保持段**（相邻两个 IMU 样本之间）、**静止预卷**（首个边界之前）各自有独立的
+拒绝规则：
+
+```text
+                静止预卷 ≥ 0.5 s                    关键帧区间 i→j
+     |<--------------------------->|<------------------------------------>|
+IMU  ●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●   ●●●●●●●●●●●●●●●●
+     200 Hz                        ↑                    ↑  ↑             ↑
+                                   |                    |__|             |
+                          /keyframe/boundary            保持段 > 50 ms   /keyframe/boundary
+                          header.capture_time =         → imu_gap_too_large  (下一个边界)
+                          唯一的预积分边界时间             整条边被拒，不插值补桥
+
+     静止判据（连续保持 ≥ 0.5 s）：|‖a‖ − g| < 0.05 m/s² 且 ‖ω‖ < 0.01 rad/s
+     通过 → v₀ = 0；bg₀ = 静止段陀螺均值；ba₀ = 静止段平均比力 − 重力方向预测比力
+            三者由独立惯性先验残差约束，不把整个惯性块固定
+     失败 → v₀ = 0 但施加宽先验 σ_v = 0.5 m/s，
+            并把 initialization = wide_velocity_prior 写进运行诊断
+            （「初值为零」≠「已知为零」）
+
+     区间长度门：≤ 1 ms 或 > 5 s → interval_out_of_range
+     样本数门  ：< min_samples(2) → too_few_imu_samples
+     连续失败 ≥ 3 次 → Health() = STATUS_UNAVAILABLE
+```
+
 ## 3. Frontend 的 fail-closed 规则
 
 | 条件 | 结果 | `last_rejection_reason()` |
@@ -39,6 +65,26 @@
 | 任一保持段 > `max_sample_gap_s`（默认 50 ms = 200 Hz 丢 10 样本） | 拒绝 | `imu_gap_too_large` |
 | 区间内样本数 < `min_samples`（默认 2） | 拒绝 | `too_few_imu_samples` |
 | 连续失败 ≥ 3 | `Health()` = `STATUS_UNAVAILABLE` | — |
+
+```mermaid
+flowchart LR
+    I["一个关键帧区间的 IMU 样本"] --> C1{"区间长度<br/>1 ms ~ 5 s?"}
+    C1 -->|否| X1["interval_out_of_range"]
+    C1 -->|是| C2{"rig sigma_gyro_c / sigma_accel_c<br/>> 0 且有限?"}
+    C2 -->|否| X2["rig_imu_noise_invalid"]
+    C2 -->|是| C3{"require_extrinsic 且缺 imu_link 边?"}
+    C3 -->|是| X3["imu_extrinsic_missing"]
+    C3 -->|否| C4{"样本 3 维且有限?"}
+    C4 -->|否| X4["imu_sample_malformed"]
+    C4 -->|是| C5{"任一保持段 > max_sample_gap_s?"}
+    C5 -->|是| X5["imu_gap_too_large<br/>不补桥、不插值：<br/>缺数据就没有这条边"]
+    C5 -->|否| C6{"样本数 ≥ min_samples?"}
+    C6 -->|否| X6["too_few_imu_samples"]
+    C6 -->|是| OK["产出预积分证据<br/>Δ 量在 from_keyframe 的 base_link 系"]
+    X1 --> F["连续失败 ≥ 3<br/>→ Health() = STATUS_UNAVAILABLE"]
+    X5 --> F
+    X6 --> F
+```
 
 不做任何"常加速度补桥"或插值：缺数据就没有这条边，由声呐配准/深度/航向兜底。
 

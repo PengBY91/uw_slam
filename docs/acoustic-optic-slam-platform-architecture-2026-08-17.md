@@ -547,20 +547,45 @@ Windows/Linux HoloOcean sonar 问题需要 sensor conformance test：固定 scen
 
 系统状态：
 
-~~~text
-BOOT → WARMUP → INITIALIZING → TRACKING
-                                ↓
-                             DEGRADED
-                                ↓
-                              LOST
-                                ↓
-                          RELOCALIZING
-                                ↓
-                           RECOVERING
-                                └──→ TRACKING
-~~~
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> BOOT
+    BOOT --> WARMUP
+    WARMUP --> INITIALIZING
+    INITIALIZING --> TRACKING
+    TRACKING --> DEGRADED
+    DEGRADED --> LOST
+    LOST --> RELOCALIZING
+    RELOCALIZING --> RECOVERING
+    RECOVERING --> TRACKING
+    DEGRADED --> TRACKING : 待确认，原文未画此回边
+```
 
-每个 modality 独立维护 `HEALTHY → SUSPECT → UNAVAILABLE → RECOVERING → HEALTHY`。Mapping 独立维护 `FULL → THROTTLED → KEYFRAME_ONLY → PAUSED`。建图状态不得直接决定定位状态。
+每个 modality 独立维护一份自己的健康状态机：
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    HEALTHY --> SUSPECT
+    SUSPECT --> UNAVAILABLE
+    UNAVAILABLE --> RECOVERING
+    RECOVERING --> HEALTHY
+    note left of HEALTHY : 每个 modality 独立维护一份
+```
+
+Mapping 也独立维护一份，且**建图状态不得直接决定定位状态**：
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    FULL --> THROTTLED
+    THROTTLED --> KEYFRAME_ONLY
+    KEYFRAME_ONLY --> PAUSED
+    note left of FULL : mapping 独立维护，不得直接决定定位状态
+```
+
+三张图正交的含义就是：任何一张图的状态转移都不能作为另外两张图转移的唯一依据。
 
 状态转换必须使用时间窗口、不同进入/退出阈值、最小保持时间、reason code 和触发证据，避免权重在阈值附近震荡。
 

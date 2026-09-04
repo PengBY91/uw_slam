@@ -286,6 +286,38 @@ accept/drop 状态由 LiveEventSource 自己统计。
 
 架构 §13 的落地：ROS 回调只做**有界队列入队**，调度器决定处理顺序。
 
+优先级在这条链上出现两次——**丢弃策略**（IMU 用 `kReject` 显式背压，图像可以丢旧帧）
+和**调度配额**（15 槽加权轮转）。下图把校验、车道、调度画在一起：
+
+```mermaid
+flowchart TB
+    SUB["Submit(event)<br/>ROS 回调只做入队"] --> V1{"已 Close?"}
+    V1 -->|是| R1["kClosed"]
+    V1 -->|否| V2{"topic 在 canonical_topics 词表?"}
+    V2 -->|否| R2["kSemanticRejected"]
+    V2 -->|是| V3{"ValidateCanonicalEvent<br/>时间头 / 几何有限性"}
+    V3 -->|失败| R2
+    V3 -->|通过| V4{"role == kReferenceOnly?"}
+    V4 -->|"是（真值）"| R3["kReferenceRejected<br/>真值进不了算法车道"]
+    V4 -->|否| V5{"同 sensor 的 sequence_id 递增?<br/>按 calibration_version 分段"}
+    V5 -->|否| R4["kDuplicateOrOutOfOrderRejected"]
+    V5 -->|是| ENQ["按车道入队"]
+
+    ENQ --> L1["kLocalization<br/>IMU / DVL / VehicleState<br/>容量 64 · kReject · 无 residence 上限"]
+    ENQ --> L2["kCorrection<br/>SonarFrame<br/>容量 32 · kDropOldest · 0.5 s"]
+    ENQ --> L3["kMapping<br/>ImageFrame<br/>容量 16 · kDropOldest · 0.5 s"]
+    ENQ --> L4["kEvidence<br/>evidence / health / map<br/>容量 256 · kDropOldest · 无上限"]
+
+    L1 --> SCH["PopNextLocked<br/>15 槽固定加权轮转<br/>localization×8 → correction×4 → mapping×2 → evidence×1<br/>cursor 记住上次位置，空车道跳过"]
+    L2 --> SCH
+    L3 --> SCH
+    L4 --> SCH
+
+    SCH --> AGE{"max_residence 超时?<br/>在昂贵 consumer 之前检查"}
+    AGE -->|是| DROP["丢弃并计数<br/>已选定的交付不因迟到者改期"]
+    AGE -->|否| OUT["交付给 consumer<br/>驻留时延进 128 样本滚动窗 → p50/p95/p99"]
+```
+
 ### 5.1 车道划分（`runtime/bounded_queue.hpp` 的 `Lane`）
 
 | 车道 | 内容 | 容量 | 溢出策略 | max_residence_s |
@@ -478,6 +510,38 @@ wall_s ≥ 那一帧的 capture_s），健康检查永远不会比使用检查�
 | 8 | dense 开了但不新鲜 | SUSPECT / "dense_deadline_missed" | true |
 | 9 | — | HEALTHY | true |
 
+```mermaid
+flowchart TB
+    S["ComputeDegradation(wall_s)<br/>每次发布重算，无状态记忆"] --> G1{"recovering_?"}
+    G1 -->|是| O1["RECOVERING / recovering<br/>guidance_valid = false"]
+    G1 -->|否| G2{"视觉、声呐都不 live?"}
+    G2 -->|是| O2["UNAVAILABLE / all_assist_unavailable<br/>guidance_valid = false"]
+    G2 -->|否| G3{"车辆状态过期?<br/>vehicle_state_stale_after_s"}
+    G3 -->|是| O3["UNAVAILABLE / vehicle_state_stale<br/>guidance_valid = false"]
+    G3 -->|否| G4{"声呐不 live?"}
+    G4 -->|是| O4["SUSPECT / sonar_unavailable"]
+    G4 -->|否| G5{"视觉不 live?"}
+    G5 -->|是| O5["SUSPECT / visual_unavailable"]
+    G5 -->|否| G6{"视觉前端自报不健康?"}
+    G6 -->|是| O6["SUSPECT / 视觉自己的 reason_code"]
+    G6 -->|否| G7{"声呐前端自报不健康?"}
+    G7 -->|是| O7["SUSPECT / 声呐自己的 reason_code"]
+    G7 -->|否| G8{"dense 已开但结果不新鲜?"}
+    G8 -->|是| O8["SUSPECT / dense_deadline_missed"]
+    G8 -->|否| O9["HEALTHY"]
+
+    NOTE_ORDER["视觉刻意排在声呐之前：两者同时降级时<br/>操作员 top-line 理由取视觉；<br/>声呐报告仍完整出现在 sensor_health 里"]
+    G6 -.- NOTE_ORDER
+
+    classDef stop fill:#ffe1e1,stroke:#c0392b,stroke-width:2px
+    classDef warn fill:#fff4d6,stroke:#c9871f
+    classDef ok fill:#e3f6e6,stroke:#2e7d4f
+    class O1,O2,O3 stop
+    class O4,O5,O6,O7,O8 warn
+    class O9 ok
+    style NOTE_ORDER fill:#fff4d6,stroke:#c9871f,stroke-dasharray: 4 3
+```
+
 两个刻意决定：#6 里视觉**排在**声呐前（双方都降级时操作员 top-line 理由取视觉，
 声呐报告仍完整出现在 sensor_health 列表里——固定优先级，不是巧合）；"断"对
 视觉/声呐用 capture-time 判（`VisualLive`/`SonarLive`），对外部健康用接收时刻判。
@@ -493,6 +557,15 @@ wall_s ≥ 那一帧的 capture_s），健康检查永远不会比使用检查�
   好航迹失效，全量重置是无谓破坏）；重确认门（6.4 的 any_confirmed）就是
   规格要求的那个 gate。比较的是传感器自身节拍的间隔而非墙钟 staleness——
   与排队/处理延迟无关。
+
+```mermaid
+flowchart LR
+    T1["UpdateRig 且 calibration_version 变化"] --> A1["全量重置<br/>fusion_ 重建 / pending_ 清空 / dense 缓存清空<br/>+ 强制发布，不受节流<br/>calibration_reset_count++"]
+    T2["MarkRecoveringIfModalityWasDropped<br/>某模态相邻两次检测的 capture-time 间隔<br/>> modality_stale_after_s"] --> A2["只置标志<br/>刻意不重置 fusion_ / pending_ / dense<br/>modality_recovery_count++"]
+    A1 --> R["recovering_ = true<br/>同一个标志，两种语义"]
+    A2 --> R
+    R --> X["退出条件：tracker 重确认<br/>any_confirmed → recovering_ = false"]
+```
 
 这个计数器的语义要读准：它数的是"掉线+恢复**触发器**开火了几次"，与"恢复状态
 实际持续多久"无关（后者取决于 tracker 重确认时机，外部不可靠观测）。
@@ -564,6 +637,33 @@ AcousticOpticDepthFusionFrontend（主线一的声光融合，不在这条线上
 5. **运动连续性** `kMotionContinuity`：|Δbearing| ≤ `max_motion_bearing_delta_rad
    + max_motion_rate_rad_s·Δt`（0.25 + 1.5·Δt——静态偏置 + 速率项）；
 6. 全过 → **Fuse** 成一条融合测量，pair cost 上再加归一化的时间项 + 运动项。
+
+下图把归一化、五道门、Fuse 与分配画成一条链——排障时通常是拿到一个
+`AssociationReason` 反查是哪道门拒的，图按这个方向组织：
+
+```mermaid
+flowchart TB
+    P["Associate(visual, sonar, rig)"] --> N["归一化<br/>ResolveRigFrames 帧树 BFS 校验 → base_link 极坐标<br/>t_corrected = t_capture + time_offset_seconds[sensor_id]<br/>投影带数值中心差分雅可比传播协方差"]
+    N -->|"帧树有环 / 多父 / 不可达"| FC["整体 fail-closed，不猜路径"]
+    N --> G1{"时间门<br/>abs(dt) ≤ 0.05 s"}
+    G1 -->|否| D1["kCorrectedTimeDelta"]
+    G1 -->|是| G2{"类别兼容<br/>同名，或任一方是通用标签"}
+    G2 -->|否| D2["kClassIncompatible"]
+    G2 -->|是| G3{"不确定度上限<br/>bearing ≤ 0.25 rad² 且 range ≤ 4.0 m²"}
+    G3 -->|否| D3["kUncertainty"]
+    G3 -->|是| SPLIT{"双方都带 range?"}
+    SPLIT -->|是| G4A{"bearing M² ≤ 9 且 range M² ≤ 9<br/>且联合 M² ≤ 18"}
+    SPLIT -->|"否（视觉 bearing-only）"| G4B{"bearing M² ≤ 9"}
+    G4A -->|否| D4["统计门拒绝"]
+    G4B -->|否| D4
+    G4A --> G5{"运动连续性<br/>abs(Δbearing) ≤ 0.25 + 1.5·Δt"}
+    G4B --> G5
+    G5 -->|否| D5["kMotionContinuity"]
+    G5 -->|是| FUSE["Fuse<br/>互协方差忽略的加权融合<br/>数值失败 → 按 kUncertainty 丢弃，不硬造"]
+    FUSE --> ASSIGN["贪心分配<br/>按 (cost, visual_id, sonar_id) 确定性排序<br/>冲突记 kPairConflict"]
+    ASSIGN --> KEEP["未配对的单源测量保留，不丢弃<br/>未匹配视觉 → 去掉 range 保 bearing-only<br/>未匹配声呐 → 原样保留<br/>诊断 kSingleSourceAccepted"]
+    KEEP --> NOTE2["这是「声呐断供不停视觉航迹」<br/>在关联层的机制保障"]
+```
 
 ### 7.3 Fuse 的数学（互协方差忽略的加权融合）
 
@@ -718,6 +818,34 @@ task/config/calibration 哈希（SIM-CFG-003）等。seed/版本随报告落盘�
 
 这些 gate 的共同点（CSV 里一大片 `gated`）：**本机跑不了**——需要真 HoloOcean/
 GPU/ROS2 原生主机。这是"代码完成 ≠ 闭环验证"结论的直接来源。
+
+---
+
+```mermaid
+flowchart TB
+    G["realtime_gate.py<br/>监督四个进程"] --> P1["HoloOcean 会话<br/>subprocess.Popen"]
+    G --> P2["holoocean_realtime_node（C++）<br/>独立可执行文件子进程"]
+    G --> P3["ScriptedPilot<br/>multiprocessing.Process"]
+    G --> P4["TaskScorer<br/>multiprocessing.Process"]
+
+    G --> M["minimum<br/>单次连续 soak"]
+    G --> N["nominal 20/10/50 Hz<br/>单次 soak + 10 seed 战役 ≥ 8/10"]
+    G --> D["disturbed<br/>故障 + 扰动矩阵开<br/>10 seed 战役 ≥ 7/10"]
+    G --> O["overload<br/>相机 1.25x / 声呐 20 Hz / 状态 100 Hz"]
+
+    M --> R["run_report.py<br/>把每个 run 的指标评成 GateFailure 列表"]
+    N --> R
+    D --> R
+    O --> R
+    R --> C1["结果年龄 p95 vs deadline"]
+    R --> C2["RSS 增长 / CPU 余量"]
+    R --> C3["故障时间线 ↔ 健康时间线相关性"]
+    R --> C4["code / scenario / task / config / calibration 哈希"]
+
+    BLOCK["⛔ 本机跑不了：需要真 HoloOcean + GPU + ROS2 原生主机<br/>这是「代码完成 ≠ 闭环验证」结论的直接来源"]
+    G --- BLOCK
+    style BLOCK fill:#ffe1e1,stroke:#c0392b,stroke-dasharray: 4 3
+```
 
 ---
 

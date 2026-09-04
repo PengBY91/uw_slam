@@ -18,7 +18,7 @@
 - [快速开始](#快速开始)
 - [运行端到端 Demo](#运行端到端-demo)
 - [在线辅助与实时闭环（ROV）](#在线辅助与实时闭环rov)
-- [架构](#架构)
+- [架构](#架构)（含[一张图看懂代码与框架](#一张图看懂代码与框架)）
 - [开发指南](#开发指南)
 - [配置与外部接入](#配置与外部接入)
 - [参与开发](#参与开发)
@@ -59,6 +59,8 @@ ROS2、HoloOcean、OpenCV、Ceres 等第三方头文件被隔离在 `adapters/` 
 算法核心（`include/`、`src/` 下按角色分区的生产代码）一行都不能 include 它们。
 `tools/lint/check_no_ros_in_core.sh` 在 CI 和本地验证里强制检查这条不变量。
 具体见[架构](#架构)一节。
+
+想先看图再读字，直接跳到[一张图看懂代码与框架](#一张图看懂代码与框架)。
 
 当前仓库整体处于“骨架 + 每层至少一条真实可跑的端到端链路”阶段，不是生产系统。
 每项能力的真实状态（包括没做完的）见[核心能力](#核心能力)表和[已知边界](#已知边界)。
@@ -365,6 +367,17 @@ python -m uw_holoocean_adapter.realtime_gate \
 
 ## 架构
 
+### 一张图看懂代码与框架
+
+下图把三件事画在一起：**① 分层架构与允许的依赖方向**（lint 强制，不是示意）、
+**② 主线一离线 SLAM 管线的数据流**、**③ 主线二 ROV 实时闭环的数据流**。
+本节后面的 Mermaid 图是它的分解视图，需要跳转到具体模块时再看。
+
+[![uw_slam 代码与框架逻辑图](./docs/architecture.png)](./docs/architecture.png)
+
+> 图中依赖方向来自 `tools/lint/check_layer_dependencies.py` 的 `ALLOWED` 表和
+> `cmake/Libraries.cmake` 的 target 链接关系；核对基准 2026-09-04。点击可看大图。
+
 ### 离线数据流
 
 ```mermaid
@@ -465,6 +478,20 @@ event_source_parity_test.cpp` 验证同一批事件经 MCAP 与内存两种 `Eve
 | `/health` | `uw.domain.HealthReport` |
 | `/gt/state` | `uw.domain.StateSnapshot`（仅评测支路可消费，`CanonicalTopicRole::kReferenceOnly`） |
 
+### 坐标系与符号约定
+
+两条最容易踩的约定，画在同一张图上对照看：
+
+![坐标系与符号约定](./docs/frames-and-sign-conventions.svg)
+
+- `PressureDepthMeasurement.depth_m` 是**正向下**的水深，而 world/body 是 Z-up，
+  所以位姿 `z = -depth_m`；`OpticalDepthPriorMeasurement`/`FusedDepthMeasurement`
+  以及关联记录里的 `depth_m` 则是相机 optical frame 的**正向前**距离。**同名字段、
+  不同坐标与符号语义，不要直接混用。**
+- 从相机系解出的相对位姿要用 rig 标定的 camera→body 外参做共轭
+  `T_body = T_cam_body · T_cam · T_cam_body⁻¹`，才能喂给以 body frame 定义的相对
+  位姿因子。方向搞反时单元测试全绿、实跑 ATE 停在 6.67 m 不收敛。
+
 ### 仓库结构
 
 | 目录 | 职责 |
@@ -564,6 +591,43 @@ TSan 可通过 `-DUW_SANITIZER=thread` 手动构建，但当前预编译 protobu
 defaults → rig → scenario → experiment → 显式 CLI 参数
 ```
 
+下图把两件容易混淆的事分开画：**叠加**（四层 YAML，后层覆盖前层）与**分支**（真正
+会切换实现的三个选择器）。写错标识符不会静默按硬编码管线跑，而是启动即失败。
+
+```mermaid
+flowchart TB
+    subgraph STACK["① 叠加：后层覆盖前层"]
+        direction LR
+        DEF["defaults/<br/>平台默认值<br/>求解器参数 / warmup / 前端参数 / 实时车道"]
+        RIG["rig/<br/>标定唯一事实源<br/>解析进 RigCalibrationSnapshot"]
+        SCN["scenario/<br/>world / 控制 / 退化 / 故障 / seed<br/>「跑什么数据」"]
+        EXP["experiment/<br/>前端 / 估计器 / 地图后端 / 算力预算<br/>「怎么跑」"]
+        CLI["显式 CLI 参数"]
+        DEF --> RIG --> SCN --> EXP --> CLI
+    end
+
+    CLI --> VAL{"ValidateExperimentConfigSelections<br/>未知标识符 → 启动即失败，不静默回退"}
+
+    subgraph BRANCH["② 分支：真正会切换实现的三个选择器"]
+        direction TB
+        E1["estimator_mode<br/>black_box_vio 默认 / stereo_landmark_vo / imu_preintegration"]
+        E2["frontends.landmark_detector<br/>bright_blob 默认 / harris_corner"]
+        E3["estimation.solver<br/>gauss_newton_v1 默认 / ceres_v1"]
+    end
+
+    subgraph FIXED["③ 只有一个受支持实现（fail-fast 占位，不是多后端）"]
+        direction TB
+        F1["frontends.sonar = sonar_cfar_frontend_v1"]
+        F2["frontends.optical = stereo_depth_frontend_v1"]
+        F3["map_backend = submap_point_cloud_v1"]
+    end
+
+    VAL --> BRANCH
+    VAL --> FIXED
+    E3 --> CER["ceres_v1 需 -DUW_BUILD_CERES_SOLVER=ON<br/>没编译却选了 = 启动报错，不静默回退"]
+    style CER fill:#fff4d6,stroke:#c9871f
+```
+
 | 层 | 描述内容 |
 |---|---|
 | `defaults/` | 平台级默认：求解器与迭代参数、warmup、reliability 信息上限、各前端参数、在线辅助预算/新旧度阈值、实时队列车道、回环闭合开关 |
@@ -577,7 +641,7 @@ defaults → rig → scenario → experiment → 显式 CLI 参数
 
 | 字段 | 可选值 | 说明 |
 |---|---|---|
-| `estimator_mode` | `black_box_vio`（默认）/ `stereo_landmark_vo` | 相对位姿证据来源：桩 vs 从图像实时算 |
+| `estimator_mode` | `black_box_vio`（默认）/ `stereo_landmark_vo` / `imu_preintegration` | 相对位姿证据来源：桩 / 从图像实时算 / IMU 预积分边（PREP-B-01，按 `/keyframe/boundary` 切区间） |
 | `frontends.landmark_detector` | `bright_blob`（默认）/ `harris_corner` | 立体 VO 内部检测器：合成高亮块 vs 真实图像纹理 |
 | `estimation.solver` | `gauss_newton_v1`（默认）/ `ceres_v1` | 位姿图求解后端；`ceres_v1` 需 `-DUW_BUILD_CERES_SOLVER=ON`，选了但没编译会启动报错 |
 

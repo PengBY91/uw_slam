@@ -1,6 +1,8 @@
 # 配置分层
 
 对应架构文档第 14.2 节：`defaults → rig → scenario → experiment` 四层叠加。
+叠加关系与三个真正驱动分支的选择器画在一起，见根 README 的
+[分层配置图](../README.md#分层配置)（那张图是这套字段的唯一图示，改字段时改那一处）。
 
 **当前状态**：`apps/synth_bag_gen` 和 `apps/replay_demo` 都可以通过 `--experiment <path>` 加载
 这里的分层配置（解析代码见 `include/runtime/config.hpp`，用 yaml-cpp）。仍是 v1 明确限制

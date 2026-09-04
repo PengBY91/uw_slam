@@ -30,6 +30,26 @@ PASS：编译 → 23 项 ctest → 11 项 pytest → lint → `synth_bag_gen` �
 合成回放 ATE RMSE `0.0665821 m`，并生成 trajectory、manifest 与 synthetic MCAP。
 旧记录保留用于追溯，不应再作为当前测试数量或数值基线。
 
+下图是这条脚本背后的验证顺序，以及**本机能跑到哪一步**的分界——最后那一步
+"实跑 demo"不能省：仓库里几个最贵的 bug 都是单元测试全绿、实跑才暴露的。
+
+```mermaid
+flowchart TB
+    B["cmake --build build"] --> T1["ctest 全量 C++ 测试"]
+    T1 --> T2["Python 适配器测试<br/>adapters/{holoocean,datasets,wit_imu}"]
+    T2 --> T3["tools/lint/check_layer_dependencies.py<br/>依赖方向不变量"]
+    T3 --> T4["实跑端到端 demo<br/>synth_bag_gen → replay_demo"]
+    T4 --> W["⚠️ 只有这一步抓到过的坑：<br/>z 轴 anchor（ATE 4.6 m）<br/>camera↔body 共轭方向反了（ATE 6.67 m）<br/>cost_change_tolerance 比浮点噪声还紧（假 stalled）"]
+
+    T3 --> Q["tools/run_quality_checks.sh<br/>sanitizer(ASan+UBSan) / coverage / static-analysis"]
+    Q --> QN["TSan 不在 CI：预编译 protobuf/gtest 未插桩 → 已知假阳性"]
+
+    T4 -.-> S1["live_ingress_smoke / online_assist_smoke<br/>不需要仿真器，本机可跑"]
+    S1 -.-> S2["⛔ 到此为止：四档实时 gate、<br/>RealtimeRosSession 真实进程监督路径<br/>需要 HoloOcean/UE5/rclpy，本机没有"]
+    style S2 fill:#ffe1e1,stroke:#c0392b,stroke-dasharray: 4 3
+    style W fill:#fff4d6,stroke:#c9871f
+```
+
 ## 分项验证：每个功能怎么单独测
 
 改动只涉及某一模块时，不必每次跑全量脚本，按下表挑对应命令即可（ctest 用例现在按

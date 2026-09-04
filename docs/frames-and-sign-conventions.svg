@@ -1,0 +1,104 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1010 500" width="1010" height="500" role="img"
+     aria-label="坐标系与符号约定：depth_m 的两种语义与 camera 到 body 的共轭变换">
+  <title>uw_slam 坐标系与符号约定</title>
+  <desc>左：world/body 为 Z-up，PressureDepthMeasurement.depth_m 正向下，位姿 z = -depth_m。
+右：相机 optical frame 的 depth_m 正向前；相机系相对位姿需用 T_cam_body 共轭后才能作为 body frame 的相对位姿因子。</desc>
+  <defs>
+    <style>
+      .lbl  { font-family: "Noto Sans CJK SC","Source Han Sans SC","PingFang SC","Microsoft YaHei",sans-serif; font-size: 13px; fill: #1f2933; }
+      .lbl-s{ font-family: "Noto Sans CJK SC","Source Han Sans SC","PingFang SC","Microsoft YaHei",sans-serif; font-size: 11.5px; fill: #52606d; }
+      .ttl  { font-family: "Noto Sans CJK SC","Source Han Sans SC","PingFang SC","Microsoft YaHei",sans-serif; font-size: 14.5px; font-weight: 700; fill: #1f2933; }
+      .sub  { font-family: "Noto Sans CJK SC","Source Han Sans SC","PingFang SC","Microsoft YaHei",sans-serif; font-size: 12px; fill: #52606d; }
+      .mono { font-family: ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace; font-size: 12.5px; fill: #1f2933; }
+      .axis { stroke: #1f2933; stroke-width: 1.6; fill: none; }
+      .down { stroke: #c0392b; stroke-width: 2.2; fill: none; }
+      .up   { stroke: #2e7d4f; stroke-width: 2.2; fill: none; }
+      .fwd  { stroke: #2f5fd0; stroke-width: 2.2; fill: none; }
+      .thin { stroke: #3f51b5; stroke-width: 1.2; stroke-dasharray: 5 4; fill: none; }
+      .boxf { fill: #e8eaf6; stroke: #3f51b5; stroke-width: 1.4; }
+      .warn { fill: #fff4d6; stroke: #c9871f; stroke-width: 1.2; }
+    </style>
+    <marker id="ahk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#1f2933"/></marker>
+    <marker id="ahr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#c0392b"/></marker>
+    <marker id="ahg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2e7d4f"/></marker>
+    <marker id="ahb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2f5fd0"/></marker>
+  </defs>
+
+  <rect fill="#ffffff" x="0" y="0" width="1010" height="500"/>
+
+  <!-- ============ 左：world / body（Z-up） ============ -->
+  <text class="ttl" x="24" y="28">① world / body 系（Z-up）</text>
+  <text class="sub" x="24" y="48">压力深度 depth_m 正向下，位姿 z = −depth_m</text>
+
+  <line x1="40" y1="92" x2="440" y2="92" stroke="#2f5fd0" stroke-width="2"/>
+  <text class="lbl-s" x="40" y="84">水面 z = 0</text>
+  <path class="thin" stroke="#2f5fd0" stroke-dasharray="0" d="M40,96 q10,6 20,0 q10,-6 20,0 q10,6 20,0 q10,-6 20,0 q10,6 20,0 q10,-6 20,0 q10,6 20,0 q10,-6 20,0 q10,6 20,0 q10,-6 20,0" opacity="0.5"/>
+
+  <line class="axis" x1="100" y1="330" x2="100" y2="152" marker-end="url(#ahk)"/>
+  <text class="mono" x="88" y="144">Z</text>
+  <line class="axis" x1="100" y1="330" x2="238" y2="330" marker-end="url(#ahk)"/>
+  <text class="mono" x="244" y="335">X</text>
+  <line class="axis" x1="100" y1="330" x2="58" y2="366" marker-end="url(#ahk)"/>
+  <text class="mono" x="40" y="380">Y</text>
+
+  <rect class="boxf" x="236" y="248" width="86" height="34" rx="8"/>
+  <text class="lbl-s" x="250" y="269">base_link</text>
+
+  <line class="down" x1="400" y1="94" x2="400" y2="266" marker-end="url(#ahr)"/>
+  <text class="lbl"   x="410" y="164" fill="#c0392b">depth_m &gt; 0</text>
+  <text class="lbl-s" x="410" y="182" fill="#c0392b">正向下</text>
+
+  <line class="up" x1="352" y1="266" x2="352" y2="96" marker-end="url(#ahg)"/>
+  <text class="lbl"   x="342" y="164" text-anchor="end" fill="#2e7d4f">位姿 z &lt; 0</text>
+  <text class="lbl-s" x="342" y="182" text-anchor="end" fill="#2e7d4f">Z-up world 系</text>
+
+  <rect class="warn" x="24" y="396" width="462" height="64" rx="6"/>
+  <text class="mono"  x="38" y="420">pose.z = -PressureDepthMeasurement.depth_m</text>
+  <text class="lbl-s" x="38" y="442">kf0 锚帧的 z 也必须这样取，不能钉在 0（见 CLAUDE.md 的 z 轴 anchor 坑）</text>
+
+  <!-- ============ 分隔 ============ -->
+  <line x1="512" y1="16" x2="512" y2="470" stroke="#cbd2d9" stroke-width="1.5"/>
+
+  <!-- ============ 右：camera optical frame ============ -->
+  <text class="ttl" x="540" y="28">② 相机 optical 系（侧视）</text>
+  <text class="sub" x="540" y="48">光学 depth_m 正向前；相机系相对位姿需共轭到 body 系</text>
+
+  <rect class="boxf" x="556" y="104" width="62" height="40" rx="6"/>
+  <text class="lbl-s" x="565" y="129">camera</text>
+
+  <line class="fwd" x1="618" y1="124" x2="806" y2="124" marker-end="url(#ahb)"/>
+  <text class="mono"  x="812" y="128" fill="#2f5fd0">Z_opt</text>
+  <text class="lbl-s" x="664" y="115" fill="#2f5fd0">光轴，正向前</text>
+  <circle cx="884" cy="124" r="7" fill="#c9871f"/>
+  <text class="lbl-s" x="870" y="102">目标</text>
+
+  <line class="axis" x1="570" y1="144" x2="570" y2="196" marker-end="url(#ahk)"/>
+  <text class="mono"  x="540" y="210">Y_opt</text>
+  <text class="lbl-s" x="596" y="210">X_opt 指向纸面外</text>
+
+  <line class="down" x1="618" y1="152" x2="878" y2="152" marker-end="url(#ahr)"/>
+  <text class="lbl"   x="646" y="176" fill="#c0392b">depth_m &gt; 0：正向前</text>
+  <text class="lbl-s" x="646" y="194" fill="#c0392b">OpticalDepthPrior / FusedDepth / 关联记录</text>
+
+  <rect class="boxf" x="596" y="286" width="86" height="34" rx="8"/>
+  <text class="lbl-s" x="610" y="307">base_link</text>
+  <line class="axis" x1="682" y1="303" x2="776" y2="303" marker-end="url(#ahk)"/>
+  <text class="mono" x="782" y="307">X_body</text>
+  <line class="axis" x1="640" y1="286" x2="640" y2="244" marker-end="url(#ahk)"/>
+  <text class="mono" x="628" y="238">Z_body</text>
+
+  <path class="thin" d="M556,130 C520,186 520,250 592,292" marker-end="url(#ahk)" marker-start="url(#ahk)"/>
+  <text class="mono" x="552" y="268" fill="#3f51b5">T_cam_body</text>
+
+  <rect class="warn" x="540" y="340" width="446" height="120" rx="6"/>
+  <text class="mono"  x="554" y="366">T_body = T_cam_body · T_cam · T_cam_body⁻¹</text>
+  <text class="lbl-s" x="554" y="390">相机系解出的相对位姿必须先做这个共轭，才能喂给以 body</text>
+  <text class="lbl-s" x="554" y="408">frame 定义的 relative-pose 因子。方向搞反时单元测试全绿，</text>
+  <text class="lbl-s" x="554" y="426">实跑 demo 的 ATE 停在 6.67 m 不收敛（改对后 0.061 m）。</text>
+
+  <text class="lbl" x="505" y="486" text-anchor="middle" fill="#c0392b">⚠ 同名字段 depth_m，坐标与符号语义不同——不要直接混用</text>
+</svg>

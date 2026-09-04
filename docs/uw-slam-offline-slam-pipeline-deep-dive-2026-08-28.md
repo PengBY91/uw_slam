@@ -99,6 +99,30 @@ src/application/replay_pipeline.cpp   RunReplayPipeline() —— 全部编排逻
    ⑫ 声光融合(可选)      ⑬ ATE+gates+manifest
 ```
 
+同一条链按数据流展开（框里写的是文件/组件名，方便直接跳到对应小节；根 README 的
+离线数据流图是概念级的同一条链，两张图分工不同）：
+
+```mermaid
+flowchart TB
+    A["apps/synth_bag_gen.cpp<br/>合成场景 + 六类话题<br/>每种噪声独立 RNG 流（MakeStreamRng(seed, salt)）"] --> B["MCAP bag"]
+    B --> C["apps/replay_demo.cpp<br/>四层 YAML → ValidateExperimentConfigSelections"]
+    C --> D["runtime/mcap_event_source<br/>+ application/replay_input_accumulator"]
+    D --> E["adapters/opencv 双目 rectification"]
+    E --> F1["frontends/stereo_landmark_vo_frontend<br/>estimator_mode = stereo_landmark_vo"]
+    E --> F2["/evidence/relative_pose 读桩<br/>estimator_mode = black_box_vio"]
+    D --> F3["frontends/sonar_cfar_frontend<br/>+ mapping/submap_manager 在线发现路标"]
+    D --> F4["frontends/imu_preintegration_frontend<br/>按 /keyframe/boundary 切区间<br/>estimator_mode = imu_preintegration"]
+    F1 --> G["factor_builders/*<br/>证据 → ResidualBlock，含 sqrt-information"]
+    F2 --> G
+    F3 --> G
+    F4 --> G
+    G --> H["estimation/pose_graph_problem<br/>+ gauss_newton_solver 手写 LM<br/>（或 adapters/ceres）"]
+    H --> I["mapping/submap_manager + surfel_map"]
+    H --> J["evaluation/trajectory_metrics ATE<br/>+ control_point_metrics"]
+    H --> K["runtime/run_manifest<br/>+ 轨迹落盘"]
+    J --> L["EvaluateReplayGates（纯函数）<br/>不收敛 / 超阈值 → 退出码非零"]
+```
+
 架构分层（`tools/lint/check_layer_dependencies.py` 强制单向依赖）：
 
 ```
@@ -381,6 +405,23 @@ estimator_mode 下都跑的逐帧前端。
 
 ### 7.1 处理流水线
 
+```mermaid
+flowchart LR
+    SF["SonarFrame<br/>极坐标强度图"] --> CFAR["CFAR 检测<br/>恒虚警率自适应阈值"]
+    CFAR --> POL["极坐标 → 笛卡尔<br/>声呐局部系"]
+    POL --> DB["DBSCAN 密度聚类<br/>亮点 → 目标"]
+    DB --> EXT["extent 自适应 sigma<br/>簇越大方位方差越大"]
+    EXT --> EV["MeasurementEvidence<br/>仅声呐局部系"]
+    EV --> H["健康契约<br/>无检出 / 参数非法 → 分级健康状态"]
+    EV -. "v1 消费规则：只取 top-1" .-> FB["factor_builders/sonar_range"]
+
+    CUT["⛔ 移植边界：上游 merge.py 在这里丢弃 pitch<br/>并直接烘焙到 map frame——刻意没有移植。<br/>前端只输出局部系证据，不自己决定全局位姿"]
+    EV --- CUT
+    style CUT fill:#fff4d6,stroke:#c9871f,stroke-dasharray: 4 3
+```
+
+逐步细节：
+
 ```
 SonarFrame(极坐标 intensity tensor, num_ranges × num_beams)
   ① 边界校验：azimuth_angles 必须严格递增，否则整帧拒绝（out_of_distribution），
@@ -489,6 +530,32 @@ depth 证据拉向真实深度，就是约束冲突：求解器 30 次迭代不�
 （`replay_pipeline.cpp:408-423`）：扫一遍 depth evidence，用 kf0 自己的深度测量
 设锚帧 z（`kf0_z = -depth_m`）。这个修法与 warmup 无关——它直接 seed 固定顶点，
 不是加 depth 因子，所以不算被 warmup 门控的"融合"。
+
+把图画出来就能一眼看出冲突在哪——`kf0` 被固定，但图里每个 keyframe 都挂着
+depth 边，所以 `kf0` 的 z 也必须来自它自己的深度证据：
+
+```mermaid
+graph LR
+    KF0["kf0（fixed anchor）<br/>z 取自它自己的深度证据<br/>❌ 不是 Pose3::Identity() 的 z=0"]
+    KF1["kf1"]
+    KF2["kf2"]
+    KF3["kf3"]
+    KF0 -- "relative_pose 残差<br/>x/y/yaw 的 gauge 由 anchor 定" --> KF1
+    KF1 -- relative_pose --> KF2
+    KF2 -- relative_pose --> KF3
+    D0(["depth 因子"]) --- KF0
+    D1(["depth 因子"]) --- KF1
+    D2(["depth 因子"]) --- KF2
+    D3(["depth 因子"]) --- KF3
+    L1{{"路标（SubmapManager 在线发现）"}}
+    KF1 -- "sonar_range 残差<br/>range-only，无 elevation" --- L1
+    KF2 -- sonar_range --- L1
+    LC["回环边（可选，默认关）"] -.-> KF0
+    LC -.-> KF3
+
+    classDef anchor fill:#ffe1e1,stroke:#c0392b,stroke-width:2px
+    class KF0 anchor
+```
 
 给图加新的绝对参考因子（如未来的绝对朝向）时留意同类陷阱：固定顶点必须与
 绝对参考自洽。
