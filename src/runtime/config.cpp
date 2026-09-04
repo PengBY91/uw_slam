@@ -745,9 +745,11 @@ std::optional<std::string> ValidateExperimentConfigSelections(const ExperimentCo
     return "unrecognized map_backend '" + config.map_backend +
            "' (only submap_point_cloud_v1 is implemented)";
   }
-  if (config.estimator_mode != "black_box_vio" && config.estimator_mode != "stereo_landmark_vo") {
+  if (config.estimator_mode != "black_box_vio" &&
+      config.estimator_mode != "stereo_landmark_vo" &&
+      config.estimator_mode != "imu_preintegration") {
     return "unrecognized estimator_mode '" + config.estimator_mode +
-           "' (must be black_box_vio or stereo_landmark_vo)";
+           "' (must be black_box_vio, stereo_landmark_vo, or imu_preintegration)";
   }
   if (config.landmark_detector != "bright_blob" && config.landmark_detector != "harris_corner") {
     return "unrecognized landmark_detector '" + config.landmark_detector +

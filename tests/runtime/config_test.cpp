@@ -762,6 +762,14 @@ TEST(Config, ValidateExperimentConfigSelectionsAcceptsRealExperimentFiles) {
   }
 }
 
+TEST(Config, AcceptsImuPreintegrationEstimatorMode) {
+  const auto config = uw::runtime::LoadExperimentConfig(
+      std::string(UW_REPO_ROOT) + "/configs/experiment/synthetic_imu_preintegration.yaml");
+
+  EXPECT_EQ(config.estimator_mode, "imu_preintegration");
+  EXPECT_EQ(uw::runtime::ValidateExperimentConfigSelections(config), std::nullopt);
+}
+
 TEST(Config, ValidateExperimentConfigSelectionsRejectsUnknownSonarFrontend) {
   uw::runtime::ExperimentConfig config;
   config.sonar_frontend = "does_not_exist_v1";
@@ -792,6 +800,9 @@ TEST(Config, ValidateExperimentConfigSelectionsRejectsUnknownEstimatorMode) {
   const auto error = uw::runtime::ValidateExperimentConfigSelections(config);
   ASSERT_NE(error, std::nullopt);
   EXPECT_NE(error->find("estimator_mode"), std::string::npos);
+  EXPECT_NE(error->find("black_box_vio"), std::string::npos);
+  EXPECT_NE(error->find("stereo_landmark_vo"), std::string::npos);
+  EXPECT_NE(error->find("imu_preintegration"), std::string::npos);
 }
 
 TEST(Config, ValidateExperimentConfigSelectionsRejectsUnknownLandmarkDetector) {

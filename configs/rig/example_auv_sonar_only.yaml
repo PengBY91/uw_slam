@@ -45,6 +45,8 @@ imu_noise:
   sigma_accel_c: 2.0e-3
   sigma_gyro_bias: 1.9393e-5
   sigma_accel_bias: 3.0e-3
+  sigma_gyro_bias_walk_c: 1.0e-5
+  sigma_accel_bias_walk_c: 1.0e-4
   rate_hz: 200
   gravity_mps2: 9.80665
 

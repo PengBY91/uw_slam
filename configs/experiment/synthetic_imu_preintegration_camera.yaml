@@ -1,0 +1,20 @@
+# 与 synthetic_imu_preintegration.yaml 只差一个 rig：这份带双目相机。
+#
+# 存在的唯一目的是给 tests/integration/synthetic_imu_fixture_test.sh 提供
+# 一个对照 bag——"生成相机图像与否不能改变 /raw/imu 的一个字节"是
+# synth_bag_gen 里每种噪声用途各占一条 salted RNG 流（MakeStreamRng）要
+# 保证的性质，而相机路径消耗的是 landmark_rng。两份 rig 的 imu_noise 和
+# base_link->imu_link 外参刻意保持一致，所以 IMU 流的期望是逐字节相同。
+#
+# 不用它跑 replay_demo：带相机的 rig 会触发逐像素声光稠密路径，那条路径与
+# PREP-B-01 的惯性闭环无关（见 configs/rig/example_auv_sonar_only.yaml 头注释）。
+rig: rig/example_auv.yaml
+scenario: scenario/synthetic_smoke.yaml
+defaults: defaults/platform.yaml
+
+factor_builders:
+  - imu_preintegration_v1
+  - sonar_range_v1
+  - depth_v1
+
+estimator_mode: imu_preintegration

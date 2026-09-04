@@ -20,6 +20,7 @@ class PipelineInputPort {
   virtual bool OnImuSample(const uw::runtime::CanonicalEvent& event) = 0;
   virtual bool OnDvlSample(const uw::runtime::CanonicalEvent& event) = 0;
   virtual bool OnVehicleState(const uw::runtime::CanonicalEvent& event) = 0;
+  virtual bool OnKeyframeBoundary(const uw::runtime::CanonicalEvent& event) = 0;
   virtual bool OnMeasurementEvidence(const uw::runtime::CanonicalEvent& event) = 0;
   // Ground truth / reference-only data (currently just /gt/state) -- must
   // never be routed anywhere an online algorithm could read it as input.

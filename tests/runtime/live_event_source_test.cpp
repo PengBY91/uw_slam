@@ -107,6 +107,17 @@ CanonicalEvent MakeGroundTruthEvent() {
   return {uw::runtime::kTopicGtState, 1, 1, std::move(snapshot)};
 }
 
+CanonicalEvent MakeKeyframeBoundaryEvent(uint64_t source_sequence, uint64_t sequence_id,
+                                         const std::string& keyframe_id,
+                                         const std::string& sensor_id = "keyframe-selector") {
+  uw::domain::KeyframeBoundary boundary;
+  PopulateValidHeader(boundary.mutable_header(), sensor_id, sequence_id);
+  boundary.mutable_keyframe_id()->set_value(keyframe_id);
+  boundary.set_source("test-selector");
+  return {uw::runtime::kTopicKeyframeBoundary, source_sequence, source_sequence,
+          std::move(boundary)};
+}
+
 struct FakeClocks {
   std::chrono::steady_clock::time_point monotonic{};
   std::chrono::system_clock::time_point wall{std::chrono::seconds(100)};
@@ -175,6 +186,8 @@ TEST(LiveEventSource, RoutesEveryAlgorithmInputKindToAnExplicitLane) {
   EXPECT_EQ(source.Submit({uw::runtime::kTopicDvl, 2, 2, std::move(dvl)}),
             LiveSubmitStatus::kAccepted);
   EXPECT_EQ(source.Submit(MakeVehicleEvent(3, 1)), LiveSubmitStatus::kAccepted);
+  EXPECT_EQ(source.Submit(MakeKeyframeBoundaryEvent(11, 1, "kf-1")),
+            LiveSubmitStatus::kAccepted);
   EXPECT_EQ(source.Submit(MakeSonarEvent(4, 1)), LiveSubmitStatus::kAccepted);
   EXPECT_EQ(source.Submit(MakeImageEvent(5, 1)), LiveSubmitStatus::kAccepted);
 
@@ -195,11 +208,35 @@ TEST(LiveEventSource, RoutesEveryAlgorithmInputKindToAnExplicitLane) {
             LiveSubmitStatus::kAccepted);
 
   const auto stats = source.Stats();
-  EXPECT_EQ(stats.localization.enqueued_count, 3u);
+  EXPECT_EQ(stats.localization.enqueued_count, 4u);
   EXPECT_EQ(stats.correction.enqueued_count, 1u);
   EXPECT_EQ(stats.mapping.enqueued_count, 2u);
   EXPECT_EQ(stats.evidence.enqueued_count, 4u);
   source.Close();
+}
+
+TEST(LiveEventSource, KeyframeBoundaryUsesLocalizationLaneAndRawSequenceSemantics) {
+  LiveEventSource source(LiveSourceConfig::ForTest());
+  EXPECT_EQ(source.Submit(MakeKeyframeBoundaryEvent(1, 1, "kf-1")),
+            LiveSubmitStatus::kAccepted);
+  EXPECT_EQ(source.Submit(MakeKeyframeBoundaryEvent(2, 4, "kf-2")),
+            LiveSubmitStatus::kAccepted);
+  EXPECT_EQ(source.Submit(MakeKeyframeBoundaryEvent(3, 4, "kf-3")),
+            LiveSubmitStatus::kDuplicateOrOutOfOrderRejected);
+
+  const auto stats = source.Stats();
+  EXPECT_EQ(stats.localization.enqueued_count, 2u);
+  EXPECT_EQ(stats.sequence_gap_count, 2u);
+  source.Close();
+
+  std::vector<std::string> delivered;
+  const auto report = source.Run([&](const CanonicalEvent& event) {
+    delivered.push_back(std::get<uw::domain::KeyframeBoundary>(event.payload)
+                            .keyframe_id().value());
+    return true;
+  });
+  EXPECT_EQ(report.status, EventSourceStatus::kCompleted);
+  EXPECT_EQ(delivered, (std::vector<std::string>{"kf-1", "kf-2"}));
 }
 
 TEST(LiveEventSource, CameraDropOldestKeepsTheTwoNewestEvents) {

@@ -45,11 +45,13 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <ctime>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -70,9 +72,13 @@
 #include "estimation/state_store.hpp"
 #include "evaluation/trajectory_metrics.hpp"
 #include "factor_builders/depth_factor_builder.hpp"
+#include "factor_builders/imu_preintegration_factor_builder.hpp"
+#include "factor_builders/inertial_prior_residual.hpp"
 #include "factor_builders/relative_pose_factor_builder.hpp"
 #include "factor_builders/sonar_range_factor_builder.hpp"
 #include "frontends/acoustic_optic_depth_fusion_frontend.hpp"
+#include "frontends/imu_preintegration_frontend.hpp"
+#include "frontends/imu_stationary_initializer.hpp"
 #include "frontends/loop_closure_frontend.hpp"
 #include "frontends/sonar_cfar_frontend.hpp"
 #include "frontends/stereo_landmark_vo_frontend.hpp"
@@ -81,10 +87,12 @@
 #include "mapping/submap_manager.hpp"
 #include "opencv_adapters/stereo_rectifier.hpp"
 #include "runtime/acoustic_optic_synchronizer.hpp"
+#include "runtime/canonical_topics.hpp"
 #include "runtime/config.hpp"
 #include "runtime/mcap_event_source.hpp"
 #include "runtime/run_manifest.hpp"
 #include "sensor_models/geometry.hpp"
+#include "sensor_models/imu_preintegration.hpp"
 #include "sensor_models/sonar_beam_model.hpp"
 
 using uw::sensor_models::Pose3;
@@ -205,6 +213,104 @@ uw::application::MapContributionCounts uw::application::CountDepthContributions(
   return counts;
 }
 
+std::string uw::application::FormatReplayRunSummary(
+    const uw::application::ReplayRunSummary& summary) {
+  std::ostringstream out;
+  auto emit = [&out](const char* key, const std::string& value) {
+    out << "summary." << key << "=" << value << "\n";
+  };
+  auto emit_int = [&](const char* key, long long value) { emit(key, std::to_string(value)); };
+  auto emit_double = [&](const char* key, double value) {
+    char buffer[64];
+    std::snprintf(buffer, sizeof(buffer), "%.9f", value);
+    emit(key, buffer);
+  };
+
+  emit("estimator_mode", summary.estimator_mode);
+  emit("solver", summary.solver);
+  emit("solver_converged", summary.solver_converged ? "true" : "false");
+  emit_int("solver_iterations", summary.solver_iterations);
+  emit_double("initial_cost", summary.initial_cost);
+  emit_double("final_cost", summary.final_cost);
+  emit_int("keyframe_count", summary.keyframe_count);
+  emit_int("keyframe_boundary_count", summary.keyframe_boundary_count);
+  emit_int("imu_factor_count", summary.imu_factor_count);
+  emit_int("imu_interval_rejected_count", summary.imu_interval_rejected_count);
+  emit_int("relative_pose_factor_count", summary.relative_pose_factor_count);
+  emit_int("loop_closure_factor_count", summary.loop_closure_factor_count);
+  emit_int("sonar_range_factor_count", summary.sonar_range_factor_count);
+  emit_int("depth_factor_count", summary.depth_factor_count);
+  emit_int("landmark_count", summary.landmark_count);
+  emit("initialization", summary.initialization);
+  emit_int("free_parameter_dim", summary.free_parameter_dim);
+  emit_int("residual_dim", summary.residual_dim);
+  emit_double("ate_rmse_m", summary.ate_rmse_m);
+  emit_int("ate_matched_poses", summary.ate_matched_poses);
+  return out.str();
+}
+
+uw::application::GraphObservability uw::application::CheckGraphObservability(
+    uw::estimation::PoseGraphProblem& problem) {
+  uw::application::GraphObservability result;
+
+  // Key on (kind, id): a keyframe's pose block and its inertial block are
+  // separate parameters, separately constrained. Conflating them would hide
+  // exactly the failure this exists to catch -- an inertial state with no
+  // IMU edge and no prior sitting next to a well-constrained pose of the
+  // same name.
+  std::set<std::pair<int, std::string>> free_blocks;
+  for (const auto& block : problem.MutableAllParameterBlocks()) {
+    if (block.fixed) continue;
+    free_blocks.insert({static_cast<int>(block.ref.kind), block.ref.keyframe_id});
+  }
+
+  std::set<std::pair<int, std::string>> referenced;
+  for (const auto& binding : problem.ResidualBindings()) {
+    if (binding.involved_parameters == nullptr) continue;
+    bool touches_a_free_block = false;
+    for (const auto& ref : *binding.involved_parameters) {
+      const std::pair<int, std::string> key{static_cast<int>(ref.kind), ref.keyframe_id};
+      referenced.insert(key);
+      if (free_blocks.count(key) > 0) touches_a_free_block = true;
+    }
+    // A residual wired only to fixed blocks (the anchor's own depth factor,
+    // say) is a constant: it contributes no information about anything the
+    // solver moves, so counting its rows would inflate the tally and mask a
+    // genuine rank deficiency elsewhere.
+    if (touches_a_free_block) result.residual_dim += binding.block->ResidualDim();
+  }
+
+  for (const auto& block : problem.MutableAllParameterBlocks()) {
+    if (block.fixed) continue;  // fixed blocks are not solved for
+    // MINIMAL dimension, not block size: a pose is stored as 7 numbers but
+    // has 6 degrees of freedom (the quaternion is normalized, and the
+    // residual is invariant along it -- see imu_preintegration_residual.hpp
+    // on why that column is genuinely zero). Counting 7 would declare a
+    // perfectly determined relative-pose chain -- 6 rows per edge against
+    // 7 "columns" per keyframe -- structurally singular and hard-fail every
+    // experiment that has no depth or sonar factors to make up the
+    // difference.
+    result.free_parameter_dim +=
+        block.ref.kind == uw::estimation::PoseGraphProblem::ParameterKind::kPose ? 6 : block.size;
+    if (referenced.count({static_cast<int>(block.ref.kind), block.ref.keyframe_id}) == 0) {
+      result.problems.push_back(
+          std::string(block.ref.kind == uw::estimation::PoseGraphProblem::ParameterKind::kInertial
+                          ? "inertial state '"
+                          : "keyframe pose '") +
+          block.ref.keyframe_id + "' is free but referenced by no residual — the normal equations "
+          "are singular in those " + std::to_string(block.size) + " columns");
+    }
+  }
+
+  if (result.residual_dim < result.free_parameter_dim) {
+    result.problems.push_back("the graph has " + std::to_string(result.residual_dim) +
+                              " residual rows for " + std::to_string(result.free_parameter_dim) +
+                              " free parameters — underdetermined, and LM damping would return an "
+                              "arbitrary answer rather than fail");
+  }
+  return result;
+}
+
 std::vector<std::string> uw::application::EvaluateReplayGates(
     const uw::runtime::PlatformDefaultsConfig& defaults, const uw::estimation::GaussNewtonSummary& solver,
     const uw::evaluation::AteResult& ate, int num_landmarks, const MapContributionCounts& contributions,
@@ -281,6 +387,12 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
   // evidence to real evidence computed from /raw/camera/left,right — see
   // that block for why this needs `rig` too, not just this string.
   std::string estimator_mode = "black_box_vio";
+  // Set instead when estimator_mode is "imu_preintegration". Kept separate
+  // from `rig` above because that one is deliberately only populated for a
+  // rig WITH cameras (it gates the acoustic-optic pass), while the inertial
+  // path needs the imu_noise block and the base_link->imu_link edge of a
+  // camera-less rig such as configs/rig/example_auv_sonar_only.yaml.
+  std::optional<uw::domain::RigCalibrationSnapshot> imu_rig;
   std::string landmark_detector = "bright_blob";
   // RunManifest provenance (section 5.6): best-effort, not a guarantee — the
   // seed reflects this experiment's declared scenario seed, which is what
@@ -299,6 +411,7 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
     write_run_manifest = config.write_run_manifest;
     if (config.rig.cameras_size() > 0) rig = config.rig;
     estimator_mode = config.estimator_mode;
+    if (config.estimator_mode == "imu_preintegration") imu_rig = config.rig;
     landmark_detector = config.landmark_detector;
     scenario_seed = config.scenario.seed;
     config_hash = Fnv1aHex(ReadFileBytesOrEmpty(opt.experiment_path));
@@ -405,22 +518,78 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
   // keyframe consistent with the rest of the graph — this is independent of
   // warmup_seconds: it directly seeds the fixed vertex rather than adding a
   // depth factor, so it's not one of the "fusions" warmup gates.
-  double kf0_z = 0.0;
+  //
+  // In estimator_mode: imu_preintegration the anchor is the FIRST KEYFRAME
+  // BOUNDARY's keyframe, not the literal id "kf0": keyframe identity in
+  // that mode comes from /keyframe/boundary and nothing else. Its x/y/yaw
+  // are the same canonical zero for the same gauge reason; its roll/pitch
+  // come from the stationary initializer's measured gravity direction (the
+  // one thing gravity does observe), and its z from its own depth evidence
+  // exactly as below.
+  const bool imu_mode = estimator_mode == "imu_preintegration";
+  std::vector<const uw::domain::KeyframeBoundary*> ordered_boundaries;
+  std::optional<uw::frontends::ImuStationaryInitialization> inertial_initialization;
+  std::string anchor_keyframe_id = "kf0";
+  if (imu_mode) {
+    if (!imu_rig.has_value()) {
+      std::cerr << "imu_preintegration: no rig loaded; this mode needs --experiment with a rig "
+                   "carrying imu_noise and a base_link->imu_link edge\n";
+      return 1;
+    }
+    // ReplayInputAccumulator already rejected duplicate ids and
+    // non-increasing capture times, so bag order IS boundary order here;
+    // this only records it.
+    for (const auto& boundary : input.keyframe_boundaries) ordered_boundaries.push_back(&boundary);
+    if (ordered_boundaries.size() < 2) {
+      std::cerr << "imu_preintegration: fewer than two keyframe boundaries on "
+                << uw::runtime::kTopicKeyframeBoundary << " (" << ordered_boundaries.size()
+                << " found) — this mode has no other source of keyframe identity, and ground "
+                   "truth is not a substitute\n";
+      return 1;
+    }
+    anchor_keyframe_id = ordered_boundaries.front()->keyframe_id().value();
+
+    const double window_end_s =
+        uw::domain::ToSeconds(ordered_boundaries.front()->header().capture_time());
+    inertial_initialization = uw::frontends::InitializeFromStationaryWindow(
+        input.imu_samples, window_end_s, *imu_rig);
+    if (!inertial_initialization.has_value()) {
+      std::cerr << "imu_preintegration: cannot define an initial inertial prior from this bag "
+                   "(rig imu_noise unusable, or a malformed IMU reading inside the pre-roll "
+                   "window)\n";
+      return 1;
+    }
+    std::cout << "imu stationary initializer: "
+              << (inertial_initialization->mode ==
+                          uw::frontends::ImuStationaryInitialization::Mode::kStationary
+                      ? "stationary"
+                      : "wide_velocity_prior")
+              << " over " << inertial_initialization->sample_count << " sample(s) / "
+              << inertial_initialization->window_duration_s << " s before "
+              << anchor_keyframe_id;
+    if (!inertial_initialization->detail.empty()) {
+      std::cout << " (" << inertial_initialization->detail << ")";
+    }
+    std::cout << "\n";
+  }
+
+  double anchor_z = 0.0;
   for (const auto& evidence : input.evidence) {
-    if (kf0_z != 0.0) break;  // already found
+    if (anchor_z != 0.0) break;  // already found
     if (!uw::domain::HasPayload<uw::domain::PressureDepthMeasurement>(evidence)) continue;
     if (evidence.source_observations_size() == 0) continue;
-    if (evidence.source_observations(0).value() != "kf0") continue;
+    if (evidence.source_observations(0).value() != anchor_keyframe_id) continue;
     // depth_m is positive-down (world Z-up); negate to get pose z — see
     // PressureDepthMeasurement's field comment in
     // schemas/proto/uw/domain/measurement.proto.
-    kf0_z = -uw::domain::GetPayload<uw::domain::PressureDepthMeasurement>(evidence).depth_m();
+    anchor_z = -uw::domain::GetPayload<uw::domain::PressureDepthMeasurement>(evidence).depth_m();
   }
 
   uw::estimation::PoseGraphProblem problem;
-  Pose3 kf0_pose = Pose3::Identity();
-  kf0_pose.translation.z() = kf0_z;
-  problem.AddKeyframe("kf0", kf0_pose, /*fixed=*/true);
+  Pose3 anchor_pose = Pose3::Identity();
+  anchor_pose.translation.z() = anchor_z;
+  if (imu_mode) anchor_pose.rotation = inertial_initialization->rotation_WB;
+  problem.AddKeyframe(anchor_keyframe_id, anchor_pose, /*fixed=*/true);
 
   // sqrt-information constants, from configs/defaults/platform.yaml via
   // --experiment (or PlatformDefaultsConfig's built-in fallback values if
@@ -537,16 +706,30 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
   // resort. .emplace() only inserts when a higher tier hasn't already
   // claimed that keyframe, so running these three passes in this fixed
   // order IS the priority order.
+  //
+  // In estimator_mode: imu_preintegration none of that applies: the
+  // /keyframe/boundary stream is the sole source of both keyframe identity
+  // and keyframe time, filled here ahead of every other tier, and the
+  // ground-truth loop below contributes NOTHING to the algorithm path --
+  // not a pose, and not a timestamp either. A timestamp is not a harmless
+  // thing to take from ground truth in this mode: it is what defines the
+  // preintegration interval, so reading it from /gt/state would put ground
+  // truth directly into the estimate.
+  if (imu_mode) {
+    for (const auto* boundary : ordered_boundaries) {
+      capture_time_by_keyframe[boundary->keyframe_id().value()] = boundary->header().capture_time();
+    }
+  }
   std::vector<uw::evaluation::TrajectoryPose> ground_truth_trajectory;
   for (const auto& gt : input.reference_states) {
-    if (gt.has_state_id() && !gt.state_id().value().empty()) {
+    if (!imu_mode && gt.has_state_id() && !gt.state_id().value().empty()) {
       capture_time_by_keyframe.emplace(gt.state_id().value(), gt.capture_timestamp());
     }
     ground_truth_trajectory.push_back(
         {uw::domain::ToSeconds(gt.capture_timestamp()), Pose3::FromProto(gt.pose_wb())});
   }
   int num_timestamp_fallback_evidence = 0;
-  for (std::size_t i = 0; i < input.evidence.size(); ++i) {
+  for (std::size_t i = 0; i < input.evidence.size() && !imu_mode; ++i) {
     const auto& evidence = input.evidence[i];
     if (!uw::domain::HasPayload<uw::domain::PressureDepthMeasurement>(evidence)) continue;
     if (evidence.source_observations_size() == 0) continue;
@@ -556,7 +739,7 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
         uw::domain::FromSeconds(static_cast<double>(log_time_ns) * 1e-9));
     if (inserted) ++num_timestamp_fallback_evidence;
   }
-  for (std::size_t i = 0; i < input.evidence.size(); ++i) {
+  for (std::size_t i = 0; i < input.evidence.size() && !imu_mode; ++i) {
     const auto& evidence = input.evidence[i];
     if (!uw::domain::HasPayload<uw::domain::RelativePoseMeasurement>(evidence)) continue;
     const auto& measurement = uw::domain::GetPayload<uw::domain::RelativePoseMeasurement>(evidence);
@@ -571,7 +754,192 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
   }
 
   int num_relative_pose_factors = 0;
-  if (rig.has_value() && estimator_mode == "stereo_landmark_vo") {
+  int num_imu_factors = 0;
+  int num_imu_intervals_rejected = 0;
+  if (imu_mode) {
+    // Inertial dead reckoning. Nothing in this branch reads /gt/state or a
+    // RelativePoseMeasurement: every keyframe after the anchor gets its
+    // pose AND velocity purely from the previous ESTIMATED state propagated
+    // through this interval's preintegrated delta, which is the only
+    // initial guess a phase-1 sensor set can legitimately produce.
+    //
+    // Delta definitions (sensor_models/imu_preintegration.hpp), inverted to
+    // propagate forward with g_W = (0, 0, -gravity):
+    //   R_j = R_i dR        v_j = v_i + g dt + R_i dv
+    //   p_j = p_i + v_i dt + 0.5 g dt^2 + R_i dp
+    uw::frontends::ImuPreintegrationFrontendParams imu_params;
+    uw::frontends::ImuPreintegrationFrontend imu_frontend(imu_params);
+    uw::factor_builders::ImuPreintegrationFactorBuilder imu_builder;
+    const double gravity_mps2 = imu_rig->imu_noise().gravity_mps2() > 0.0
+                                    ? imu_rig->imu_noise().gravity_mps2()
+                                    : 9.80665;
+    const Eigen::Vector3d gravity_W(0.0, 0.0, -gravity_mps2);
+
+    // The anchor's POSE is fixed (gauge), but its inertial block is not:
+    // velocity and both biases are quantities the solver is meant to
+    // refine. What holds them is the one prior residual added below --
+    // without it the block is structurally unconstrained and the normal
+    // equations are singular.
+    uw::estimation::PoseGraphProblem::InertialState anchor_inertial;
+    anchor_inertial.velocity_W = inertial_initialization->velocity_W;
+    anchor_inertial.bias_gyro = inertial_initialization->bias_gyro;
+    anchor_inertial.bias_accel = inertial_initialization->bias_accel;
+    problem.AddInertialState(anchor_keyframe_id, anchor_inertial);
+
+    Eigen::Matrix<double, 9, 1> prior_target;
+    prior_target.segment<3>(0) = anchor_inertial.velocity_W;
+    prior_target.segment<3>(3) = anchor_inertial.bias_gyro;
+    prior_target.segment<3>(6) = anchor_inertial.bias_accel;
+    auto prior_block = uw::factor_builders::InertialPriorResidual::Create(
+        prior_target, inertial_initialization->sigma);
+    if (!prior_block) {
+      std::cerr << "imu_preintegration: the stationary initializer produced a prior sigma that "
+                   "cannot define a residual\n";
+      return 1;
+    }
+    problem.AddResidualBlockOnParameters(
+        std::move(prior_block),
+        {uw::estimation::PoseGraphProblem::InertialRef(anchor_keyframe_id)});
+
+    // Sorted once, then sliced per interval. Handing the frontend the whole
+    // bag every time is quadratic: it re-filters, re-converts and re-sorts
+    // every sample on every call, so a 5-minute recording at 200 Hz with
+    // 5 Hz keyframes would do ~1500 full sorts of 60000 samples. The
+    // synthetic fixture (541 samples, 11 intervals) hides that completely.
+    // The slice starts at the last sample at or before `from_time` -- the
+    // reading the frontend holds at the interval's start -- and ends at
+    // `to_time`, which is everything it looks at.
+    std::vector<uw::domain::ImuSample> sorted_imu_samples = input.imu_samples;
+    std::stable_sort(sorted_imu_samples.begin(), sorted_imu_samples.end(),
+                     [](const uw::domain::ImuSample& a, const uw::domain::ImuSample& b) {
+                       return uw::domain::ToSeconds(a.header().capture_time()) <
+                              uw::domain::ToSeconds(b.header().capture_time());
+                     });
+    std::vector<double> sorted_imu_times;
+    sorted_imu_times.reserve(sorted_imu_samples.size());
+    for (const auto& sample : sorted_imu_samples) {
+      sorted_imu_times.push_back(uw::domain::ToSeconds(sample.header().capture_time()));
+    }
+    auto imu_window_for = [&](double from_time_s,
+                              double to_time_s) -> std::vector<uw::domain::ImuSample> {
+      const auto first_after_from =
+          std::upper_bound(sorted_imu_times.begin(), sorted_imu_times.end(), from_time_s);
+      const std::size_t begin =
+          first_after_from == sorted_imu_times.begin()
+              ? 0
+              : static_cast<std::size_t>(first_after_from - sorted_imu_times.begin()) - 1;
+      const auto first_after_to =
+          std::upper_bound(sorted_imu_times.begin(), sorted_imu_times.end(), to_time_s);
+      const std::size_t end = static_cast<std::size_t>(first_after_to - sorted_imu_times.begin());
+      if (end <= begin) return {};
+      return std::vector<uw::domain::ImuSample>(sorted_imu_samples.begin() + begin,
+                                                 sorted_imu_samples.begin() + end);
+    };
+
+    for (std::size_t i = 1; i < ordered_boundaries.size(); ++i) {
+      const std::string from = ordered_boundaries[i - 1]->keyframe_id().value();
+      const std::string to = ordered_boundaries[i]->keyframe_id().value();
+      if (!problem.HasKeyframe(from)) {
+        ++num_imu_intervals_rejected;
+        continue;  // the previous interval was rejected; do not bridge over it
+      }
+
+      uw::measurement_api::ImuPreintegrationRequest request;
+      request.from_keyframe_id = from;
+      request.to_keyframe_id = to;
+      request.from_time = ordered_boundaries[i - 1]->header().capture_time();
+      request.to_time = ordered_boundaries[i]->header().capture_time();
+      // Linearise at the state the graph currently holds for `from`, which
+      // for the anchor is the initializer's estimate and afterwards is the
+      // propagated one.
+      const auto from_inertial = problem.GetInertialState(from);
+      request.bias_gyro = from_inertial.bias_gyro;
+      request.bias_accel = from_inertial.bias_accel;
+
+      const auto evidence = imu_frontend.Process(
+          imu_window_for(uw::domain::ToSeconds(request.from_time),
+                         uw::domain::ToSeconds(request.to_time)),
+          request, *imu_rig);
+      if (!evidence.has_value()) {
+        ++num_imu_intervals_rejected;
+        std::cout << "imu interval " << from << " -> " << to
+                  << " rejected: " << imu_frontend.last_rejection_reason() << "\n";
+        continue;
+      }
+      std::string delta_error;
+      const auto delta = uw::sensor_models::PreintegratedImuDelta::FromProto(
+          evidence->imu_preintegration(), &delta_error);
+      if (!delta.has_value()) {
+        ++num_imu_intervals_rejected;
+        std::cout << "imu interval " << from << " -> " << to
+                  << " rejected: unreadable delta (" << delta_error << ")\n";
+        continue;
+      }
+
+      const Pose3 from_pose = problem.GetKeyframePose(from);
+      const Eigen::Matrix3d R_i = from_pose.rotation.toRotationMatrix();
+      const double dt = delta->delta_time_s;
+      Pose3 to_pose;
+      to_pose.rotation = Eigen::Quaterniond(R_i * delta->delta_rotation).normalized();
+      to_pose.translation = from_pose.translation + from_inertial.velocity_W * dt +
+                            0.5 * gravity_W * dt * dt + R_i * delta->delta_position;
+      uw::estimation::PoseGraphProblem::InertialState to_inertial;
+      to_inertial.velocity_W =
+          from_inertial.velocity_W + gravity_W * dt + R_i * delta->delta_velocity;
+      // Biases are modelled as a random walk, so the propagated guess for
+      // the next state is simply the current one; the IMU residual's bias
+      // rows are what let the solver move them apart.
+      to_inertial.bias_gyro = from_inertial.bias_gyro;
+      to_inertial.bias_accel = from_inertial.bias_accel;
+
+      uw::domain::FactorCandidate candidate;
+      candidate.set_residual_model(
+          uw::factor_builders::ImuPreintegrationFactorBuilder::kResidualModel);
+      candidate.set_proposed_noise(1.0);
+      auto block = imu_builder.Build(candidate, *evidence, {});
+      if (!block) {
+        ++num_imu_intervals_rejected;
+        std::cout << "imu interval " << from << " -> " << to
+                  << " rejected: factor builder refused the evidence\n";
+        continue;
+      }
+
+      // Registered only now that the edge is certain to exist. Adding the
+      // keyframe first and bailing out afterwards would leave `to` in the
+      // graph with a free 9-dim inertial block and no IMU edge, which both
+      // defeats the "did the previous interval survive?" guard above (the
+      // next iteration would find `to` present and bridge straight over the
+      // gap) and, if `to` has no depth/sonar factor either, turns a
+      // recoverable interval rejection into a hard structural failure.
+      problem.AddKeyframe(to, to_pose);
+      problem.AddInertialState(to, to_inertial);
+      problem.AddResidualBlockOnParameters(
+          std::move(block), {uw::estimation::PoseGraphProblem::PoseRef(from),
+                             uw::estimation::PoseGraphProblem::InertialRef(from),
+                             uw::estimation::PoseGraphProblem::PoseRef(to),
+                             uw::estimation::PoseGraphProblem::InertialRef(to)});
+      evidence_by_keyframe[to].push_back(evidence->evidence_id());
+      ++num_imu_factors;
+    }
+    std::cout << "added " << num_imu_factors << " IMU preintegration factors over "
+              << ordered_boundaries.size() << " keyframe boundaries ("
+              << num_imu_intervals_rejected << " interval(s) rejected)\n";
+    // A rejected interval does not merely lose one edge: with no other
+    // relative-motion source in this sensor set, `to` never enters the
+    // graph and neither does anything after it. The run would then write a
+    // SHORTER trajectory and score an ATE over that prefix alone -- which
+    // can read better than the full run, not worse. Fail closed instead of
+    // publishing a number that silently describes a different trajectory
+    // than the one that was asked for.
+    if (problem.NumKeyframes() != ordered_boundaries.size()) {
+      std::cerr << "imu_preintegration: " << problem.NumKeyframes() << " of "
+                << ordered_boundaries.size()
+                << " keyframe boundaries made it into the graph — " << num_imu_intervals_rejected
+                << " interval(s) were rejected, so the trajectory is truncated and any ATE over "
+                   "it would describe a different run\n";
+      return 1;
+    }
+  } else if (rig.has_value() && estimator_mode == "stereo_landmark_vo") {
     // Real relative-pose evidence computed from stereo camera frames
     // (include/frontends/stereo_landmark_vo_frontend.hpp) instead of
     // synth_bag_gen's ground-truth+noise "black-box VIO" stand-in read
@@ -873,6 +1241,27 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
   // above; a "ceres_v1" selection in a binary that wasn't built with
   // UW_BUILD_CERES_SOLVER is a fatal startup error here, not a silent
   // fallback to gauss_newton_v1 (see that doc's §8 error table).
+  // Structural observability, checked BEFORE solving (PREP-B-01): a free
+  // parameter block that no residual touches is a singular column, and LM
+  // damping would return a plausible-looking arbitrary value for it rather
+  // than failing. In estimator_mode: imu_preintegration this is the
+  // specific guard the design note asks for -- every inertial state must be
+  // reached by an IMU edge or by the anchor prior -- but the property is
+  // mode-independent, so it is checked for every run.
+  const auto observability = uw::application::CheckGraphObservability(problem);
+  std::cout << "graph: " << problem.NumKeyframes() << " keyframes, "
+            << problem.NumInertialStates() << " inertial states, "
+            << problem.NumResidualBlocks() << " residual blocks, "
+            << observability.free_parameter_dim << " free parameter dims, "
+            << observability.residual_dim << " residual dims\n";
+  if (!observability.problems.empty()) {
+    std::cerr << "STRUCTURALLY SINGULAR GRAPH:\n";
+    for (const auto& problem_text : observability.problems) {
+      std::cerr << "  - " << problem_text << "\n";
+    }
+    return 1;
+  }
+
   uw::estimation::GaussNewtonSummary summary;
   if (defaults.solver == "ceres_v1") {
 #ifdef UW_HAVE_CERES_SOLVER
@@ -1084,6 +1473,35 @@ int uw::application::RunReplayPipeline(const ReplayOptions& opt,
       uw::evaluation::ComputeAte(estimated_trajectory, ground_truth_trajectory, 0.05, opt.align_ate);
   std::cout << "ATE: rmse=" << ate.rmse_m << "m mean=" << ate.mean_m << "m max=" << ate.max_m
             << "m (" << ate.num_matched_poses << " matched poses)\n";
+
+  uw::application::ReplayRunSummary run_summary;
+  run_summary.estimator_mode = estimator_mode;
+  run_summary.solver = defaults.solver;
+  run_summary.solver_converged = summary.converged;
+  run_summary.solver_iterations = summary.iterations;
+  run_summary.initial_cost = summary.initial_cost;
+  run_summary.final_cost = summary.final_cost;
+  run_summary.keyframe_count = static_cast<int>(problem.NumKeyframes());
+  run_summary.keyframe_boundary_count = static_cast<int>(input.keyframe_boundaries.size());
+  run_summary.imu_factor_count = num_imu_factors;
+  run_summary.imu_interval_rejected_count = num_imu_intervals_rejected;
+  run_summary.relative_pose_factor_count = num_relative_pose_factors;
+  run_summary.loop_closure_factor_count = num_loop_closure_factors;
+  run_summary.sonar_range_factor_count = num_sonar_factors;
+  run_summary.depth_factor_count = num_depth_factors;
+  run_summary.landmark_count = num_landmarks_discovered;
+  if (imu_mode) {
+    run_summary.initialization =
+        inertial_initialization->mode ==
+                uw::frontends::ImuStationaryInitialization::Mode::kStationary
+            ? "stationary"
+            : "wide_velocity_prior";
+  }
+  run_summary.free_parameter_dim = observability.free_parameter_dim;
+  run_summary.residual_dim = observability.residual_dim;
+  run_summary.ate_rmse_m = ate.rmse_m;
+  run_summary.ate_matched_poses = ate.num_matched_poses;
+  std::cout << uw::application::FormatReplayRunSummary(run_summary);
 
   {
     std::ofstream traj_out(opt.out_prefix + "_trajectory.tum");

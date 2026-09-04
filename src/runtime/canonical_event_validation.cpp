@@ -115,6 +115,20 @@ CanonicalEventValidationResult ValidatePayload(const uw::domain::DvlSample& samp
   return ValidateRawHeader(sample.header());
 }
 
+CanonicalEventValidationResult ValidatePayload(const uw::domain::KeyframeBoundary& boundary) {
+  auto result = ValidateRawHeader(boundary.header());
+  if (!result.ok()) return result;
+  if (boundary.keyframe_id().value().empty()) {
+    return Invalid(CanonicalEventValidationCode::kKeyframeBoundaryInvalid,
+                   "keyframe boundary keyframe_id must be nonempty");
+  }
+  if (boundary.source().empty()) {
+    return Invalid(CanonicalEventValidationCode::kKeyframeBoundaryInvalid,
+                   "keyframe boundary source must be nonempty");
+  }
+  return {};
+}
+
 bool HasFiniteVehicleVectors(const uw::domain::VehicleState& state) {
   for (double value : state.orientation_xyzw()) {
     if (!std::isfinite(value)) return false;

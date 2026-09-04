@@ -304,6 +304,11 @@ class CountingPort final : public uw::application::PipelineInputPort {
     return true;
   }
 
+  bool OnKeyframeBoundary(const CanonicalEvent&) override {
+    ++keyframe_boundary_count;
+    return true;
+  }
+
   bool OnMeasurementEvidence(const CanonicalEvent&) override {
     ++measurement_evidence_count;
     return true;
@@ -330,7 +335,8 @@ class CountingPort final : public uw::application::PipelineInputPort {
   }
 
   uint64_t RawCount() const {
-    return image_count + sonar_count + imu_count + dvl_count + vehicle_state_count;
+    return image_count + sonar_count + imu_count + dvl_count + vehicle_state_count +
+           keyframe_boundary_count;
   }
 
   uint64_t left_image_count = 0;
@@ -340,6 +346,7 @@ class CountingPort final : public uw::application::PipelineInputPort {
   uint64_t imu_count = 0;
   uint64_t dvl_count = 0;
   uint64_t vehicle_state_count = 0;
+  uint64_t keyframe_boundary_count = 0;
   uint64_t measurement_evidence_count = 0;
   uint64_t reference_count = 0;
   uint64_t health_count = 0;

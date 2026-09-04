@@ -164,6 +164,7 @@ class OnlineAssistPipeline::Impl {
   // (never stalls the online loop) but never fed into tracking.
   bool OnImuSample(const uw::runtime::CanonicalEvent&) { return true; }
   bool OnDvlSample(const uw::runtime::CanonicalEvent&) { return true; }
+  bool OnKeyframeBoundary(const uw::runtime::CanonicalEvent&) { return true; }
   bool OnMeasurementEvidence(const uw::runtime::CanonicalEvent&) { return true; }
   bool OnReferenceState(const uw::runtime::CanonicalEvent&) { return true; }
   bool OnMapEvidence(const uw::runtime::CanonicalEvent&) { return true; }
@@ -554,6 +555,9 @@ bool OnlineAssistPipeline::OnDvlSample(const uw::runtime::CanonicalEvent& event)
 }
 bool OnlineAssistPipeline::OnVehicleState(const uw::runtime::CanonicalEvent& event) {
   return impl_->OnVehicleState(event);
+}
+bool OnlineAssistPipeline::OnKeyframeBoundary(const uw::runtime::CanonicalEvent& event) {
+  return impl_->OnKeyframeBoundary(event);
 }
 bool OnlineAssistPipeline::OnMeasurementEvidence(const uw::runtime::CanonicalEvent& event) {
   return impl_->OnMeasurementEvidence(event);

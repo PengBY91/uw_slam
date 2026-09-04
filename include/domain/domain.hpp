@@ -23,6 +23,7 @@
 #include "uw/domain/ids.pb.h"
 #include "uw/domain/image.pb.h"
 #include "uw/domain/imu.pb.h"
+#include "uw/domain/keyframe.pb.h"
 #include "uw/domain/map.pb.h"
 #include "uw/domain/measurement.pb.h"
 #include "uw/domain/observation.pb.h"

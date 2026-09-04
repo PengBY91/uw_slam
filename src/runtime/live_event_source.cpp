@@ -58,6 +58,7 @@ Lane LaneForKind(CanonicalEventKind kind) {
     case CanonicalEventKind::kImuSample:
     case CanonicalEventKind::kDvlSample:
     case CanonicalEventKind::kVehicleState:
+    case CanonicalEventKind::kKeyframeBoundary:
       return Lane::kLocalization;
     case CanonicalEventKind::kSonarFrame:
       return Lane::kCorrection;
@@ -86,6 +87,8 @@ const uw::domain::ObservationHeader* RawHeader(CanonicalEventKind kind,
       return &std::get<uw::domain::DvlSample>(payload).header();
     case CanonicalEventKind::kVehicleState:
       return &std::get<uw::domain::VehicleState>(payload).header();
+    case CanonicalEventKind::kKeyframeBoundary:
+      return &std::get<uw::domain::KeyframeBoundary>(payload).header();
     case CanonicalEventKind::kMeasurementEvidence:
     case CanonicalEventKind::kStateSnapshot:
     case CanonicalEventKind::kHealthReport:

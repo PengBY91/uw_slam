@@ -144,6 +144,7 @@ class OnlineAssistPipeline final : public PipelineInputPort {
   bool OnImuSample(const uw::runtime::CanonicalEvent& event) override;
   bool OnDvlSample(const uw::runtime::CanonicalEvent& event) override;
   bool OnVehicleState(const uw::runtime::CanonicalEvent& event) override;
+  bool OnKeyframeBoundary(const uw::runtime::CanonicalEvent& event) override;
   bool OnMeasurementEvidence(const uw::runtime::CanonicalEvent& event) override;
   bool OnReferenceState(const uw::runtime::CanonicalEvent& event) override;
   bool OnHealthReport(const uw::runtime::CanonicalEvent& event) override;

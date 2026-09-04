@@ -72,6 +72,8 @@ std::string IdentityOf(const CanonicalEvent& event) {
           return payload.component_id();
         } else if constexpr (std::is_same_v<T, uw::domain::MapEvidence>) {
           return payload.evidence_id().value();
+        } else if constexpr (std::is_same_v<T, uw::domain::KeyframeBoundary>) {
+          return payload.keyframe_id().value();
         } else {
           // ImageFrame, SonarFrame, ImuSample, DvlSample: all carry a plain
           // ObservationHeader.
@@ -105,6 +107,7 @@ class SpyInputPort final : public uw::application::PipelineInputPort {
   bool OnImuSample(const CanonicalEvent& event) override { return Record(event); }
   bool OnDvlSample(const CanonicalEvent& event) override { return Record(event); }
   bool OnVehicleState(const CanonicalEvent& event) override { return Record(event); }
+  bool OnKeyframeBoundary(const CanonicalEvent& event) override { return Record(event); }
   bool OnMeasurementEvidence(const CanonicalEvent& event) override { return Record(event); }
   bool OnReferenceState(const CanonicalEvent& event) override { return Record(event); }
   bool OnHealthReport(const CanonicalEvent& event) override { return Record(event); }
@@ -145,6 +148,12 @@ std::vector<CanonicalEvent> BuildOrderedFixture() {
   uw::domain::MeasurementEvidence evidence;
   evidence.mutable_evidence_id()->set_value("depth_kf0");
   events.push_back({uw::runtime::kTopicEvidenceDepth, 5000, sequence++, evidence});
+
+  uw::domain::KeyframeBoundary boundary;
+  boundary.mutable_header()->mutable_observation_id()->set_value("boundary-kf0");
+  boundary.mutable_keyframe_id()->set_value("kf0");
+  boundary.set_source("parity-fixture");
+  events.push_back({uw::runtime::kTopicKeyframeBoundary, 5500, sequence++, boundary});
 
   uw::domain::StateSnapshot state;
   state.mutable_state_id()->set_value("kf0");

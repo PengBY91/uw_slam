@@ -66,6 +66,7 @@ add_library(frontends STATIC
   src/frontends/posterior_depth_optimizer.cpp
   src/frontends/acoustic_optic_depth_fusion_frontend.cpp
   src/frontends/imu_preintegration_frontend.cpp
+  src/frontends/imu_stationary_initializer.cpp
 )
 add_library(uw::frontends ALIAS frontends)
 target_include_directories(frontends PUBLIC "${PROJECT_SOURCE_DIR}/include")
@@ -81,6 +82,7 @@ add_library(factor_builders STATIC
   src/factor_builders/sonar_range_factor_builder.cpp
   src/factor_builders/imu_preintegration_residual.cpp
   src/factor_builders/imu_preintegration_factor_builder.cpp
+  src/factor_builders/inertial_prior_residual.cpp
 )
 add_library(uw::factor_builders ALIAS factor_builders)
 target_include_directories(factor_builders PUBLIC "${PROJECT_SOURCE_DIR}/include")

@@ -40,6 +40,38 @@ uw::domain::SonarFrame MakeSonarFrame(const std::string& observation_id) {
   return frame;
 }
 
+uw::domain::KeyframeBoundary MakeKeyframeBoundary(const std::string& keyframe_id) {
+  uw::domain::KeyframeBoundary boundary;
+  boundary.mutable_header()->mutable_observation_id()->set_value("boundary-" + keyframe_id);
+  boundary.mutable_keyframe_id()->set_value(keyframe_id);
+  boundary.set_source("test-selector");
+  return boundary;
+}
+
+TEST_F(McapEventSourceTest, RoundTripsKeyframeBoundaryAsItsOwnPayloadKind) {
+  {
+    McapProtobufWriter writer;
+    ASSERT_TRUE(writer.Open(path_));
+    ASSERT_TRUE(writer.WriteMessage(uw::runtime::kTopicKeyframeBoundary, 1234,
+                                    MakeKeyframeBoundary("kf-7")));
+    writer.Close();
+  }
+
+  McapEventSource source(path_);
+  std::vector<CanonicalEvent> events;
+  const auto report = source.Run([&](const CanonicalEvent& event) {
+    events.push_back(event);
+    return true;
+  });
+
+  ASSERT_EQ(report.status, EventSourceStatus::kCompleted);
+  ASSERT_EQ(events.size(), 1u);
+  EXPECT_EQ(events[0].topic, uw::runtime::kTopicKeyframeBoundary);
+  ASSERT_TRUE(std::holds_alternative<uw::domain::KeyframeBoundary>(events[0].payload));
+  EXPECT_EQ(std::get<uw::domain::KeyframeBoundary>(events[0].payload).keyframe_id().value(),
+            "kf-7");
+}
+
 TEST_F(McapEventSourceTest, OrdersEventsByLogTimeNotWriteOrder) {
   {
     McapProtobufWriter writer;

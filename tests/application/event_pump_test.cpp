@@ -72,6 +72,9 @@ class SpyInputPort final : public PipelineInputPort {
     ++vehicle_state_count;
     return Record("OnVehicleState", event);
   }
+  bool OnKeyframeBoundary(const CanonicalEvent& event) override {
+    return Record("OnKeyframeBoundary", event);
+  }
   bool OnMeasurementEvidence(const CanonicalEvent& event) override {
     return Record("OnMeasurementEvidence", event);
   }
@@ -116,21 +119,25 @@ std::vector<CanonicalEvent> MakeOneOfEachEvent() {
   vehicle_state.mutable_header()->mutable_observation_id()->set_value("vehicle0");
   events.push_back({uw::runtime::kTopicVehicleState, 4500, 4, vehicle_state});
 
+  uw::domain::KeyframeBoundary boundary;
+  boundary.mutable_keyframe_id()->set_value("kf0");
+  events.push_back({uw::runtime::kTopicKeyframeBoundary, 4750, 5, boundary});
+
   uw::domain::MeasurementEvidence evidence;
   evidence.mutable_evidence_id()->set_value("ev0");
-  events.push_back({uw::runtime::kTopicEvidenceDepth, 5000, 5, evidence});
+  events.push_back({uw::runtime::kTopicEvidenceDepth, 5000, 6, evidence});
 
   uw::domain::StateSnapshot state;
   state.mutable_state_id()->set_value("gt0");
-  events.push_back({uw::runtime::kTopicGtState, 6000, 6, state});
+  events.push_back({uw::runtime::kTopicGtState, 6000, 7, state});
 
   uw::domain::HealthReport health;
   health.set_component_id("comp0");
-  events.push_back({uw::runtime::kTopicHealth, 7000, 7, health});
+  events.push_back({uw::runtime::kTopicHealth, 7000, 8, health});
 
   uw::domain::MapEvidence map_evidence;
   map_evidence.mutable_evidence_id()->set_value("map0");
-  events.push_back({uw::runtime::kTopicEvidenceMap, 8000, 8, map_evidence});
+  events.push_back({uw::runtime::kTopicEvidenceMap, 8000, 9, map_evidence});
 
   return events;
 }
@@ -142,16 +149,17 @@ TEST(EventPump, DispatchesEachPayloadKindToItsOwnMethod) {
   const auto report = PumpEvents(source, spy);
 
   EXPECT_EQ(report.status, EventSourceStatus::kCompleted);
-  ASSERT_EQ(spy.calls.size(), 9u);
+  ASSERT_EQ(spy.calls.size(), 10u);
   EXPECT_EQ(spy.calls[0].method, "OnImageFrame");
   EXPECT_EQ(spy.calls[1].method, "OnSonarFrame");
   EXPECT_EQ(spy.calls[2].method, "OnImuSample");
   EXPECT_EQ(spy.calls[3].method, "OnDvlSample");
   EXPECT_EQ(spy.calls[4].method, "OnVehicleState");
-  EXPECT_EQ(spy.calls[5].method, "OnMeasurementEvidence");
-  EXPECT_EQ(spy.calls[6].method, "OnReferenceState");
-  EXPECT_EQ(spy.calls[7].method, "OnHealthReport");
-  EXPECT_EQ(spy.calls[8].method, "OnMapEvidence");
+  EXPECT_EQ(spy.calls[5].method, "OnKeyframeBoundary");
+  EXPECT_EQ(spy.calls[6].method, "OnMeasurementEvidence");
+  EXPECT_EQ(spy.calls[7].method, "OnReferenceState");
+  EXPECT_EQ(spy.calls[8].method, "OnHealthReport");
+  EXPECT_EQ(spy.calls[9].method, "OnMapEvidence");
   EXPECT_EQ(spy.flush_count, 1);
 }
 

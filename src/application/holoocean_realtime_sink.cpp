@@ -196,6 +196,9 @@ class ForwardingPort final : public uw::application::PipelineInputPort {
   bool OnImuSample(const uw::runtime::CanonicalEvent& e) override { return pipeline_.OnImuSample(e); }
   bool OnDvlSample(const uw::runtime::CanonicalEvent& e) override { return pipeline_.OnDvlSample(e); }
   bool OnVehicleState(const uw::runtime::CanonicalEvent& e) override { return pipeline_.OnVehicleState(e); }
+  bool OnKeyframeBoundary(const uw::runtime::CanonicalEvent& e) override {
+    return pipeline_.OnKeyframeBoundary(e);
+  }
   bool OnMeasurementEvidence(const uw::runtime::CanonicalEvent& e) override {
     return pipeline_.OnMeasurementEvidence(e);
   }

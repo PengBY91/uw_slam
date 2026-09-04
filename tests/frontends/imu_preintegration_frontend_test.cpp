@@ -35,6 +35,8 @@ uw::domain::RigCalibrationSnapshot MakeRig(const Pose3& imu_pose = Pose3::Identi
   noise->set_sigma_accel_c(2.0e-3);
   noise->set_sigma_gyro_bias(1.9e-5);
   noise->set_sigma_accel_bias(3.0e-3);
+  noise->set_sigma_gyro_bias_walk_c(1.0e-5);
+  noise->set_sigma_accel_bias_walk_c(1.0e-4);
   noise->set_rate_hz(200.0);
   noise->set_gravity_mps2(kGravity);
   return rig;

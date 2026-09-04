@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package uw.domain;
+
+import "uw/domain/ids.proto";
+import "uw/domain/observation.proto";
+
+message KeyframeBoundary {
+  ObservationHeader header = 1;
+  KeyframeId keyframe_id = 2;
+  string source = 3;
+}

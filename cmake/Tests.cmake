@@ -41,6 +41,7 @@ add_executable(frontends_tests
   tests/frontends/posterior_depth_optimizer_test.cpp
   tests/frontends/acoustic_optic_depth_fusion_frontend_test.cpp
   tests/frontends/imu_preintegration_frontend_test.cpp
+  tests/frontends/imu_stationary_initializer_test.cpp
 )
 target_link_libraries(frontends_tests PRIVATE uw::frontends GTest::gtest GTest::gtest_main)
 uw_register_gtest(frontends_tests "unit.frontends" "unit;frontends")
@@ -54,6 +55,7 @@ add_executable(factor_builders_tests
   tests/factor_builders/sonar_range_factor_builder_test.cpp
   tests/factor_builders/imu_preintegration_residual_test.cpp
   tests/factor_builders/imu_preintegration_factor_builder_test.cpp
+  tests/factor_builders/inertial_prior_residual_test.cpp
 )
 target_link_libraries(factor_builders_tests PRIVATE
   uw::factor_builders GTest::gtest GTest::gtest_main
@@ -171,6 +173,22 @@ add_test(
           $<TARGET_FILE:synth_bag_gen> $<TARGET_FILE:replay_demo>
 )
 set_tests_properties(integration.replay_determinism PROPERTIES LABELS "integration;replay")
+
+add_test(
+  NAME integration.synthetic_imu_fixture
+  COMMAND bash ${PROJECT_SOURCE_DIR}/tests/integration/synthetic_imu_fixture_test.sh
+          $<TARGET_FILE:synth_bag_gen> $<TARGET_FILE:bag_audit>
+          ${PROJECT_SOURCE_DIR}
+)
+set_tests_properties(integration.synthetic_imu_fixture PROPERTIES LABELS "integration;replay")
+
+add_test(
+  NAME integration.imu_preintegration_smoke
+  COMMAND bash ${PROJECT_SOURCE_DIR}/tests/integration/imu_preintegration_smoke_test.sh
+          $<TARGET_FILE:synth_bag_gen> $<TARGET_FILE:replay_demo>
+          ${PROJECT_SOURCE_DIR}/configs/experiment/synthetic_imu_preintegration.yaml
+)
+set_tests_properties(integration.imu_preintegration_smoke PROPERTIES LABELS "integration;replay")
 
 add_test(
   NAME integration.optical_baseline_smoke

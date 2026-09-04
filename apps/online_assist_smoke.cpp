@@ -436,6 +436,9 @@ class ReferenceCountingPort final : public uw::application::PipelineInputPort {
   bool OnImuSample(const CanonicalEvent& e) override { return pipeline_.OnImuSample(e); }
   bool OnDvlSample(const CanonicalEvent& e) override { return pipeline_.OnDvlSample(e); }
   bool OnVehicleState(const CanonicalEvent& e) override { return pipeline_.OnVehicleState(e); }
+  bool OnKeyframeBoundary(const CanonicalEvent& e) override {
+    return pipeline_.OnKeyframeBoundary(e);
+  }
   bool OnMeasurementEvidence(const CanonicalEvent& e) override {
     return pipeline_.OnMeasurementEvidence(e);
   }

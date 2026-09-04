@@ -1,0 +1,10 @@
+rig: rig/example_auv_sonar_only.yaml
+scenario: scenario/synthetic_smoke.yaml
+defaults: defaults/platform.yaml
+
+factor_builders:
+  - imu_preintegration_v1
+  - sonar_range_v1
+  - depth_v1
+
+estimator_mode: imu_preintegration

@@ -22,6 +22,8 @@ uw::runtime::EventSourceReport PumpEvents(uw::runtime::EventSource& source, Pipe
             return input.OnDvlSample(event);
           } else if constexpr (std::is_same_v<T, uw::domain::VehicleState>) {
             return input.OnVehicleState(event);
+          } else if constexpr (std::is_same_v<T, uw::domain::KeyframeBoundary>) {
+            return input.OnKeyframeBoundary(event);
           } else if constexpr (std::is_same_v<T, uw::domain::MeasurementEvidence>) {
             return input.OnMeasurementEvidence(event);
           } else if constexpr (std::is_same_v<T, uw::domain::StateSnapshot>) {

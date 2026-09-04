@@ -98,6 +98,25 @@ TEST(CanonicalTopics, GtStateIsMarkedReferenceOnly) {
   EXPECT_EQ(vehicle_state->role, CanonicalTopicRole::kAlgorithmInput);
 }
 
+TEST(CanonicalTopics, KeyframeBoundaryIsDistinctAlgorithmInputWithExactSchema) {
+  const auto* boundary = LookupCanonicalTopic(uw::runtime::kTopicKeyframeBoundary);
+  ASSERT_NE(boundary, nullptr);
+  EXPECT_EQ(boundary->kind, CanonicalEventKind::kKeyframeBoundary);
+  EXPECT_EQ(boundary->descriptor, uw::domain::KeyframeBoundary::descriptor());
+  EXPECT_EQ(boundary->role, CanonicalTopicRole::kAlgorithmInput);
+
+  EXPECT_EQ(ResolveCanonicalTopic(uw::runtime::kTopicKeyframeBoundary,
+                                  uw::domain::ImageFrame::descriptor()),
+            std::nullopt);
+  EXPECT_EQ(ResolveCanonicalTopic(uw::runtime::kTopicKeyframeBoundary,
+                                  uw::domain::KeyframeBoundary::descriptor()),
+            CanonicalEventKind::kKeyframeBoundary);
+
+  const auto* gt_state = LookupCanonicalTopic(uw::runtime::kTopicGtState);
+  ASSERT_NE(gt_state, nullptr);
+  EXPECT_EQ(gt_state->role, CanonicalTopicRole::kReferenceOnly);
+}
+
 }  // namespace
 
 TEST(ControlTopics, CommandTopicsAreRegisteredSeparatelyFromCanonicalInputs) {

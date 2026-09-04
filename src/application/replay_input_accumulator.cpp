@@ -72,6 +72,45 @@ bool ReplayInputAccumulator::OnVehicleState(const uw::runtime::CanonicalEvent& e
   return true;
 }
 
+bool ReplayInputAccumulator::OnKeyframeBoundary(const uw::runtime::CanonicalEvent& event) {
+  const auto& boundary = std::get<uw::domain::KeyframeBoundary>(event.payload);
+  const std::string& keyframe_id = boundary.keyframe_id().value();
+  if (keyframe_id.empty()) {
+    ++diagnostics_.empty_keyframe_id_count;
+    diagnostics_.messages.push_back("empty keyframe_id on a KeyframeBoundary");
+    return true;
+  }
+  if (seen_keyframe_ids_.find(keyframe_id) != seen_keyframe_ids_.end()) {
+    ++diagnostics_.duplicate_keyframe_id_count;
+    diagnostics_.messages.push_back("duplicate keyframe_id '" + keyframe_id +
+                                    "' on a KeyframeBoundary");
+    return true;
+  }
+
+  const auto& capture_time = boundary.header().capture_time();
+  if (!data_.keyframe_boundaries.empty()) {
+    const auto& previous = data_.keyframe_boundaries.back().header().capture_time();
+    if (capture_time.seconds() < previous.seconds() ||
+        (capture_time.seconds() == previous.seconds() &&
+         capture_time.nanos() <= previous.nanos())) {
+      ++diagnostics_.non_increasing_keyframe_capture_time_count;
+      diagnostics_.messages.push_back(
+          "KeyframeBoundary capture_time is not strictly increasing for keyframe_id '" +
+          keyframe_id + "'");
+      return true;
+    }
+  }
+
+  if (!ValidateRawIdentity(boundary.header().sensor_id().value(),
+                           boundary.header().observation_id().value(),
+                           "KeyframeBoundary", /*allow_duplicate_identity=*/false)) {
+    return true;
+  }
+  seen_keyframe_ids_.insert(keyframe_id);
+  data_.keyframe_boundaries.push_back(boundary);
+  return true;
+}
+
 bool ReplayInputAccumulator::OnMeasurementEvidence(const uw::runtime::CanonicalEvent& event) {
   data_.evidence.push_back(std::get<uw::domain::MeasurementEvidence>(event.payload));
   evidence_log_time_ns_.push_back(event.log_time_ns);

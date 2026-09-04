@@ -68,6 +68,66 @@ CanonicalEvent MakeDepthEvidenceEvent(const std::string& evidence_id,
   return event;
 }
 
+CanonicalEvent MakeKeyframeBoundaryEvent(const std::string& observation_id,
+                                         const std::string& keyframe_id,
+                                         double capture_time_s, uint64_t log_time_ns,
+                                         uint64_t seq) {
+  uw::domain::KeyframeBoundary boundary;
+  boundary.mutable_header()->mutable_sensor_id()->set_value("keyframe-selector");
+  boundary.mutable_header()->mutable_observation_id()->set_value(observation_id);
+  *boundary.mutable_header()->mutable_capture_time() = uw::domain::FromSeconds(capture_time_s);
+  boundary.mutable_keyframe_id()->set_value(keyframe_id);
+  boundary.set_source("test-selector");
+  return {uw::runtime::kTopicKeyframeBoundary, log_time_ns, seq, std::move(boundary)};
+}
+
+TEST(ReplayInputAccumulator, StoresValidKeyframeBoundariesInEventOrder) {
+  ReplayInputAccumulator accumulator;
+  EXPECT_TRUE(accumulator.OnKeyframeBoundary(
+      MakeKeyframeBoundaryEvent("boundary-1", "kf-1", 2.0, 9000, 0)));
+  EXPECT_TRUE(accumulator.OnKeyframeBoundary(
+      MakeKeyframeBoundaryEvent("boundary-2", "kf-2", 3.0, 1000, 1)));
+
+  ASSERT_EQ(accumulator.Data().keyframe_boundaries.size(), 2u);
+  EXPECT_EQ(accumulator.Data().keyframe_boundaries[0].keyframe_id().value(), "kf-1");
+  EXPECT_EQ(accumulator.Data().keyframe_boundaries[1].keyframe_id().value(), "kf-2");
+  EXPECT_FALSE(accumulator.Diagnostics().HasErrors());
+}
+
+TEST(ReplayInputAccumulator, RejectsEmptyAndDuplicateKeyframeIdsWithoutStoringThem) {
+  ReplayInputAccumulator accumulator;
+  EXPECT_TRUE(accumulator.OnKeyframeBoundary(
+      MakeKeyframeBoundaryEvent("boundary-empty", "", 1.0, 1, 0)));
+  EXPECT_TRUE(accumulator.OnKeyframeBoundary(
+      MakeKeyframeBoundaryEvent("boundary-1", "kf-1", 2.0, 2, 1)));
+  EXPECT_TRUE(accumulator.OnKeyframeBoundary(
+      MakeKeyframeBoundaryEvent("boundary-2", "kf-1", 3.0, 3, 2)));
+
+  EXPECT_EQ(accumulator.Diagnostics().empty_keyframe_id_count, 1u);
+  EXPECT_EQ(accumulator.Diagnostics().duplicate_keyframe_id_count, 1u);
+  EXPECT_EQ(accumulator.Diagnostics().non_increasing_keyframe_capture_time_count, 0u);
+  ASSERT_EQ(accumulator.Data().keyframe_boundaries.size(), 1u);
+  EXPECT_EQ(accumulator.Data().keyframe_boundaries[0].keyframe_id().value(), "kf-1");
+  EXPECT_TRUE(accumulator.Diagnostics().HasErrors());
+}
+
+TEST(ReplayInputAccumulator, RejectsNonIncreasingBoundaryHeaderCaptureTimeNotLogTime) {
+  ReplayInputAccumulator accumulator;
+  EXPECT_TRUE(accumulator.OnKeyframeBoundary(
+      MakeKeyframeBoundaryEvent("boundary-1", "kf-1", 10.0, 300, 0)));
+  EXPECT_TRUE(accumulator.OnKeyframeBoundary(
+      MakeKeyframeBoundaryEvent("boundary-2", "kf-2", 10.0, 400, 1)));
+  EXPECT_TRUE(accumulator.OnKeyframeBoundary(
+      MakeKeyframeBoundaryEvent("boundary-3", "kf-3", 9.0, 500, 2)));
+  EXPECT_TRUE(accumulator.OnKeyframeBoundary(
+      MakeKeyframeBoundaryEvent("boundary-4", "kf-4", 11.0, 100, 3)));
+
+  EXPECT_EQ(accumulator.Diagnostics().non_increasing_keyframe_capture_time_count, 2u);
+  ASSERT_EQ(accumulator.Data().keyframe_boundaries.size(), 2u);
+  EXPECT_EQ(accumulator.Data().keyframe_boundaries[1].keyframe_id().value(), "kf-4");
+  EXPECT_TRUE(accumulator.Diagnostics().HasErrors());
+}
+
 TEST(ReplayInputAccumulator, PreservesJitteredNonKeyframeAlignedObservationIds) {
   ReplayInputAccumulator accumulator;
   ASSERT_TRUE(accumulator.OnImageFrame(MakeImageEvent("camera_left", "frame-A", 0.0, 0, 0)));

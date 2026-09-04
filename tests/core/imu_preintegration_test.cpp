@@ -266,7 +266,7 @@ TEST(ImuPreintegration, IntegrateRejectsNonFiniteInputAndNonPositiveDt) {
   EXPECT_DOUBLE_EQ(integrator.delta().delta_time_s, 0.0);
 }
 
-TEST(ImuPreintegration, NoiseFromRigFallsBackToBiasSigmaAndRejectsZeroDensity) {
+TEST(ImuPreintegration, NoiseFromRigRequiresExplicitPositiveBiasWalkDensities) {
   uw::domain::RigCalibrationSnapshot rig;
   auto* model = rig.mutable_imu_noise();
   model->set_sigma_gyro_c(1.7e-4);
@@ -275,18 +275,25 @@ TEST(ImuPreintegration, NoiseFromRigFallsBackToBiasSigmaAndRejectsZeroDensity) {
   model->set_sigma_accel_bias(3.0e-3);
   std::string error;
   auto noise = ImuPreintegrationNoise::FromRig(rig, &error);
-  ASSERT_TRUE(noise.has_value()) << error;
-  EXPECT_DOUBLE_EQ(noise->sigma_gyro_bias_walk, 1.9e-5);
-  EXPECT_DOUBLE_EQ(noise->sigma_accel_bias_walk, 3.0e-3);
+  EXPECT_FALSE(noise.has_value());
+  EXPECT_NE(error.find("sigma_gyro_bias_walk_c"), std::string::npos);
+  EXPECT_NE(error.find("sigma_accel_bias_walk_c"), std::string::npos);
 
   model->set_sigma_gyro_bias_walk_c(5e-6);
+  model->set_sigma_accel_bias_walk_c(7e-5);
   noise = ImuPreintegrationNoise::FromRig(rig, &error);
-  ASSERT_TRUE(noise.has_value());
+  ASSERT_TRUE(noise.has_value()) << error;
   EXPECT_DOUBLE_EQ(noise->sigma_gyro_bias_walk, 5e-6);
+  EXPECT_DOUBLE_EQ(noise->sigma_accel_bias_walk, 7e-5);
 
-  model->set_sigma_gyro_c(0.0);  // what a rig that omits the key parses to
+  model->set_sigma_gyro_bias_walk_c(0.0);
   EXPECT_FALSE(ImuPreintegrationNoise::FromRig(rig, &error).has_value());
-  EXPECT_NE(error.find("sigma_gyro_c"), std::string::npos);
+  EXPECT_NE(error.find("sigma_gyro_bias_walk_c"), std::string::npos);
+
+  model->set_sigma_gyro_bias_walk_c(5e-6);
+  model->set_sigma_accel_bias_walk_c(0.0);
+  EXPECT_FALSE(ImuPreintegrationNoise::FromRig(rig, &error).has_value());
+  EXPECT_NE(error.find("sigma_accel_bias_walk_c"), std::string::npos);
 }
 
 }  // namespace

@@ -40,6 +40,11 @@ std::optional<CanonicalPayload> ParsePayload(CanonicalEventKind kind, const std:
       if (!message.ParseFromArray(data, parse_size)) return std::nullopt;
       return CanonicalPayload(std::move(message));
     }
+    case CanonicalEventKind::kKeyframeBoundary: {
+      uw::domain::KeyframeBoundary message;
+      if (!message.ParseFromArray(data, parse_size)) return std::nullopt;
+      return CanonicalPayload(std::move(message));
+    }
     case CanonicalEventKind::kMeasurementEvidence: {
       uw::domain::MeasurementEvidence message;
       if (!message.ParseFromArray(data, parse_size)) return std::nullopt;

@@ -18,6 +18,7 @@ namespace uw::runtime {
 using CanonicalPayload =
     std::variant<uw::domain::ImageFrame, uw::domain::SonarFrame, uw::domain::ImuSample,
                  uw::domain::DvlSample, uw::domain::VehicleState,
+                 uw::domain::KeyframeBoundary,
                  uw::domain::MeasurementEvidence, uw::domain::StateSnapshot,
                  uw::domain::HealthReport, uw::domain::MapEvidence>;
 

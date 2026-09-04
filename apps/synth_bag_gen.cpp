@@ -24,6 +24,42 @@
 //   /raw/camera/right            uw.domain.ImageFrame       with cameras; see BuildStereoPair —
 //                                 synthetic stereo pair per keyframe, real per-keyframe geometry,
 //                                 for apps/replay_demo's acoustic-optic pass)
+//   /raw/imu                     uw.domain.ImuSample       (only when --experiment selects
+//   /keyframe/boundary           uw.domain.KeyframeBoundary estimator_mode: imu_preintegration;
+//                                 see "IMU fixture" below)
+//
+// Flags that exist only to test leakage, not to describe any real sensor:
+// --omit-relative-pose drops /evidence/relative_pose; --omit-ground-truth,
+// --ground-truth-time-offset-s and --ground-truth-pose-offset-m drop or
+// corrupt /gt/state. All four leave every other topic bit-identical, so a
+// pipeline whose output moves when one is used is reading something it is
+// not allowed to read.
+//
+// IMU fixture (PREP-B-01, docs/imu-preintegration-design-2026-09-03.md §7-8).
+// Only `estimator_mode: imu_preintegration` turns this on, so every other
+// experiment's bag is byte-for-byte what it was before. Three things change
+// together, and they only make sense together:
+//
+//   1. A STATIONARY PRE-ROLL is prepended (kImuPreRollS, 0.75 s): /raw/imu
+//      starts at t = 0 and the vehicle does not move until then. This is what the
+//      stationary initializer reads to estimate the initial gyro/accel
+//      biases and the gravity direction — without it there is no legitimate
+//      (non-ground-truth) source for those.
+//   2. Every keyframe-anchored topic shifts by that same 0.5 s, and each
+//      keyframe gets an explicit /keyframe/boundary event. The boundary
+//      stream — not /gt/state, not relative-pose evidence — is the only
+//      contract saying where a preintegration interval starts and ends, and
+//      it deliberately carries no pose.
+//   3. The arc is traversed with a QUINTIC SMOOTHSTEP angular profile
+//      instead of a constant rate (see ArcFraction). The geometry is the
+//      same circle; what changes is that dθ/dt and d²θ/dt² are zero at the
+//      start, so the vehicle is genuinely at rest at the first keyframe. A
+//      constant-rate arc would have the body jump from 0 to R·ω ≈ 5 m/s at
+//      the instant the pre-roll ends, which no IMU stream can represent —
+//      the stationary initializer's v₀ = 0 would then be wrong by that much
+//      and no amount of estimator work could recover the trajectory. Other
+//      estimator modes keep the constant-rate profile they always had.
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <iostream>
@@ -35,6 +71,7 @@
 #include <vector>
 
 #include "domain/domain.hpp"
+#include "runtime/canonical_topics.hpp"
 #include "runtime/config.hpp"
 #include "runtime/mcap_io.hpp"
 #include "runtime/synthetic_sonar.hpp"
@@ -81,20 +118,51 @@ void ApplyScenarioConfig(const uw::runtime::ScenarioConfig& scenario, ScenarioOp
   }
 }
 
-std::vector<Pose3> BuildGroundTruthTrajectory(const ScenarioOptions& opt) {
+// How far along the arc the vehicle is at normalized motion time s in
+// [0, 1], as a fraction of arc_radians.
+//
+// `smooth_start` = false is the original constant-rate traversal every
+// non-IMU experiment uses and must keep using. `smooth_start` = true is the
+// quintic smoothstep 10s³ − 15s⁴ + 6s⁵, whose first AND second derivatives
+// vanish at both ends: the body's angular rate and its specific force are
+// therefore continuous across the pre-roll/motion seam, so "stationary
+// until t = 0.5 s" is true of the trajectory and not just of the samples
+// before it. See this file's header comment for why a constant-rate arc
+// cannot be used behind a stationary pre-roll.
+double ArcFraction(double s, bool smooth_start) {
+  if (!smooth_start) return s;
+  return s * s * s * (10.0 - 15.0 * s + 6.0 * s * s);
+}
+
+// d/ds and d²/ds² of ArcFraction, for deriving the IMU truth analytically
+// rather than differencing poses.
+double ArcFractionRate(double s, bool smooth_start) {
+  if (!smooth_start) return 1.0;
+  return s * s * (30.0 - 60.0 * s + 30.0 * s * s);
+}
+
+double ArcFractionAcceleration(double s, bool smooth_start) {
+  if (!smooth_start) return 0.0;
+  return s * (60.0 - 180.0 * s + 120.0 * s * s);
+}
+
+Pose3 ArcPose(const ScenarioOptions& opt, double theta) {
+  Pose3 pose;
+  pose.translation =
+      Eigen::Vector3d(opt.radius_m * std::sin(theta), opt.radius_m * (1.0 - std::cos(theta)),
+                      -opt.depth_m);
+  pose.rotation = Eigen::Quaterniond(Eigen::AngleAxisd(theta, Eigen::Vector3d::UnitZ()));
+  return pose;
+}
+
+std::vector<Pose3> BuildGroundTruthTrajectory(const ScenarioOptions& opt, bool smooth_start) {
   std::vector<Pose3> trajectory;
   trajectory.reserve(opt.num_keyframes);
   for (int i = 0; i < opt.num_keyframes; ++i) {
-    const double t = opt.num_keyframes > 1
+    const double s = opt.num_keyframes > 1
                           ? static_cast<double>(i) / (opt.num_keyframes - 1)
                           : 0.0;
-    const double theta = t * opt.arc_radians;
-    Pose3 pose;
-    pose.translation =
-        Eigen::Vector3d(opt.radius_m * std::sin(theta), opt.radius_m * (1.0 - std::cos(theta)),
-                        -opt.depth_m);
-    pose.rotation = Eigen::Quaterniond(Eigen::AngleAxisd(theta, Eigen::Vector3d::UnitZ()));
-    trajectory.push_back(pose);
+    trajectory.push_back(ArcPose(opt, opt.arc_radians * ArcFraction(s, smooth_start)));
   }
   return trajectory;
 }
@@ -112,6 +180,133 @@ std::vector<Eigen::Vector3d> BuildSonarTargets(const ScenarioOptions& opt) {
 }
 
 std::string KeyframeId(int i) { return "kf" + std::to_string(i); }
+
+// 5 Hz keyframes, unchanged from the original fixture.
+constexpr double kKeyframePeriodS = 0.2;
+// docs/imu-preintegration-design-2026-09-03.md section 7 requires AT LEAST
+// 0.5 s of stationary IMU data before the first keyframe, so the stationary
+// initializer has something to estimate the initial biases and the gravity
+// direction from. Deliberately generated with margin rather than exactly at
+// the minimum: at exactly 0.5 s the initializer's "window_duration_s >=
+// min_stationary_duration_s" test passes only by exact floating-point
+// equality, so any rate that does not divide 0.5 s evenly (150 Hz puts its
+// last pre-roll sample at 0.4933 s) would silently drop the run to the wide
+// velocity prior, with a worse ATE as the only symptom.
+constexpr double kImuPreRollS = 0.75;
+
+uint64_t SecondsToNanos(double seconds) {
+  return static_cast<uint64_t>(std::llround(seconds * 1e9));
+}
+
+// The header convention every synthetic producer in this repo follows (see
+// runtime/synthetic_sonar.cpp): receive_time equals capture_time because
+// synthetic generation models no transport delay, and leaving it at the
+// all-zero default would read as "never populated" in apps/bag_audit.
+uw::domain::ObservationHeader MakeSyntheticHeader(const std::string& observation_id,
+                                                   const std::string& sensor_id,
+                                                   const std::string& sensor_frame,
+                                                   uint64_t t_ns) {
+  uw::domain::ObservationHeader header;
+  header.mutable_observation_id()->set_value(observation_id);
+  header.mutable_sensor_id()->set_value(sensor_id);
+  header.mutable_sensor_frame()->set_value(sensor_frame);
+  header.mutable_capture_time()->set_seconds(static_cast<int64_t>(t_ns / 1'000'000'000ULL));
+  header.mutable_capture_time()->set_nanos(static_cast<int32_t>(t_ns % 1'000'000'000ULL));
+  *header.mutable_receive_time() = header.capture_time();
+  header.set_clock_domain(uw::domain::CLOCK_DOMAIN_SIMULATION);
+  header.set_validity(uw::domain::ObservationHeader::VALIDITY_OK);
+  header.set_provenance("synth_bag_gen_v1");
+  return header;
+}
+
+// Analytic IMU truth in the BODY frame at motion-normalized time `s`.
+//
+// The body follows p(theta) = (R sin, R(1-cos), -depth) with yaw theta, so
+// rotating the world acceleration back into the body frame collapses to
+// exactly (R*theta_ddot, R*theta_dot^2, 0): tangential along +x, centripetal
+// along +y, nothing along z. The accelerometer measures specific force,
+// a_body - R_wb^T * g_w with g_w = (0, 0, -gravity), and the body has no
+// roll/pitch here, so that adds a constant +gravity on body z. Deriving it
+// this way (rather than differencing poses) is what makes the pre-roll seam
+// exact: at s = 0 the smoothstep's first and second derivatives are zero,
+// so this reduces to the stationary reading (0, 0, gravity) with no jump.
+struct ImuTruth {
+  Eigen::Vector3d specific_force_mps2;
+  Eigen::Vector3d angular_velocity_radps;
+  Eigen::Vector3d angular_acceleration_radps2;
+};
+
+ImuTruth StationaryImuTruth(double gravity_mps2) {
+  return ImuTruth{Eigen::Vector3d(0.0, 0.0, gravity_mps2), Eigen::Vector3d::Zero(),
+                  Eigen::Vector3d::Zero()};
+}
+
+ImuTruth BodyImuTruth(const ScenarioOptions& opt, double motion_duration_s, double s,
+                      double gravity_mps2) {
+  if (motion_duration_s <= 0.0) return StationaryImuTruth(gravity_mps2);
+  const double theta_rate =
+      opt.arc_radians * ArcFractionRate(s, /*smooth_start=*/true) / motion_duration_s;
+  const double theta_acceleration = opt.arc_radians *
+                                    ArcFractionAcceleration(s, /*smooth_start=*/true) /
+                                    (motion_duration_s * motion_duration_s);
+  ImuTruth truth;
+  truth.specific_force_mps2 = Eigen::Vector3d(opt.radius_m * theta_acceleration,
+                                              opt.radius_m * theta_rate * theta_rate,
+                                              gravity_mps2);
+  truth.angular_velocity_radps = Eigen::Vector3d(0.0, 0.0, theta_rate);
+  truth.angular_acceleration_radps2 = Eigen::Vector3d(0.0, 0.0, theta_acceleration);
+  return truth;
+}
+
+// base_link readings -> imu_link readings: the exact inverse of what
+// frontends/imu_preintegration_frontend does when it maps a raw sample back
+// into the body frame. An IMU mounted at r from the body origin also feels
+// the lever-arm terms omega x (omega x r) and alpha x r. The frontend
+// deliberately drops alpha x r as a documented approximation; with the
+// identity imu_link edge in configs/rig/example_auv_sonar_only.yaml both
+// terms are exactly zero, so the two sides agree bit for bit on this
+// fixture and the term is here only so a rig with a real offset is not
+// silently generated wrong.
+ImuTruth ToImuFrame(const ImuTruth& body, const Pose3& base_link_T_imu_link) {
+  const Eigen::Matrix3d rotation = base_link_T_imu_link.rotation.toRotationMatrix();
+  const Eigen::Vector3d& r = base_link_T_imu_link.translation;
+  const Eigen::Vector3d& omega = body.angular_velocity_radps;
+  const Eigen::Vector3d lever_arm =
+      omega.cross(omega.cross(r)) + body.angular_acceleration_radps2.cross(r);
+  ImuTruth sensor;
+  sensor.specific_force_mps2 = rotation.transpose() * (body.specific_force_mps2 + lever_arm);
+  sensor.angular_velocity_radps = rotation.transpose() * omega;
+  sensor.angular_acceleration_radps2 = rotation.transpose() * body.angular_acceleration_radps2;
+  return sensor;
+}
+
+// Note what is NOT written: has_bias / bias_* stay unset. Those fields mean
+// "the sensor reported its own internal bias estimate"; filling them with
+// the simulator's exact bias truth would put a ground-truth channel on an
+// algorithm-input topic, which is precisely what PREP-B-01 is closing off.
+uw::domain::ImuSample MakeImuSample(uint64_t t_ns, int index, const Eigen::Vector3d& specific_force,
+                                    const Eigen::Vector3d& angular_velocity) {
+  uw::domain::ImuSample sample;
+  *sample.mutable_header() =
+      MakeSyntheticHeader("imu_" + std::to_string(index), "imu0", "imu_link", t_ns);
+  for (int i = 0; i < 3; ++i) {
+    sample.add_linear_acceleration_mps2(specific_force(i));
+    sample.add_angular_velocity_radps(angular_velocity(i));
+  }
+  return sample;
+}
+
+// Carries the keyframe's identity and its instant, and nothing else. No
+// pose field is filled from ground truth -- that is the entire point of the
+// topic (docs/imu-preintegration-design-2026-09-03.md section 8).
+uw::domain::KeyframeBoundary MakeKeyframeBoundary(uint64_t t_ns, const std::string& kf_id) {
+  uw::domain::KeyframeBoundary boundary;
+  *boundary.mutable_header() =
+      MakeSyntheticHeader("boundary_" + kf_id, "keyframe_scheduler", "base_link", t_ns);
+  boundary.mutable_keyframe_id()->set_value(kf_id);
+  boundary.set_source("synthetic_fixed_interval_v1");
+  return boundary;
+}
 
 // Derives an independent RNG stream from the scenario's top-level seed for
 // one specific noise purpose, via a distinguishing salt (arbitrary splitmix64
@@ -321,6 +516,28 @@ int main(int argc, char** argv) {
   // /raw/camera/left,right emission below so the no-experiment path (used
   // by tests/l2_replay/determinism_test.sh) is provably unchanged.
   std::optional<uw::domain::RigCalibrationSnapshot> rig;
+  // Set instead when --experiment selects estimator_mode: imu_preintegration.
+  // Kept separate from `rig` above because that one is deliberately only
+  // populated for a rig WITH cameras (it gates the stereo path), while the
+  // IMU path needs the imu_noise block and the base_link->imu_link edge of a
+  // camera-less rig such as configs/rig/example_auv_sonar_only.yaml.
+  std::optional<uw::domain::RigCalibrationSnapshot> imu_rig;
+  // Suppresses /evidence/relative_pose. The IMU estimator must ignore that
+  // topic entirely, and a bag generated with and without it is how
+  // tests/integration/synthetic_imu_fixture_test.sh shows the IMU stream
+  // does not depend on it (each noise purpose draws from its own RNG
+  // stream, see MakeStreamRng).
+  bool omit_relative_pose = false;
+  // Reference-branch-only knobs (PREP-B-01 Task 6). These change what an
+  // EVALUATOR would read and nothing else: /gt/state is the only topic they
+  // touch, they consume no RNG draws, and they deliberately do NOT move the
+  // ground-truth messages' MCAP log time. That combination is what makes
+  // them a leak detector -- if any of them changes a single byte of the
+  // estimated trajectory, ground truth reached the algorithm path
+  // (tests/integration/imu_preintegration_smoke_test.sh).
+  bool omit_ground_truth = false;
+  double ground_truth_time_offset_s = 0.0;
+  double ground_truth_pose_offset_m = 0.0;
 
   // First pass: find --experiment, if any, and layer its scenario config
   // onto opt before any explicit CLI override is applied.
@@ -333,6 +550,7 @@ int main(int argc, char** argv) {
       const auto config = uw::runtime::LoadExperimentConfig(argv[++i]);
       ApplyScenarioConfig(config.scenario, opt);
       if (config.rig.cameras_size() > 0) rig = config.rig;
+      if (config.estimator_mode == "imu_preintegration") imu_rig = config.rig;
     }
   }
 
@@ -354,6 +572,14 @@ int main(int argc, char** argv) {
       opt.num_keyframes = std::stoi(next("--num-keyframes"));
     } else if (arg == "--seed") {
       opt.seed = std::stoull(next("--seed"));
+    } else if (arg == "--omit-relative-pose") {
+      omit_relative_pose = true;
+    } else if (arg == "--omit-ground-truth") {
+      omit_ground_truth = true;
+    } else if (arg == "--ground-truth-time-offset-s") {
+      ground_truth_time_offset_s = std::stod(next("--ground-truth-time-offset-s"));
+    } else if (arg == "--ground-truth-pose-offset-m") {
+      ground_truth_pose_offset_m = std::stod(next("--ground-truth-pose-offset-m"));
     } else {
       std::cerr << "unknown argument: " << arg << "\n";
       return 1;
@@ -363,11 +589,25 @@ int main(int argc, char** argv) {
   std::mt19937_64 pose_rng = MakeStreamRng(opt.seed, 0x9E3779B97F4A7C15ULL);
   std::mt19937_64 sonar_rng = MakeStreamRng(opt.seed, 0xC2B2AE3D27D4EB4FULL);
   std::mt19937_64 landmark_rng = MakeStreamRng(opt.seed, 0x165667B19E3779F9ULL);
+  // Fourth independent stream, same reasoning as the three above: the IMU
+  // runs at 200 Hz and draws a variable number of times relative to
+  // everything else, so it must not share a stream with them in either
+  // direction.
+  std::mt19937_64 imu_rng = MakeStreamRng(opt.seed, 0xD6E8FEB86659FD93ULL);
   std::normal_distribution<double> pose_noise(0.0, opt.relative_pose_noise_m);
   std::normal_distribution<double> range_noise(0.0, opt.sonar_range_noise_m);
   std::normal_distribution<double> bearing_noise(0.0, opt.sonar_bearing_noise_rad);
 
-  const auto trajectory = BuildGroundTruthTrajectory(opt);
+  // The IMU fixture and everything that follows from it -- the stationary
+  // pre-roll, the time shift, the explicit keyframe boundaries, and the
+  // smooth-start angular profile -- are all gated on this single flag, so
+  // every other experiment's bag stays byte-identical.
+  const bool imu_mode = imu_rig.has_value();
+  const double pre_roll_s = imu_mode ? kImuPreRollS : 0.0;
+  const uint64_t pre_roll_ns = SecondsToNanos(pre_roll_s);
+  const double motion_duration_s = std::max(0, opt.num_keyframes - 1) * kKeyframePeriodS;
+
+  const auto trajectory = BuildGroundTruthTrajectory(opt, /*smooth_start=*/imu_mode);
   const auto targets = BuildSonarTargets(opt);
   uw::runtime::SyntheticSonarFrameSpec sonar_frame_spec;
   // Matches configs/rig/*.yaml's sonar_beam_models[0].sensor_id and
@@ -405,21 +645,109 @@ int main(int argc, char** argv) {
     writer.WriteMessage("/scenario/sonar_targets", 0, targets_evidence);
   }
 
+  // --- IMU stream (estimator_mode: imu_preintegration only) -------------
+  // Written in one pass ahead of the keyframe loop, spanning [0, last
+  // keyframe] so every preintegration interval is fully covered on both
+  // ends. Consumers read a bag in log-time order (McapEventSource sets
+  // LogTimeOrder explicitly), so writing this block first does not put the
+  // IMU ahead of the keyframe topics in time.
+  if (imu_mode) {
+    const auto& imu_noise = imu_rig->imu_noise();
+    const double rate_hz = imu_noise.rate_hz();
+    const double gravity_mps2 = imu_noise.gravity_mps2();
+    if (!(rate_hz > 0.0) || !(gravity_mps2 > 0.0)) {
+      std::cerr << "rig imu_noise.rate_hz and gravity_mps2 must be positive for "
+                   "estimator_mode: imu_preintegration\n";
+      return 1;
+    }
+    const double dt_s = 1.0 / rate_hz;
+    const Pose3 base_link_T_imu_link = FindRigEdgePose(*imu_rig, "imu_link");
+
+    // Continuous-time densities discretize to sigma_c * sqrt(rate); the bias
+    // random walk uses sigma_walk_c * sqrt(dt). sigma_*_bias is the INITIAL
+    // bias magnitude only -- the two are separate knobs by decision, see the
+    // design note's section 9 item 3 -- so it seeds the constant offset and
+    // never the walk.
+    std::normal_distribution<double> accel_white(0.0, imu_noise.sigma_accel_c() * std::sqrt(rate_hz));
+    std::normal_distribution<double> gyro_white(0.0, imu_noise.sigma_gyro_c() * std::sqrt(rate_hz));
+    std::normal_distribution<double> accel_bias_initial(0.0, imu_noise.sigma_accel_bias());
+    std::normal_distribution<double> gyro_bias_initial(0.0, imu_noise.sigma_gyro_bias());
+    std::normal_distribution<double> accel_bias_step(
+        0.0, imu_noise.sigma_accel_bias_walk_c() * std::sqrt(dt_s));
+    std::normal_distribution<double> gyro_bias_step(
+        0.0, imu_noise.sigma_gyro_bias_walk_c() * std::sqrt(dt_s));
+
+    Eigen::Vector3d accel_bias(accel_bias_initial(imu_rng), accel_bias_initial(imu_rng),
+                               accel_bias_initial(imu_rng));
+    Eigen::Vector3d gyro_bias(gyro_bias_initial(imu_rng), gyro_bias_initial(imu_rng),
+                              gyro_bias_initial(imu_rng));
+
+    const double total_duration_s = pre_roll_s + motion_duration_s;
+    const int imu_sample_count = static_cast<int>(std::llround(total_duration_s * rate_hz));
+    for (int sample_index = 0; sample_index <= imu_sample_count; ++sample_index) {
+      const double t_s = static_cast<double>(sample_index) / rate_hz;
+      // Strictly inside the pre-roll the body is at rest. The sample landing
+      // exactly on the first keyframe boundary is still a stationary one,
+      // which is what makes the pre-roll a full 0.5 s of stationary data
+      // rather than 0.5 s minus one sample.
+      const ImuTruth body_truth =
+          t_s <= pre_roll_s
+              ? StationaryImuTruth(gravity_mps2)
+              : BodyImuTruth(opt, motion_duration_s,
+                             std::min(1.0, (t_s - pre_roll_s) / motion_duration_s), gravity_mps2);
+      const ImuTruth sensor_truth = ToImuFrame(body_truth, base_link_T_imu_link);
+
+      const Eigen::Vector3d measured_accel =
+          sensor_truth.specific_force_mps2 + accel_bias +
+          Eigen::Vector3d(accel_white(imu_rng), accel_white(imu_rng), accel_white(imu_rng));
+      const Eigen::Vector3d measured_gyro =
+          sensor_truth.angular_velocity_radps + gyro_bias +
+          Eigen::Vector3d(gyro_white(imu_rng), gyro_white(imu_rng), gyro_white(imu_rng));
+      writer.WriteMessage(uw::runtime::kTopicImu, SecondsToNanos(t_s),
+                          MakeImuSample(SecondsToNanos(t_s), sample_index, measured_accel,
+                                        measured_gyro));
+
+      accel_bias += Eigen::Vector3d(accel_bias_step(imu_rng), accel_bias_step(imu_rng),
+                                    accel_bias_step(imu_rng));
+      gyro_bias += Eigen::Vector3d(gyro_bias_step(imu_rng), gyro_bias_step(imu_rng),
+                                   gyro_bias_step(imu_rng));
+    }
+  }
+
   for (int i = 0; i < opt.num_keyframes; ++i) {
-    const uint64_t t_ns = static_cast<uint64_t>(i) * 200'000'000ULL;  // 5 Hz keyframes
+    // 5 Hz keyframes, offset by the stationary pre-roll in IMU mode (zero
+    // in every other mode, so those bags keep their original timestamps).
+    const uint64_t t_ns = pre_roll_ns + static_cast<uint64_t>(i) * 200'000'000ULL;
     const std::string kf_id = KeyframeId(i);
 
-    // Ground truth.
-    uw::domain::StateSnapshot gt;
-    gt.mutable_state_id()->set_value(kf_id);
-    gt.mutable_capture_timestamp()->set_seconds(static_cast<int64_t>(t_ns / 1'000'000'000ULL));
-    gt.mutable_capture_timestamp()->set_nanos(static_cast<int32_t>(t_ns % 1'000'000'000ULL));
-    *gt.mutable_pose_wb() = trajectory[i].ToProto();
-    writer.WriteMessage("/gt/state", t_ns, gt);
+    // Keyframe boundary first: it is the event that declares this keyframe
+    // exists, and everything below is evidence attached to it.
+    if (imu_mode) {
+      writer.WriteMessage(uw::runtime::kTopicKeyframeBoundary, t_ns,
+                          MakeKeyframeBoundary(t_ns, kf_id));
+    }
+
+    // Ground truth. Reference-only: no algorithm input is derived from it
+    // (see the /gt/state role in include/runtime/canonical_topics.hpp), and
+    // the three --*-ground-truth-* flags below exist to prove that.
+    if (!omit_ground_truth) {
+      uw::domain::StateSnapshot gt;
+      gt.mutable_state_id()->set_value(kf_id);
+      // The tampering is applied to the CAPTURE TIMESTAMP only; the MCAP
+      // log time stays t_ns. A reader that (incorrectly) reconstructed
+      // keyframe times from log time would otherwise see nothing move.
+      const double gt_time_s =
+          static_cast<double>(t_ns) * 1e-9 + ground_truth_time_offset_s;
+      *gt.mutable_capture_timestamp() = uw::domain::FromSeconds(gt_time_s);
+      Pose3 gt_pose = trajectory[i];
+      gt_pose.translation += Eigen::Vector3d::Constant(ground_truth_pose_offset_m);
+      *gt.mutable_pose_wb() = gt_pose.ToProto();
+      writer.WriteMessage("/gt/state", t_ns, gt);
+    }
 
     // Relative pose evidence (black-box VIO mode, section 8.1) between
     // consecutive keyframes, with additive translation noise.
-    if (i > 0) {
+    if (i > 0 && !omit_relative_pose) {
       const Pose3 true_relative = trajectory[i - 1].Inverse() * trajectory[i];
       Pose3 noisy_relative = true_relative;
       noisy_relative.translation +=

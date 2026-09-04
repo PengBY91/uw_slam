@@ -71,6 +71,14 @@ uw::domain::VehicleState MakeValidVehicleState() {
   return state;
 }
 
+uw::domain::KeyframeBoundary MakeValidKeyframeBoundary() {
+  uw::domain::KeyframeBoundary boundary;
+  PopulateValidHeader(boundary.mutable_header());
+  boundary.mutable_keyframe_id()->set_value("kf-1");
+  boundary.set_source("test-keyframe-selector");
+  return boundary;
+}
+
 TEST(CanonicalEventValidation, RejectsUnknownTopicBeforePayloadValidation) {
   const uw::runtime::CanonicalEvent event{"/unknown", 10, 1, MakeValidImageFrame()};
   EXPECT_EQ(uw::runtime::ValidateCanonicalEvent(event).code,
@@ -82,6 +90,36 @@ TEST(CanonicalEventValidation, RejectsTopicPayloadMismatchBeforeSemanticValidati
                                           MakeValidSonarFrame()};
   EXPECT_EQ(uw::runtime::ValidateCanonicalEvent(event).code,
             uw::runtime::CanonicalEventValidationCode::kTopicPayloadMismatch);
+}
+
+TEST(CanonicalEventValidation, AcceptsWellFormedKeyframeBoundary) {
+  const uw::runtime::CanonicalEvent event{uw::runtime::kTopicKeyframeBoundary, 10, 1,
+                                          MakeValidKeyframeBoundary()};
+  EXPECT_TRUE(uw::runtime::ValidateCanonicalEvent(event).ok());
+}
+
+TEST(CanonicalEventValidation, RejectsKeyframeBoundaryWithInvalidObservationHeader) {
+  auto boundary = MakeValidKeyframeBoundary();
+  boundary.mutable_header()->mutable_sensor_id()->clear_value();
+  const uw::runtime::CanonicalEvent event{uw::runtime::kTopicKeyframeBoundary, 10, 1,
+                                          boundary};
+  EXPECT_EQ(uw::runtime::ValidateCanonicalEvent(event).code,
+            uw::runtime::CanonicalEventValidationCode::kHeaderInvalid);
+}
+
+TEST(CanonicalEventValidation, RejectsKeyframeBoundaryWithEmptyIdentityOrSource) {
+  auto boundary = MakeValidKeyframeBoundary();
+  boundary.mutable_keyframe_id()->clear_value();
+  uw::runtime::CanonicalEvent event{uw::runtime::kTopicKeyframeBoundary, 10, 1,
+                                    boundary};
+  EXPECT_EQ(uw::runtime::ValidateCanonicalEvent(event).code,
+            uw::runtime::CanonicalEventValidationCode::kKeyframeBoundaryInvalid);
+
+  boundary = MakeValidKeyframeBoundary();
+  boundary.clear_source();
+  event.payload = boundary;
+  EXPECT_EQ(uw::runtime::ValidateCanonicalEvent(event).code,
+            uw::runtime::CanonicalEventValidationCode::kKeyframeBoundaryInvalid);
 }
 
 TEST(CanonicalEventValidation, RejectsEmptyCalibrationVersion) {

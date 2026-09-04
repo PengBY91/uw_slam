@@ -52,12 +52,10 @@ struct ImuPreintegrationNoise {
   double sigma_gyro_bias_walk = 0.0;
   double sigma_accel_bias_walk = 0.0;
 
-  // Reads the rig's ImuNoiseModel. sigma_*_bias_walk_c is used when > 0;
-  // otherwise sigma_*_bias (the rig's older "bias sigma" field, which
-  // every checked-in rig sets while none sets the *_walk_c fields) is
-  // taken as the random-walk density. Returns nullopt with `error` set
-  // when a white-noise density is zero/non-finite, because a singular
-  // covariance would make the residual's whitening blow up silently.
+  // Reads the rig's ImuNoiseModel. The four continuous-time white-noise
+  // and bias random-walk densities must be explicit, finite, and positive.
+  // sigma_*_bias are anchor-prior sigmas and are never used as random-walk
+  // densities. Returns nullopt with `error` set when validation fails.
   static std::optional<ImuPreintegrationNoise> FromRig(
       const uw::domain::RigCalibrationSnapshot& rig, std::string* error);
 };

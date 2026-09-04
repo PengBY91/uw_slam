@@ -24,6 +24,7 @@ struct ReplayInputData {
   std::vector<uw::domain::ImuSample> imu_samples;
   std::vector<uw::domain::DvlSample> dvl_samples;
   std::vector<uw::domain::VehicleState> vehicle_states;
+  std::vector<uw::domain::KeyframeBoundary> keyframe_boundaries;
   std::vector<uw::domain::MeasurementEvidence> evidence;
   std::vector<uw::domain::StateSnapshot> reference_states;
 };
@@ -35,11 +36,16 @@ struct ReplayInputData {
 struct ReplayInputDiagnostics {
   uint64_t empty_observation_id_count = 0;
   uint64_t duplicate_observation_count = 0;
+  uint64_t empty_keyframe_id_count = 0;
+  uint64_t duplicate_keyframe_id_count = 0;
+  uint64_t non_increasing_keyframe_capture_time_count = 0;
   uint64_t dangling_evidence_reference_count = 0;
   std::vector<std::string> messages;
 
   bool HasErrors() const {
     return empty_observation_id_count > 0 || duplicate_observation_count > 0 ||
+          empty_keyframe_id_count > 0 || duplicate_keyframe_id_count > 0 ||
+          non_increasing_keyframe_capture_time_count > 0 ||
           dangling_evidence_reference_count > 0;
   }
 };
@@ -51,6 +57,7 @@ class ReplayInputAccumulator final : public PipelineInputPort {
   bool OnImuSample(const uw::runtime::CanonicalEvent& event) override;
   bool OnDvlSample(const uw::runtime::CanonicalEvent& event) override;
   bool OnVehicleState(const uw::runtime::CanonicalEvent& event) override;
+  bool OnKeyframeBoundary(const uw::runtime::CanonicalEvent& event) override;
   bool OnMeasurementEvidence(const uw::runtime::CanonicalEvent& event) override;
   bool OnReferenceState(const uw::runtime::CanonicalEvent& event) override;
   // No current producer emits /health or /evidence/map (see canonical_
@@ -96,6 +103,7 @@ class ReplayInputAccumulator final : public PipelineInputPort {
   ReplayInputDiagnostics diagnostics_;
   std::unordered_set<std::string> seen_raw_identities_;    // "sensor_id\x1Fobservation_id"
   std::unordered_set<std::string> known_observation_ids_;  // union across all raw kinds
+  std::unordered_set<std::string> seen_keyframe_ids_;
   std::vector<uint64_t> evidence_log_time_ns_;              // parallel to data_.evidence
 };
 

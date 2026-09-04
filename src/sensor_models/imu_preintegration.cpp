@@ -57,10 +57,8 @@ std::optional<ImuPreintegrationNoise> ImuPreintegrationNoise::FromRig(
   ImuPreintegrationNoise noise;
   noise.sigma_gyro_c = model.sigma_gyro_c();
   noise.sigma_accel_c = model.sigma_accel_c();
-  noise.sigma_gyro_bias_walk =
-      model.sigma_gyro_bias_walk_c() > 0.0 ? model.sigma_gyro_bias_walk_c() : model.sigma_gyro_bias();
-  noise.sigma_accel_bias_walk =
-      model.sigma_accel_bias_walk_c() > 0.0 ? model.sigma_accel_bias_walk_c() : model.sigma_accel_bias();
+  noise.sigma_gyro_bias_walk = model.sigma_gyro_bias_walk_c();
+  noise.sigma_accel_bias_walk = model.sigma_accel_bias_walk_c();
   auto positive_finite = [](double v) { return std::isfinite(v) && v > 0.0; };
   if (!positive_finite(noise.sigma_gyro_c) || !positive_finite(noise.sigma_accel_c)) {
     if (error) {
@@ -69,9 +67,14 @@ std::optional<ImuPreintegrationNoise> ImuPreintegrationNoise::FromRig(
     }
     return std::nullopt;
   }
-  if (!std::isfinite(noise.sigma_gyro_bias_walk) || noise.sigma_gyro_bias_walk < 0.0 ||
-      !std::isfinite(noise.sigma_accel_bias_walk) || noise.sigma_accel_bias_walk < 0.0) {
-    if (error) *error = "rig imu_noise bias random-walk densities must be finite and >= 0";
+  if (!positive_finite(noise.sigma_gyro_bias_walk) ||
+      !positive_finite(noise.sigma_accel_bias_walk)) {
+    if (error) {
+      *error = "rig imu_noise.sigma_gyro_bias_walk_c / sigma_accel_bias_walk_c "
+               "must be finite and > 0 (got " +
+               std::to_string(noise.sigma_gyro_bias_walk) + ", " +
+               std::to_string(noise.sigma_accel_bias_walk) + ")";
+    }
     return std::nullopt;
   }
   return noise;
