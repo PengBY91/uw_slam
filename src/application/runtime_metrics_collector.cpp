@@ -1,3 +1,31 @@
+// RuntimeMetricsCollector 的实现。指标各自的含义、线程模型、以及"没测到就省略而不是
+// 填 0"的原则见头文件；这里只讲代码结构和几处容易踩错的地方。
+//
+// ============================ 本文件主要逻辑 ============================
+//
+// 结构上分三段：
+//
+//   1. 两个 /proc 读取器（ReadProcessRssMib / ReadSystemCpuJiffies）。纯 Linux 相关，
+//      任何异常都退化成 nullopt。它们是构造函数的默认实参，单测里换成假的即可。
+//
+//   2. 五个 Observe*/Sample* 采集入口，各自维护一小撮增量状态，全部在同一把 mutex 下：
+//        ObservePublish       -> 结果时龄分位数、超期计数、恢复区间、陈旧标记正确性
+//        ObserveVehicleState  -> 状态时龄分位数
+//        ObserveSimTime       -> RTF（两次采样的 仿真时间增量 / 墙钟增量）
+//        ObserveQueueHealth   -> 队列水位取 max、丢弃/拒绝取最新累计值、容量越界置位
+//        SampleResourceUsage  -> RSS 相对基线的最大增长、CPU 余量滑动平均
+//        ObserveDiagnostics   -> 直接覆盖保存管线自己的累计诊断
+//
+//   3. BuildReportJson()：把上面攒的状态拼成一个 JSON 对象。分位数走 RollingLatency
+//      的 Snapshot()，比率类字段在这里现算。
+//
+// 几个刻意为之的细节：
+//   - 恢复耗时用"进入 RECOVERING 记起点、离开时结算 max"的边沿方式统计，所以一轮里
+//     还没结束的那段恢复不会被计入——这是保守的方向（宁可少报也不虚报）。
+//   - 丢弃/拒绝数取的是各车道**最新一次**快照的值直接相加，不做累加，因为上游那些
+//     计数器本身就是单调递增的累计量，再累加会重复计数。
+//   - RSS 基线只在过了预热期后才建立，且建立那一次不产出增长样本。
+// =======================================================================
 #include "application/runtime_metrics_collector.hpp"
 
 #include <algorithm>
@@ -35,7 +63,9 @@ std::optional<CpuJiffies> ReadSystemCpuJiffies() {
   std::vector<uint64_t> fields;
   uint64_t value = 0;
   while (iss >> value) fields.push_back(value);
+  // /proc/stat 的 "cpu " 行字段顺序：
   // user nice system idle iowait irq softirq steal [guest guest_nice]
+  // 这里把 idle 与 iowait 一起算作"空闲"（iowait 期间 CPU 同样没在干活）。
   if (fields.size() < 4) return std::nullopt;
   CpuJiffies jiffies;
   jiffies.idle = fields[3] + (fields.size() > 4 ? fields[4] : 0);
@@ -85,10 +115,9 @@ void RuntimeMetricsCollector::ObserveSimTime(double capture_sim_s, double wall_n
   std::lock_guard<std::mutex> lock(mutex_);
   if (last_sim_s_.has_value() && last_sim_wall_s_.has_value()) {
     const double wall_delta = wall_now_s - *last_sim_wall_s_;
-    // A meaningful wall-clock gap is required -- back-to-back observations
-    // in the same instant (or a non-monotonic wall clock, which should
-    // never happen but must not divide by ~0 if it does) would otherwise
-    // produce a nonsensical, unbounded ratio.
+    // 必须要有一段有意义的墙钟间隔才算 RTF。两次观测挤在同一瞬间（或者墙钟不单调
+    // ——理论上不该发生，但真发生了也不能拿接近 0 的数去做除数）会算出一个无界的
+    // 荒唐比值，把分位数彻底污染掉。
     if (wall_delta > 1e-6) {
       const double sim_delta = capture_sim_s - *last_sim_s_;
       const double rtf = sim_delta / wall_delta;
@@ -188,13 +217,11 @@ std::string RuntimeMetricsCollector::BuildReportJson() const {
     oss << "\"cpu_headroom_fraction_avg\":" << (cpu_headroom_sum_ / static_cast<double>(cpu_headroom_sample_count_))
         << ",";
   }
-  // gpu_headroom_fraction_avg is deliberately never emitted -- this
-  // collector has no reliable, cross-platform way to measure it (would
-  // need e.g. nvidia-smi integration, not attempted here). Omitting it
-  // means evaluate_gate() correctly fails any nominal/disturbed-profile
-  // run with a named "gpu_headroom_fraction_avg: missing" GateFailure
-  // instead of silently passing on a fabricated number -- see this
-  // header's own doc comment.
+  // gpu_headroom_fraction_avg 刻意永远不输出：这个采集器没有可靠且跨平台的办法去测
+  // 它（要测就得接 nvidia-smi 之类，这里没做）。省略的后果是 evaluate_gate() 会让
+  // nominal/disturbed 档的运行以一条具名的 "gpu_headroom_fraction_avg: missing"
+  // GateFailure 失败——这正是想要的：**宁可显式失败，也不要靠一个编出来的数字静默
+  // 通过**。详见头文件的说明。
 
   oss << "\"sonar_detection_count\":" << diagnostics_.sonar_detection_count << ",";
   oss << "\"visual_detection_count\":" << diagnostics_.visual_detection_count << ",";

@@ -1,3 +1,24 @@
+// ReplayInputAccumulator 的实现。设计意图与各条约束见头文件，这里只说代码结构。
+//
+// ============================ 本文件主要逻辑 ============================
+//
+// 每个 On* 都是同一个套路的三步：从 event.payload 里取出对应类型 -> 校验身份 ->
+// 通过就 push 进 data_ 里对应的 vector。**注意所有 On* 一律返回 true**：这里的
+// 定位是"记录问题并继续读完整条流"，而不是"见到一条坏数据就把回放掐掉"——是否因
+// 为诊断计数不为零而失败，交给调用方看 Diagnostics().HasErrors() 去决定。
+//
+// 三类校验各自的落点：
+//   1. ValidateRawIdentity（所有原始观测共用）：observation_id 非空 +
+//      (sensor_id, observation_id) 不重复（声呐豁免重复，理由见头文件）。
+//   2. OnKeyframeBoundary（额外三条）：keyframe_id 非空、不重复、且 capture_time
+//      必须严格递增。顺序上先查这三条再查通用身份，因为前者的诊断信息更具体、
+//      更容易定位问题。
+//   3. Flush（跨记录）：证据引用的 source_observations 必须都在本次见过的原始观测
+//      身份集合里，否则算悬空引用。只能等流读完再查，理由见头文件。
+//
+// 另外 OnMeasurementEvidence 在存证据的同时，会把 event.log_time_ns 平行地存进
+// evidence_log_time_ns_（因为 MeasurementEvidence 线上不带自己的时间戳）。
+// =======================================================================
 #include "application/replay_input_accumulator.hpp"
 
 #include <variant>

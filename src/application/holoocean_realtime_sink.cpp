@@ -1,11 +1,32 @@
-// Concrete implementation of uw::adapters::HoloOceanRealtimeSink (see that
-// header's doc comment for why this seam exists). This file is the only
-// place that actually owns a LiveEventSource + OnlineAssistPipeline for the
-// HoloOcean realtime closed loop -- it deliberately includes no ROS2
-// header anywhere, so tools/lint/check_layer_dependencies.py's ROS-vendor
-// check never fires on it, and it is free to depend on the full
-// application/runtime/opencv_adapters/frontends stack the `application`
-// role allows.
+// uw::adapters::HoloOceanRealtimeSink 的具体实现（这条接缝为什么存在，见那个头文件
+// 的注释）。
+//
+// 本文件是 HoloOcean 实时闭环里**唯一真正持有** LiveEventSource + OnlineAssistPipeline
+// 的地方。它刻意不 include 任何 ROS2 头，所以
+// tools/lint/check_layer_dependencies.py 的 ROS 厂商检查不会命中它；作为交换，它可以
+// 自由依赖 `application` 角色所允许的整套 application/runtime/opencv_adapters/frontends
+// 栈。ROS2 那一侧只看到 HoloOceanRealtimeSink 这个纯虚接口。
+//
+// ============================ 本文件主要逻辑 ============================
+//
+// 三个类，各管一段：
+//   - RealtimeAssistOutputSink：辅助结果的出口。把最新飞手图 + 最新声呐帧与
+//     OperatorAssistState 合成叠加画面交给 output_，同时拼状态 JSON、喂运行期指标、
+//     按需落盘 run report。
+//   - ForwardingPort：一层极薄的 PipelineInputPort 转发，直通 OnlineAssistPipeline。
+//   - OnlineAssistRealtimeSink：把上面这些和 LiveEventSource 装到一起，并起一条泵
+//     线程跑 PumpEvents。
+//
+// 数据流：ROS2 回调线程调 On*Camera/OnSonar/OnVehicleState -> Submit() 投进
+// LiveEventSource 的有界队列 -> 泵线程从队列取出、经 ForwardingPort 进管线 ->
+// 管线算完回调 RealtimeAssistOutputSink::Publish -> 出到 ROS2。**跨线程的交接点只有
+// 队列这一处**，这是整个设计里最要紧的一条。
+//
+// 两处容易被忽略但很关键的时间处理：
+//   1. 这条链路上所有 capture_time 都是 CLOCK_DOMAIN_SIMULATION，不是墙钟。所以
+//      deps.now 接的是 sim_clock_ 而不是 system_clock（详见构造函数里的注释）。
+//   2. 飞手相机是**纯呈现路径**，绝不进管线（见 OnPilotCamera）。
+// =======================================================================
 #include "adapters/holoocean_realtime_sink.hpp"
 
 #include <atomic>
@@ -45,16 +66,15 @@ uw::domain::RigCalibrationSnapshot ResolveRig(const HoloOceanRealtimeSinkConfig&
                  "not be treated as real-machine acceptance evidence (FUS-CAL-001).\n";
     return config.fallback_rig;
   }
-  // Deliberately NOT caught here: an operator who explicitly set
-  // rig_config_path and got a load failure should see the node fail to
-  // start, not silently fall back to the (wrong) placeholder rig above.
+  // 这里刻意**不捕获**异常：既然操作者明确指定了 rig_config_path，那加载失败就应该
+  // 让节点起不来，而不是悄悄退回上面那份（错误的）占位 rig。静默回退会让人以为自己
+  // 用的是真标定，跑出一堆几何上完全错误却看起来正常的结果。
   return uw::runtime::LoadRigConfig(config.rig_config_path);
 }
 
-// Same policy as ResolveRig above, for sonar CFAR/clustering + target
-// association/tracker + degradation-timing parameters (FUS-AC-002): empty
-// path -> hardcoded struct defaults + loud warning; set-but-broken path ->
-// hard error, not a silent fallback.
+// 与上面 ResolveRig 同一套策略，只不过管的是声呐 CFAR/聚类 + 目标关联/跟踪器 +
+// 降级时序这些参数（FUS-AC-002）：路径为空 -> 用硬编码的结构体默认值并大声警告；
+// 路径给了但加载失败 -> 直接报错，绝不静默回退。
 uw::runtime::PlatformDefaultsConfig ResolvePlatformDefaults(const HoloOceanRealtimeSinkConfig& config) {
   if (config.platform_config_path.empty()) {
     std::cerr << "holoocean_realtime_sink: WARNING no platform_config_path parameter given -- "
@@ -78,11 +98,12 @@ double WallNowSeconds() {
   return std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
-// RuntimeMetricsConfig::queue_lane_capacities must track source_'s own
-// LaneQueueConfig::capacity fields below (localization/correction/mapping/
-// evidence, LiveEventSource::HealthReports()'s documented fixed order) --
-// source_ is always constructed with LiveSourceConfig{} defaults, so these
-// are hardcoded to match rather than plumbed through twice.
+// RuntimeMetricsConfig::queue_lane_capacities 必须与下面 source_ 自己的
+// LaneQueueConfig::capacity 保持一致（顺序是 localization/correction/mapping/evidence，
+// 即 LiveEventSource::HealthReports() 文档承诺的固定顺序）。
+//
+// 由于 source_ 一律用 LiveSourceConfig{} 的默认值构造，这里就直接硬编码成相同的值，
+// 而不是再把同一份配置穿两遍。**代价是改了那边要记得同步改这里。**
 uw::application::RuntimeMetricsConfig MakeMetricsConfig(const HoloOceanRealtimeSinkConfig& config) {
   uw::application::RuntimeMetricsConfig metrics_config;
   metrics_config.deadline_ms = config.deadline_ms;
@@ -90,20 +111,21 @@ uw::application::RuntimeMetricsConfig MakeMetricsConfig(const HoloOceanRealtimeS
   return metrics_config;
 }
 
-// AssistOutputSink implementation feeding HoloOceanRealtimeOutput. Composes
-// the latest pilot image + latest sonar frame (replace-latest, no
-// unbounded buffering) with the OperatorAssistState via
-// OperatorOverlayRenderer, then hands the result to `output` -- which is
-// the ROS2 node itself, publishing sensor_msgs/Image + std_msgs/String.
+// 面向 HoloOceanRealtimeOutput 的 AssistOutputSink 实现。
+//
+// 它通过 OperatorOverlayRenderer 把"最新飞手图 + 最新声呐帧"（都是只留最新、不做
+// 无界缓冲）与 OperatorAssistState 合成，然后把结果交给 `output`——也就是 ROS2 节点
+// 本身，由它发布 sensor_msgs/Image + std_msgs/String。
 class RealtimeAssistOutputSink final : public uw::application::AssistOutputSink {
  public:
-  // `source` and `metrics` outlive this sink: OnlineAssistRealtimeSink
-  // declares source_ and metrics_ before output_sink_, so both are already
-  // fully constructed here, and all three are destroyed in reverse
-  // declaration order (output_sink_ first). `pipeline` is not available yet
-  // at this point (it is a unique_ptr the outer constructor's BODY builds,
-  // after output_sink_ already exists as its own deps.sink) -- SetPipeline
-  // below is called once the outer constructor has it.
+  // `source` 和 `metrics` 的生命周期长于本 sink：OnlineAssistRealtimeSink 里
+  // source_ 和 metrics_ 都声明在 output_sink_ 之前，所以走到这里时它们已经构造完毕；
+  // 析构则按声明的逆序进行（output_sink_ 先走）。这条依赖的是**成员声明顺序**，
+  // 调整成员顺序时要留意。
+  //
+  // `pipeline` 此刻还拿不到：它是外层构造函数**函数体**里才建的 unique_ptr，而那时
+  // output_sink_ 早已作为 deps.sink 存在了。所以留了下面的 SetPipeline，等外层拿到
+  // 指针后再回填。
   RealtimeAssistOutputSink(HoloOceanRealtimeOutput& output, const uw::runtime::LiveEventSource& source,
                             uw::application::RuntimeMetricsCollector& metrics, std::string run_report_path)
       : output_(output), source_(source), metrics_(metrics), run_report_path_(std::move(run_report_path)) {}
@@ -123,11 +145,13 @@ class RealtimeAssistOutputSink final : public uw::application::AssistOutputSink 
     const auto queue_health = source_.HealthReports();
     output_.PublishStatus(uw::application::BuildOnlineAssistStatusJson(state, queue_health));
 
-    // Publish() is only ever invoked synchronously from within the pump
-    // thread's own OnlineAssistPipeline::PublishNow() (see that class's
-    // sink_->Publish(state) call) -- the same thread that owns/mutates
-    // pipeline_'s diagnostics_, so reading it here via SetPipeline's raw
-    // pointer needs no extra synchronization beyond metrics_'s own mutex.
+    // Publish() 只会在泵线程内部、由 OnlineAssistPipeline::PublishNow() 同步调用
+    // （见那个类里的 sink_->Publish(state)）。而那正是拥有并修改 pipeline_ 的
+    // diagnostics_ 的同一条线程，所以这里通过 SetPipeline 存下的裸指针去读诊断，
+    // 除了 metrics_ 自己那把 mutex 之外不需要额外同步。
+    //
+    // 换句话说这条无锁读法**依赖"Publish 只在泵线程被调"这个前提**——哪天有别的线程
+    // 也来调 Publish，这里就得改。
     const double wall_now_s = WallNowSeconds();
     metrics_.ObservePublish(state, wall_now_s);
     metrics_.ObserveQueueHealth(queue_health);
@@ -151,13 +175,13 @@ class RealtimeAssistOutputSink final : public uw::application::AssistOutputSink 
  private:
   void MaybeWriteReport(double wall_now_s) {
     if (run_report_path_.empty()) return;
-    // Piggybacks on Publish()'s own throttled cadence (C1's
-    // min_publish_interval_s, default 100ms) rather than a dedicated
-    // writer thread -- see HoloOceanRealtimeSinkConfig::run_report_path's
-    // doc comment. This extra >=1s gate keeps the actual file write (an
-    // fstream open plus full JSON serialize) off the common publish path,
-    // since realtime_gate.py only needs a report fresh to within a second
-    // or two, not one rewritten on every throttled publish.
+    // 直接搭 Publish() 自己的限流节奏（C1 的 min_publish_interval_s，默认 100ms），
+    // 而不另起一条写文件的线程——见 HoloOceanRealtimeSinkConfig::run_report_path 的
+    // 注释。
+    //
+    // 这里再加一道 >=1s 的闸，是为了把真正的落盘动作（开 fstream + 完整序列化 JSON）
+    // 挡在常规发布路径之外：realtime_gate.py 只需要一份新鲜度在一两秒内的报告，不需要
+    // 每次限流发布都重写一遍。
     if (last_report_write_wall_s_.has_value() && wall_now_s - *last_report_write_wall_s_ < 1.0) return;
     last_report_write_wall_s_ = wall_now_s;
     std::ofstream out(run_report_path_, std::ios::trunc);
@@ -182,11 +206,11 @@ class RealtimeAssistOutputSink final : public uw::application::AssistOutputSink 
   std::optional<uw::domain::SonarFrame> latest_sonar_frame_;
 };
 
-// PipelineInputPort adapter forwarding straight to a real OnlineAssistPipeline
-// -- same thin-forwarding role as apps/online_assist_smoke.cpp's
-// ReferenceCountingPort, minus the truth-delivery counter (this sink is
-// never handed a reference-plane event -- the ROS2 gateway that owns it
-// never subscribes /uw/sim/ground_truth).
+// 直通到真实 OnlineAssistPipeline 的 PipelineInputPort 转发器。
+//
+// 角色与 apps/online_assist_smoke.cpp 里的 ReferenceCountingPort 相同，只是少了那个
+// 真值投递计数器——本 sink 永远不会收到真值面的事件，因为持有它的 ROS2 网关根本不
+// 订阅 /uw/sim/ground_truth。
 class ForwardingPort final : public uw::application::PipelineInputPort {
  public:
   explicit ForwardingPort(uw::application::OnlineAssistPipeline& pipeline) : pipeline_(pipeline) {}
@@ -226,19 +250,19 @@ class OnlineAssistRealtimeSink final : public HoloOceanRealtimeSink {
     deps.rig = ResolveRig(config);
     deps.visual_frontend = &visual_frontend_;
     deps.sonar_frontend = &sonar_frontend_;
-    deps.dense_depth_provider = nullptr;  // dense stays disabled -- matches every app in this repo so far
+    deps.dense_depth_provider = nullptr;  // 稠密深度保持关闭——与本仓库目前所有 app 一致
     deps.target_association = platform_defaults_.target_association;
     deps.target_tracker = platform_defaults_.target_tracker;
     deps.pipeline = platform_defaults_.online_assist;
     deps.pipeline.dense.enabled = false;
     deps.sink = &output_sink_;
-    // capture_time on every sensor header arriving through this sink is
-    // CLOCK_DOMAIN_SIMULATION (see holoocean_live_conversion.cpp), not wall
-    // time -- wiring `now` straight to system_clock::now() here would make
-    // every staleness/degradation check compare a ~0s sim timestamp against
-    // a ~1.7e9s Unix timestamp and report itself permanently unavailable
-    // from the first tick. sim_clock_ bridges the two domains; see
-    // include/adapters/sim_wall_clock_estimator.hpp.
+    // 经这个 sink 进来的每一条传感器 header，其 capture_time 都是
+    // CLOCK_DOMAIN_SIMULATION（见 holoocean_live_conversion.cpp），不是墙钟时间。
+    //
+    // 如果这里把 `now` 直接接到 system_clock::now()，那么所有陈旧 / 降级判定都会拿
+    // 一个 ~0 秒的仿真时间戳去减一个 ~1.7e9 秒的 Unix 时间戳——从第一个 tick 起就永久
+    // 报"不可用"。sim_clock_ 就是用来桥接这两个时间域的，见
+    // include/adapters/sim_wall_clock_estimator.hpp。
     deps.now = [this] { return sim_clock_.EstimateNow(); };
     pipeline_ = std::make_unique<uw::application::OnlineAssistPipeline>(std::move(deps));
     output_sink_.SetPipeline(*pipeline_);
@@ -248,12 +272,11 @@ class OnlineAssistRealtimeSink final : public HoloOceanRealtimeSink {
       try {
         report_promise_.set_value(uw::application::PumpEvents(source_, *port_));
       } catch (const std::exception& error) {
-        // Nothing currently calls report_promise_.get_future(), so a lost
-        // exception here would otherwise be a silent pump-thread death with
-        // no signal anywhere the node's assist output stopped updating --
-        // log it so it is at least visible in the node's own stderr/log
-        // output, matching this class's own ROS-free design (no rclcpp
-        // logger available here).
+        // 目前没有任何地方调 report_promise_.get_future()，所以异常如果丢在这里，
+        // 就等于泵线程无声无息地死了——节点的辅助输出停止更新，却没有任何地方给出
+        // 信号。至少把它打出来，让节点自己的 stderr/日志里看得见。
+        //
+        // 用 std::cerr 而不是 rclcpp 的 logger，是因为本类刻意不依赖 ROS（见文件头）。
         std::cerr << "holoocean_realtime_sink: PumpEvents thread terminated: " << error.what() << '\n';
         source_.Close();
         try {
@@ -286,9 +309,9 @@ class OnlineAssistRealtimeSink final : public HoloOceanRealtimeSink {
     Submit(uw::runtime::kTopicCameraMain, std::move(frame));
   }
   void OnPilotCamera(uw::domain::ImageFrame frame) override {
-    // Presentation-only -- cached for the overlay compositor, NEVER
-    // submitted to LiveEventSource/OnlineAssistPipeline (the plan's
-    // explicit "independent pilot path" requirement).
+    // 纯呈现用途：只缓存给叠加合成器，**绝不**投进 LiveEventSource / 
+    // OnlineAssistPipeline。这是计划里明确要求的"飞手通路独立"——飞手看到的画面不能
+    // 因为算法管线阻塞或降级而卡住。
     output_sink_.SetLatestPilotImage(std::move(frame));
   }
   void OnSonar(uw::domain::SonarFrame frame) override {
@@ -302,49 +325,45 @@ class OnlineAssistRealtimeSink final : public HoloOceanRealtimeSink {
  private:
   template <typename Payload>
   void Submit(const char* topic, Payload payload) {
-    // header is a reference into payload -- read everything needed from it
-    // BEFORE payload is moved into source_.Submit below.
+    // header 是指向 payload 内部的引用——所有要从它读的东西，都必须在下面 payload 被
+    // move 进 source_.Submit **之前**读完，否则就是读已被移走的对象。
     const auto& header = payload.header();
     if (header.clock_domain() == uw::domain::CLOCK_DOMAIN_SIMULATION) {
-      // RTF needs the RAW (capture_s, wall_s) pair, not sim_clock_'s own
-      // anchored/extrapolated estimate -- feeding EstimateNow() back into
-      // itself here would just measure "how close to RTF=1 we assumed",
-      // not the actual ratio.
+      // RTF 要的是**原始**的 (仿真时间, 墙钟时间) 这一对，而不是 sim_clock_ 自己
+      // 锚定/外推出来的估计值。把 EstimateNow() 再喂回去，量到的只会是"我们当初假设
+      // 的 RTF 有多接近 1"，而不是真实比值——自己证明自己。
       metrics_.ObserveSimTime(uw::domain::ToSeconds(header.capture_time()), WallNowSeconds());
       if constexpr (std::is_same_v<Payload, uw::domain::VehicleState>) {
-        // Uses the anchor from BEFORE this message updates it just below
-        // (sim_clock_.Observe(header)) -- calling EstimateNow() after would
-        // trivially self-anchor to ~0 age every time, since this exact
-        // message would already be the anchor.
+        // 用的是**这条消息更新锚点之前**的锚（更新发生在下面的
+        // sim_clock_.Observe(header)）。如果放到之后再调 EstimateNow()，那这条消息
+        // 自己就成了锚点，算出来的时龄恒等于约 0——毫无意义的自证。
         metrics_.ObserveVehicleState(header, uw::domain::ToSeconds(sim_clock_.EstimateNow()));
       }
     }
-    // Anchors sim_clock_ using this message's own capture_time before it is
-    // moved into the queue -- ingestion time is exactly when we can pair a
-    // fresh (sim capture, wall receipt) sample, and doing it here (not on
-    // the pump thread that later processes the event) keeps the anchor as
-    // current as possible.
+    // 在这条消息被 move 进队列之前，用它自己的 capture_time 给 sim_clock_ 打锚。
+    // 收进来的这一刻正是能配出一对新鲜的 (仿真采集时刻, 墙钟收到时刻) 样本的时机；
+    // 放在这里而不是放到之后处理该事件的泵线程上，是为了让锚点尽可能贴近当前——
+    // 事件在队列里排多久是不确定的，泵线程那边打锚会把排队延迟算进去。
     sim_clock_.Observe(header);
     const auto status = source_.Submit(
         {topic, static_cast<uint64_t>(SteadyNowNs()), ++source_sequence_, std::move(payload)});
     if (status == uw::runtime::LiveSubmitStatus::kClosed) {
-      // Node is shutting down (source_.Close() already called) -- nothing
-      // further to do; every other status is a normal accept/degrade
-      // outcome LiveEventSource itself already tracks in its own stats.
+      // 节点正在关闭（source_.Close() 已经调过），没什么可做的。其余状态都是正常的
+      // 接受/降级结果，LiveEventSource 自己的统计里已经记着了，这里不必重复处理。
       return;
     }
   }
 
   uw::adapters::SimWallClockEstimator sim_clock_;
-  // Declared before sonar_frontend_ (member init order follows declaration
-  // order, not initializer-list order) -- sonar_frontend_'s initializer
-  // reads platform_defaults_.sonar_frontend.
+  // 必须声明在 sonar_frontend_ 之前：成员初始化顺序看的是**声明顺序**，不是初始化
+  // 列表里的书写顺序，而 sonar_frontend_ 的初始化式要读 platform_defaults_.sonar_frontend。
+  // 顺序写反就会读到未初始化的对象。
   uw::runtime::PlatformDefaultsConfig platform_defaults_;
   uw::runtime::LiveEventSource source_;
   uw::opencv_adapters::OpenCvVisualAssistFrontend visual_frontend_;
   uw::frontends::SonarCfarFrontend sonar_frontend_;
-  // Declared before output_sink_ -- its constructor takes a reference to
-  // this (same established pattern as source_ above).
+  // 声明在 output_sink_ 之前——后者的构造函数要拿它的引用（与上面 source_ 同一套
+  // 既定做法）。
   uw::application::RuntimeMetricsCollector metrics_;
   RealtimeAssistOutputSink output_sink_;
   std::unique_ptr<uw::application::OnlineAssistPipeline> pipeline_;

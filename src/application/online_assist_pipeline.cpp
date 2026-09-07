@@ -1,3 +1,42 @@
+// OnlineAssistPipeline 与 StereoBlockMatchDenseDepthProvider 的实现。各类的职责、
+// 依赖注入约定、诊断计数含义见头文件；这里讲清楚"一帧数据进来之后到底发生了什么"。
+//
+// ============================ 本文件主要逻辑 ============================
+//
+// 【一次事件的完整路径】三个真正驱动算法的入口 OnImageFrame / OnSonarFrame /
+// OnVehicleState 形状一致，都是四步：
+//   1. 把这条数据喂进 AcousticOpticBuffer（它负责按时间凑齐"立体+声呐+状态"的
+//      同步 bundle）；
+//   2. 跑本模态自己的检测（图像跑 RunVisualDetection、声呐跑 RunSonarDetection）；
+//   3. 如果 buffer 恰好凑出了一个 bundle，就 HandleBundle（即尝试稠密深度）；
+//   4. PublishNow() 发布当前态势（受限流约束）。
+// 其余入口（IMU/DVL/keyframe/证据/真值/地图）一律"收下并返回 true"——不参与跟踪，
+// 但也绝不阻塞在线循环。
+//
+// 【为什么声呐是关联批次的"节拍器"】视觉检测进来后只是暂存到 pending_visual_，
+// 等下一帧声呐到达时一起 Associate + Update。原因是 TargetTracker::Update 整批原子，
+// 一旦批里出现已被接受过的 observation_id 就整批拒绝——视觉若各自急着 flush，会先把
+// 自己的 id 消费掉，之后就再也配不上声呐了。例外：声呐看起来已经掉线时
+// （!SonarRecentlyLive），视觉立刻自己 flush，好让纯视觉航迹及时产出而不是无限等待。
+//
+// 【健康度与降级】ComputeDegradation 是一条**固定优先级**的判定链：
+//   recovering > 两路全失联 > 车辆状态陈旧 > 声呐失联 > 视觉失联 >
+//   视觉前端自报降级 > 声呐前端自报降级 > 稠密深度超期 > 健康。
+// 前三档会把 guidance_valid 打成 false（引导不可信），之后几档只标 SUSPECT 但引导
+// 仍然可用——这是"降级可用"与"不可用"的分界线，改动这条链要非常小心。
+//
+// 【三处时间口径，别混】
+//   - 模态掉线判定（MarkRecoveringIfModalityWasDropped）比的是**相邻两次采集时间之
+//     差**，反映传感器自身节拍，与排队/处理延迟无关；
+//   - 存活判定（VisualLive/SonarLive/DenseCurrentlyFresh）比的是**当前时刻与最后一次
+//     采集时刻之差**；
+//   - 外部健康报告的过期判定用的是**我们收到它的时刻**，不信报告方自己的时钟。
+//
+// 【限流】PublishNow 默认受 min_publish_interval_s 约束（overload 档下入口调用可达
+// ~145 次/秒，每次都渲染叠加层 + 重建 JSON 是扛不住的）。但状态跃迁必须立刻可见，
+// 所以 UpdateRig 和 Flush 用 force=true 绕过限流。注意限流只挡"发布"，内部跟踪状态
+// 该更新的照常更新。
+// =======================================================================
 #include "application/online_assist_pipeline.hpp"
 
 #include <algorithm>
@@ -150,18 +189,17 @@ class OnlineAssistPipeline::Impl {
 
   bool OnHealthReport(const uw::runtime::CanonicalEvent& event) {
     const auto& report = std::get<uw::domain::HealthReport>(event.payload);
-    // Keyed by our own receipt time (now_()), not the reporter's own
-    // capture_time -- consistent with how visual/sonar/vehicle-state
-    // liveness is judged elsewhere in this class ("how long since we last
-    // heard from it"), and robust to a reporter with a skewed clock.
+    // 以**我们收到它的时刻**（now_()）为键，而不是报告方自己的 capture_time。
+    // 这与本类别处判断视觉/声呐/车辆状态存活的口径一致（"距离上次听到它过了多久"），
+    // 而且对时钟有偏差的报告方也稳健——否则一个时钟跑偏的组件可以让自己的报告
+    // 永远显得很新鲜。
     external_health_[report.component_id()] = {report, uw::domain::ToSeconds(now_())};
     PublishNow();
     return true;
   }
 
-  // DVL, reference/ground-truth, generic measurement evidence and map
-  // evidence are outside this pipeline's algorithmic inputs -- accepted
-  // (never stalls the online loop) but never fed into tracking.
+  // DVL、真值/参考、通用测量证据和地图证据都不在本管线的算法输入之内：一律收下
+  // （绝不因此卡住在线循环），但绝不进入跟踪。
   bool OnImuSample(const uw::runtime::CanonicalEvent&) { return true; }
   bool OnDvlSample(const uw::runtime::CanonicalEvent&) { return true; }
   bool OnKeyframeBoundary(const uw::runtime::CanonicalEvent&) { return true; }
@@ -187,8 +225,8 @@ class OnlineAssistPipeline::Impl {
     pending_dense_depth_capture_s_.reset();
     recovering_ = true;
     ++diagnostics_.calibration_reset_count;
-    // The "recovering" state transition must be visible to the operator
-    // immediately, not delayed by min_publish_interval_s's throttle.
+    // 进入 "recovering" 这个状态跃迁必须让飞手**立刻**看到，不能被
+    // min_publish_interval_s 的限流拖延——所以这里 force 发布。
     PublishNow(/*force=*/true);
   }
 
@@ -210,34 +248,30 @@ class OnlineAssistPipeline::Impl {
     latest_path_lateral_offset_m_ = result.path_lateral_offset_m;
     latest_path_offset_sigma_m_ = result.path_offset_sigma_m;
 
-    // Replaced, not appended: pending_visual_ holds only the latest visual
-    // frame's own detections. Accumulating detections from several visual
-    // frames here would let two same-target re-detections reach the same
-    // Associate()+Update() batch -- TargetTracker matches at most one
-    // detection to each existing track per batch, so the second, unpaired
-    // re-detection of a target already claimed by the first (paired)
-    // measurement would spawn a spurious duplicate track instead of
-    // reinforcing the real one. The accepted tradeoff is that a visual
-    // frame between two sonar arrivals can be superseded before it is ever
-    // associated -- acceptable since the tracker's own prediction/gating
-    // still converges on one track from the surviving detections, and a
-    // true sonar dropout (see SonarRecentlyLive below) stops replacing and
-    // flushes every visual frame instead.
+    // 是**替换**不是追加：pending_visual_ 只保存最新一帧视觉的检测结果。
+    //
+    // 如果在这里把好几帧的检测攒起来，同一个目标的两次重复检测就会进入同一个
+    // Associate()+Update() 批次。而 TargetTracker 每批对每条已有航迹最多只配一个
+    // 检测——于是第二个没配上的重复检测（目标已被第一个配对的量测占了）会**凭空多出
+    // 一条重复航迹**，而不是去加强那条真的。
+    //
+    // 代价是：夹在两帧声呐之间的那帧视觉，可能还没来得及被关联就被下一帧顶掉。这是
+    // 可以接受的——跟踪器自己的预测/门控仍会用幸存的检测收敛到同一条航迹；而真的
+    // 声呐掉线时（见下面的 SonarRecentlyLive）就不再替换，改成每帧视觉都 flush。
     pending_visual_.clear();
     for (const auto& target : result.targets) {
       pending_visual_.push_back(Wrap(target, left_image.header()));
     }
     diagnostics_.visual_detection_count += result.targets.size();
-    // Sonar drives the association batch under normal operation (see
-    // RunSonarDetection): a visual detection just stages into
-    // pending_visual_ and waits for the next sonar arrival to pair with,
-    // rather than flushing immediately and consuming its observation_id
-    // before sonar has a chance to see it -- TargetTracker::Update rejects
-    // a whole batch outright on any already-accepted observation_id, so an
-    // eagerly-flushed-then-reused stale detection would poison every
-    // following pairing attempt. Flush eagerly here only when sonar itself
-    // looks unavailable, so a real sonar dropout still produces
-    // visual-only tracks promptly instead of waiting forever.
+    // 正常工作时由声呐驱动关联批次（见 RunSonarDetection）：视觉检测只是暂存进
+    // pending_visual_，等下一帧声呐到达配对，而不是立刻 flush。
+    //
+    // 为什么不能急着 flush：那会在声呐还没机会看到之前，就把这个 observation_id 消费
+    // 掉；而 TargetTracker::Update 的批次是原子的，只要批里有任何一个已被接受过的 id
+    // 就整批拒绝——于是这个"已经 flush 过又被复用"的陈旧检测，会毒害之后每一次配对。
+    //
+    // 只有在声呐本身看起来已经不可用时才在这里急着 flush，这样真出现声呐掉线，也能
+    // 及时产出纯视觉航迹，而不是无限期干等。
     if (!SonarRecentlyLive(capture_s)) FlushAssociation(capture_s);
   }
 
@@ -263,24 +297,22 @@ class OnlineAssistPipeline::Impl {
           (capture_s - *last_sonar_capture_s_) <= pipeline_config_.modality_stale_after_s;
   }
 
-  // FUS-HEALTH-002: recovery from a sensor dropout must not silently reuse
-  // pre-fault cached state as if the stream had never broken -- a track
-  // must go through reconfirmation (or an explicit recovering status)
-  // before guidance is trusted again. Previously this only ever happened
-  // on a calibration-version change (UpdateRig, which forces a full
-  // associator/tracker reset because the rig geometry itself changed); a
-  // plain single-modality dropout+recovery had no equivalent, relying
-  // implicitly on Kalman covariance growth during the gap instead of an
-  // explicit gate. This sets the SAME recovering_ flag UpdateRig uses, but
-  // deliberately does NOT reset fusion_/pending_*/dense state the way
-  // UpdateRig does -- a modality blip doesn't invalidate rig geometry or
-  // an unrelated modality's still-good tracks, so a full reset would be
-  // needlessly destructive; the reconfirmation gate itself (see
-  // FlushAssociation's any_confirmed check) is what FUS-HEALTH-002 asks
-  // for. Compares capture-time gap, not wall-clock staleness against
-  // "now": this measures whether consecutive detections from this
-  // modality were more than modality_stale_after_s apart in their own
-  // sensor-time cadence, independent of any queueing/processing delay.
+  // FUS-HEALTH-002：从传感器掉线中恢复时，不许把故障前缓存的状态当作"这条流从没断
+  // 过"一样静默复用——必须经过重新确认（或者显式的 recovering 状态），引导才重新
+  // 可信。
+  //
+  // 此前只有标定版本变更（UpdateRig，因为 rig 几何本身变了，会强制整体重置关联器/
+  // 跟踪器）才走这条路；单一模态的"掉线又恢复"没有对应机制，只能隐式指望缺口期间
+  // 卡尔曼协方差自己长大，而不是一道显式的闸。
+  //
+  // 这里置的是与 UpdateRig **同一个** recovering_ 标志，但刻意**不**像 UpdateRig 那样
+  // 重置 fusion_/pending_*/稠密深度：一次模态抖动并不会让 rig 几何失效，也不会让另一
+  // 路仍然良好的航迹失效，整体重置属于毫无必要的破坏。FUS-HEALTH-002 真正要的是那道
+  // 重新确认的闸（见 FlushAssociation 里的 any_confirmed 判断）。
+  //
+  // 比的是**采集时间之差**，而不是拿"现在"去比墙钟陈旧度：这里要衡量的是该模态相邻
+  // 两次检测在它自己的传感器节拍上是否隔了超过 modality_stale_after_s，与排队/处理
+  // 延迟无关。
   void MarkRecoveringIfModalityWasDropped(const std::optional<double>& last_capture_s,
                                           double new_capture_s) {
     if (last_capture_s.has_value() &&
@@ -295,11 +327,10 @@ class OnlineAssistPipeline::Impl {
     if (!fusion_->tracker().Update(association.measurements, now_s)) {
       ++diagnostics_.association_reject_count;
     }
-    // Every id just submitted (paired or singleton, accepted or rejected)
-    // must not be resubmitted -- TargetTracker::Update's atomic batch
-    // rejects outright on any id it has already accepted, and a rejected
-    // batch's ids would otherwise linger here as a permanently-stale
-    // pairing partner for the next tick.
+    // 刚提交过的 id（无论配对还是单例、无论被接受还是被拒）都不能再提交一次：
+    // TargetTracker::Update 的原子批次遇到任何已接受过的 id 就整批拒绝；而被拒批次
+    // 里的 id 如果留在这里不清，就会变成下一拍永远陈旧的"配对搭档"，把后续也一起
+    // 拖死。所以无条件清空。
     pending_visual_.clear();
     pending_sonar_.clear();
     if (!recovering_) return;
@@ -319,12 +350,12 @@ class OnlineAssistPipeline::Impl {
     }
     if (!bundle.images.primary.is_rectified() || !bundle.images.secondary.has_value() ||
         !bundle.images.secondary->is_rectified()) {
-      // Rectification gate not satisfied -- not attempted, not counted as a
-      // fresh failure. ComputeDegradation derives the dense health signal
-      // from pending_dense_depth_'s own freshness (see DenseCurrentlyFresh),
-      // so an indefinitely-broken rectification pipeline still surfaces
-      // dense_deadline_missed once the last successful result ages out,
-      // without this gate needing to touch any latched reason itself.
+      // 校正（rectification）前提不满足：既不尝试，也不算作一次新的失败。
+      //
+      // 不用担心因此把问题藏起来：ComputeDegradation 判稠密深度健康度看的是
+      // pending_dense_depth_ 自身的新鲜度（见 DenseCurrentlyFresh）。所以哪怕校正
+      // 链路一直坏着，上一次成功的结果一旦过期，dense_deadline_missed 照样会浮现出来
+      // ——这道闸不需要自己去锁存任何原因码。
       return;
     }
 
@@ -344,16 +375,14 @@ class OnlineAssistPipeline::Impl {
     }
   }
 
-  // Dense depth counts as currently contributing only while enabled and a
-  // successful result is still within its freshness window -- reusing the
-  // exact check RunVisualDetection applies before using it as a depth
-  // prior. The two calls use different "now" values on purpose (this one's
-  // caller, ComputeDegradation, is reporting overall state at publish
-  // time; RunVisualDetection's caller is deciding whether to use the depth
-  // prior for one specific, earlier frame) -- wall_s here is always >= that
-  // frame's capture_s, so this health check is never more optimistic than
-  // the usage check, only possibly a step more conservative in the narrow
-  // window between the two, which is the safe direction to be wrong in.
+  // 只有在稠密深度已启用、且上一次成功的结果仍在新鲜期内时，才算它"当前正在贡献"
+  // ——这与 RunVisualDetection 拿它当深度先验之前所做的判断是同一个检查。
+  //
+  // 两处调用**故意**传不同的"现在"：这里的调用方 ComputeDegradation 是在发布时刻
+  // 汇报整体状态；RunVisualDetection 的调用方则是在决定要不要给某一具体的、更早的
+  // 那帧使用深度先验。由于这里的 wall_s 总是 >= 那帧的 capture_s，这个健康判断永远
+  // 不会比使用判断更乐观，最多在两者之间那个很窄的窗口里保守一档——**保守是安全的
+  // 那个方向**。
   bool DenseCurrentlyFresh(double wall_s) const {
     return pipeline_config_.dense.enabled && pending_dense_depth_.has_value() &&
           pending_dense_depth_capture_s_.has_value() &&
@@ -391,12 +420,11 @@ class OnlineAssistPipeline::Impl {
     if (!visual_live) {
       return {uw::domain::HealthReport::STATUS_SUSPECT, "visual_unavailable", true};
     }
-    // Visual is checked ahead of sonar below (both live, both frontend-
-    // reported): an intentional fixed priority, not a coincidence of
-    // order, matching the fixed priority chain above it. If both a visual
-    // and a sonar frontend report degraded at once, the operator-facing
-    // top-line reason is the visual one; the sonar report is still visible
-    // in full in sensor_health(), just not promoted to system_health().
+    // 下面视觉排在声呐前面（此时两路都存活、且都是前端自报的降级）：这是**刻意
+    // 设定的固定优先级**，不是代码顺序的巧合，与它上方那条优先级链一脉相承。
+    //
+    // 如果视觉和声呐前端同时报降级，呈现给飞手的首要原因取视觉那条；声呐那条并没有
+    // 丢，它仍完整出现在 sensor_health() 里，只是没有被提升到 system_health()。
     if (last_visual_health_.has_value() &&
         last_visual_health_->status() != uw::domain::HealthReport::STATUS_HEALTHY) {
       return {uw::domain::HealthReport::STATUS_SUSPECT, last_visual_health_->reason_code(), true};
@@ -411,15 +439,16 @@ class OnlineAssistPipeline::Impl {
     return {uw::domain::HealthReport::STATUS_HEALTHY, "", true};
   }
 
-  // Every OnImageFrame/OnSonarFrame/OnVehicleState/OnHealthReport call
-  // reaches here unconditionally -- at overload (camera 1.25x + sonar 20Hz
-  // + state 100Hz) that's up to ~145 calls/sec. Without throttling, each
-  // one drove a full HMI overlay render + JSON status rebuild in
-  // AssistOutputSink::Publish, none of which is free -- see
-  // docs/archive/rov-realtime-closed-loop-code-review-2026-08-27.md finding C1.
-  // Internal tracking state (fusion_, pending_*, last_*_capture_s_) is
-  // still updated by the caller before this runs regardless of throttling;
-  // only the actual publish to `sink_` is rate-limited.
+  // 每一次 OnImageFrame/OnSonarFrame/OnVehicleState/OnHealthReport 都会无条件走到
+  // 这里——overload 档下（相机 1.25 倍 + 声呐 20Hz + 状态 100Hz）可达约 145 次/秒。
+  //
+  // 不限流的话，每一次都会在 AssistOutputSink::Publish 里驱动一次完整的 HMI 叠加层
+  // 渲染 + JSON 状态重建，这些都不便宜——见 docs/archive/rov-realtime-closed-loop-
+  // code-review-2026-08-27.md 的 C1 条。
+  //
+  // 注意限流的边界：内部跟踪状态（fusion_、pending_*、last_*_capture_s_）在调用方
+  // 走到这里之前就已经更新过了，不受限流影响；被限的**只有**真正发往 `sink_` 的那次
+  // 发布。
   void PublishNow(bool force = false) {
     const double wall_s = uw::domain::ToSeconds(now_());
     if (!force && pipeline_config_.min_publish_interval_s > 0.0 && last_publish_wall_s_.has_value() &&
@@ -446,11 +475,11 @@ class OnlineAssistPipeline::Impl {
       if (any_fused) ++diagnostics_.fused_track_publish_count;
     }
 
-    // Gated on current visual liveness, not just has_value(): without this,
-    // a path offset computed from the last frame before a camera dropout
-    // would keep republishing forever with no staleness signal of its own
-    // (guidance_valid stays true off of the track/vehicle-state checks
-    // alone, which say nothing about this specific field's age).
+    // 这里用"视觉当前是否存活"来把关，而不是只看 has_value()。
+    //
+    // 否则：相机掉线前最后一帧算出的路径偏移量会被永远重复发布，而它自己没有任何
+    // 陈旧信号——guidance_valid 只依据航迹/车辆状态那几项判定，那几项对**这个字段**
+    // 的时龄一无所知。飞手会照着一个早已过时的横向偏移去操舵。
     if (latest_path_lateral_offset_m_.has_value() && VisualLive(wall_s)) {
       state.set_has_path_lateral_offset(true);
       state.set_path_lateral_offset_m(*latest_path_lateral_offset_m_);
@@ -477,10 +506,9 @@ class OnlineAssistPipeline::Impl {
 
     if (last_visual_health_.has_value()) *state.add_sensor_health() = *last_visual_health_;
     if (last_sonar_health_.has_value()) *state.add_sensor_health() = *last_sonar_health_;
-    // Expired externally-reported health is dropped rather than republished
-    // forever -- unlike this pipeline's own visual/sonar liveness, an
-    // external reporter that stops sending has no other signal marking its
-    // last report stale.
+    // 过期的外部健康报告直接丢弃，而不是一直重复发布：不同于本管线自己的视觉/声呐
+    // 存活判定，一个不再发送的外部报告方没有任何别的信号能表明它最后那条报告已经
+    // 过时了。
     for (const auto& [component_id, entry] : external_health_) {
       (void)component_id;
       if ((wall_s - entry.received_wall_s) <= pipeline_config_.modality_stale_after_s) {
@@ -524,10 +552,9 @@ class OnlineAssistPipeline::Impl {
 
   std::optional<uw::domain::OpticalDepthPriorMeasurement> pending_dense_depth_;
   std::optional<double> pending_dense_depth_capture_s_;
-  // Guards re-entrant dense dispatch. Always false when this call returns,
-  // since dense work runs synchronously today (see DenseDepthProvider's own
-  // doc comment); kept so a future async provider doesn't need a pipeline
-  // change to be dispatched safely.
+  // 防止稠密计算被重入派发。由于目前稠密工作是同步跑的（见 DenseDepthProvider 的
+  // 注释），每次调用返回时它一定又是 false。保留它是为了将来换成异步实现时，派发这
+  // 一侧不需要再动管线代码。
   bool dense_task_in_flight_ = false;
 
   bool recovering_ = false;

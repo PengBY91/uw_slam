@@ -1,3 +1,11 @@
+// 离线回放管线的对外接口：RunReplayPipeline 是整条离线 SLAM 主线的编排入口
+// （apps/replay_demo.cpp 只负责解析参数然后调它）。
+//
+// 这个头文件里除了入口函数，其余声明大多是**为了可单测而从 RunReplayPipeline 里
+// 抽出来的纯函数**。抽出来的判断标准是"这段逻辑有值得单独验证的决策，但混在
+// 1500 行的编排里没法测"：DecideTrackingStatus 的状态优先级、BuildStateSnapshot
+// 的确定性排序、CountDepthContributions 的口径、CheckGraphObservability 的结构性
+// 检查、EvaluateReplayGates 的门禁判定。它们都不做任何 IO。
 #pragma once
 
 #include <string>
@@ -24,21 +32,23 @@ struct ReplayOptions {
 int RunReplayPipeline(const ReplayOptions& options,
                       const std::string& git_commit);
 
-// Application-layer conversion keeps runtime and frontends as peer layers
-// while ensuring every typed sonar default actually configures the frontend.
+// 放在 application 层做这个转换，是为了让 runtime 和 frontends 保持平级（谁也不
+// 依赖谁），同时又保证配置里每一项声呐默认值都真的落到了前端参数上——如果让
+// frontends 直接读 runtime 的配置结构，这两层就绑死了。
 uw::frontends::SonarCfarFrontendParams BuildSonarCfarFrontendParams(
     const uw::runtime::SonarFrontendConfig& config);
 
-// Pure decision extracted for unit testing (no IO): what a keyframe's
-// snapshot should report as tracking_status, given the batch solver's
-// convergence and (when running estimator_mode == "stereo_landmark_vo")
-// that keyframe's VO frontend health AT THE TIME it was processed --
-// never the frontend's FINAL health applied retroactively to every
-// historical keyframe (see RunReplayPipeline's vo_health_by_keyframe).
-// LOST outranks DEGRADED outranks TRACKING: a stalled solver can never
-// report TRACKING even if VO itself is healthy, and VO STATUS_UNAVAILABLE
-// can never be downgraded to merely DEGRADED just because the solver
-// happened to converge.
+// 抽出来单测的纯决策函数（不做 IO）：给定批量求解器是否收敛，以及（在
+// estimator_mode == "stereo_landmark_vo" 时）该 keyframe **当时**的 VO 前端健康度，
+// 决定这个 keyframe 的快照该报什么 tracking_status。
+//
+// 强调"当时"：绝不能拿前端跑完整轮之后的**最终**健康度去追溯性地覆盖所有历史
+// keyframe（见 RunReplayPipeline 里的 vo_health_by_keyframe）——那样第 3 帧明明跟踪
+// 良好，会因为第 40 帧丢了而被改写成 LOST，历史就假了。
+//
+// 优先级：LOST > DEGRADED > TRACKING。含义是两条都不能被"抵消"：求解器 stalled 时
+// 即便 VO 自身健康也不许报 TRACKING；VO 报 STATUS_UNAVAILABLE 时也不许因为求解器
+// 恰好收敛就降格成只是 DEGRADED。
 struct ReplayTrackingInputs {
   bool solver_converged = false;
   bool vo_enabled = false;
@@ -47,11 +57,11 @@ struct ReplayTrackingInputs {
 
 uw::domain::StateSnapshot::TrackingStatus DecideTrackingStatus(const ReplayTrackingInputs& inputs);
 
-// Pure snapshot construction extracted for unit testing (no IO/StateStore
-// dependency). contributing_evidence is sorted and deduplicated by
-// evidence_id value before being written, so the same logical inputs
-// always produce byte-identical output regardless of the order evidence
-// happened to be collected in (determinism_test.sh's actual contract).
+// 抽出来单测的纯构造函数（不依赖 IO / StateStore）。
+//
+// contributing_evidence 在写入前会按 evidence_id 排序并去重：这样只要逻辑输入相同，
+// 输出就逐字节相同，与证据被收集的先后顺序无关——这正是
+// tests/integration/determinism_test.sh 真正在把关的契约。
 struct StateSnapshotInputs {
   std::string state_id;
   uint64_t state_version = 0;
@@ -65,11 +75,13 @@ struct StateSnapshotInputs {
 
 uw::domain::StateSnapshot BuildStateSnapshot(const StateSnapshotInputs& inputs);
 
-// Counts a fused-depth measurement's valid pixels by contribution_mask --
-// must be called BEFORE mapping::BuildMapEvidenceFromFusedDepth, which
-// does not preserve per-point origin (see that function's own points-only
-// output). Invalid pixels (contribution_mask ==
-// DEPTH_CONTRIBUTION_INVALID, or a valid_mask bit of 0) count as neither.
+// 按 contribution_mask 统计一份融合深度里的有效像素分别来自哪种来源。
+//
+// **必须在 mapping::BuildMapEvidenceFromFusedDepth 之前调用**：那个函数只输出点，
+// 不保留每个点的来源信息，转换之后就统计不出来了。
+//
+// 无效像素（contribution_mask == DEPTH_CONTRIBUTION_INVALID，或 valid_mask 位为 0）
+// 两类都不计入。
 struct MapContributionCounts {
   uint64_t optical_only_points = 0;
   uint64_t acoustic_optic_points = 0;
@@ -77,19 +89,12 @@ struct MapContributionCounts {
 
 MapContributionCounts CountDepthContributions(const uw::domain::FusedDepthMeasurement& fused);
 
-// Pure gate evaluation extracted for unit testing (no IO/exit-code
-// coupling): returns the list of human-readable gate failure messages for
-// the given run outcome, or an empty vector if every enabled gate passed.
-// A non-empty result should make the caller exit non-zero (see
-// RunReplayPipeline's own use of this). require_converged defaults on
-// (see PlatformDefaultsConfig); every other gate is opt-in via a
-// zero/negative disabling value.
-// One run's outcome, rendered as a `summary.<key>=<value>` block printed
-// once at the end of RunReplayPipeline. Prose diagnostics elsewhere in the
-// run are for a human reading a log; THIS is the contract scripts parse
-// (tests/integration/imu_preintegration_smoke_test.sh), which is why it is
-// a struct with a pure formatter rather than a scattering of std::cout
-// lines that a regex has to reassemble.
+// 一轮运行的结果，在 RunReplayPipeline 末尾以 `summary.<key>=<value>` 的形式打印一次。
+//
+// 运行过程中别处那些散文式的诊断输出是给人看日志用的；**这里这份才是脚本解析的契约**
+// （tests/integration/imu_preintegration_smoke_test.sh 就在解析它）。所以它被做成
+// "结构体 + 纯格式化函数"，而不是散落各处的 std::cout——后者要靠正则去拼，改一行输出
+// 就可能悄悄弄坏下游脚本。
 struct ReplayRunSummary {
   std::string estimator_mode;
   std::string solver;
@@ -108,14 +113,12 @@ struct ReplayRunSummary {
   int depth_factor_count = 0;
   int landmark_count = 0;
 
-  // "stationary" / "wide_velocity_prior" in estimator_mode
-  // imu_preintegration; "none" in every other mode, which has no inertial
-  // state to initialize.
+  // estimator_mode 为 imu_preintegration 时取 "stationary" / "wide_velocity_prior"；
+  // 其他模式一律 "none"——它们没有需要初始化的惯性状态。
   std::string initialization = "none";
-  // Structural observability: the MINIMAL dimension of the non-fixed
-  // parameter blocks (6 per pose, not the 7 quaternion parameters that
-  // over-parameterize it) vs. the residual rows that actually constrain
-  // them.
+  // 结构可观测性：非固定参数块的**最小**维度（每个位姿算 6，而不是四元数那 7 个
+  // 过参数化的量）对上真正约束它们的残差行数。用 7 会高估自由度，把本来欠定的图
+  // 误判成定的。
   int free_parameter_dim = 0;
   int residual_dim = 0;
 
@@ -125,12 +128,13 @@ struct ReplayRunSummary {
 
 std::string FormatReplayRunSummary(const ReplayRunSummary& summary);
 
-// Structural check run BEFORE solving: a non-fixed parameter block that no
-// residual references makes the normal equations singular, and
-// Levenberg-Marquardt damping will happily return a plausible-looking but
-// entirely arbitrary value for it rather than failing. Returns the list of
-// problems found (empty when the graph is structurally sound); a non-empty
-// result must fail the run closed rather than be solved through.
+// 在求解**之前**做的结构性检查。
+//
+// 动机很实在：一个没有被任何残差引用到的非固定参数块，会让正规方程奇异；而 LM 的
+// 阻尼项会心安理得地给它返回一个看着像模像样、实则完全任意的值，**不会报错**。
+//
+// 返回发现的问题列表（结构健全时为空）。非空时必须 fail-closed 让整轮失败，不能
+// 硬着头皮解下去——解出来的那个数没有任何意义。
 struct GraphObservability {
   int free_parameter_dim = 0;
   int residual_dim = 0;
@@ -139,6 +143,12 @@ struct GraphObservability {
 
 GraphObservability CheckGraphObservability(uw::estimation::PoseGraphProblem& problem);
 
+// 抽出来单测的纯门禁判定（不做 IO、不与退出码耦合）：给定一轮运行的结果，返回所有
+// 未通过的门禁说明（人可读），全部通过则返回空 vector。返回非空时调用方应以非零码
+// 退出（见 RunReplayPipeline 里的实际用法）。
+//
+// require_converged 默认开启（见 PlatformDefaultsConfig）；其余门禁都是 opt-in——
+// 填 0 或负数即表示关闭该项。
 std::vector<std::string> EvaluateReplayGates(const uw::runtime::PlatformDefaultsConfig& defaults,
                                              const uw::estimation::GaussNewtonSummary& solver,
                                              const uw::evaluation::AteResult& ate, int num_landmarks,

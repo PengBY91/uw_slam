@@ -1,3 +1,7 @@
+// BuildOnlineAssistStatusJson 的实现：把 OperatorAssistState + 四条车道的队列健康度
+// 拼成一行紧凑 JSON。文件里三个私有小函数各管一段——JsonEscape 负责转义、
+// HealthReportToJson 负责通用健康度、QueueHealthToJson 负责队列专属字段。
+// 为什么单独成文件、queue_health 为什么存在，见头文件。
 #include "application/holoocean_status_json.hpp"
 
 #include <cstddef>
@@ -43,14 +47,14 @@ std::string HealthReportToJson(const uw::domain::HealthReport& health) {
   return oss.str();
 }
 
-// LiveEventSource::HealthReports() computes queue depth/high-watermark/
-// dropped/rejected/sequence-gap counts and oldest-message age per lane, but
-// previously nothing consumed it -- an operator had no visible signal that
-// a lane was backpressuring/dropping until data age eventually tripped
-// downstream staleness, which per docs/archive/rov-realtime-closed-loop-code-
-// review-2026-08-27.md finding B2 violates FUS-Q-002/FUS-RT-001's
-// observability requirement. This mirrors HealthReportToJson's shape but
-// adds the queue-specific fields that struct doesn't carry.
+// LiveEventSource::HealthReports() 会逐车道算出队列深度 / 高水位 / 丢弃数 / 拒绝数 /
+// 序号缺口数，以及最老消息的滞留时长，但此前没有任何地方消费这些数字——飞手看不到
+// 某条车道正在背压或丢帧，只能等数据陈旧到触发下游 staleness 才间接发现。按
+// docs/archive/rov-realtime-closed-loop-code-review-2026-08-27.md 的 B2 条，这违反了
+// FUS-Q-002 / FUS-RT-001 的可观测性要求。
+//
+// 这个函数的输出形状与 HealthReportToJson 一致，额外多出 HealthReport 那几个队列专属
+// 字段（深度、水位、丢弃、延迟分位数等）。
 std::string QueueHealthToJson(const uw::domain::HealthReport& health) {
   std::ostringstream oss;
   oss << "{\"component_id\":\"" << JsonEscape(health.component_id()) << "\",\"status\":"
@@ -66,18 +70,21 @@ std::string QueueHealthToJson(const uw::domain::HealthReport& health) {
   return oss.str();
 }
 
-// Fixed order LiveEventSource::HealthReports() itself documents returning:
-// localization, correction, mapping, evidence.
+// 固定顺序，与 LiveEventSource::HealthReports() 文档承诺的返回顺序一致：
+// localization、correction、mapping、evidence。
 constexpr std::array<const char*, 4> kQueueLaneNames{"localization", "correction", "mapping",
                                                      "evidence"};
 
 }  // namespace
 
-// Compact JSON status: target/path values, source, confidence, data age,
-// discrete guidance state, every sensor's health and degradation reason --
-// exactly the fields the plan's Task 4 text requires, drawn straight from
-// uw.domain.OperatorAssistState (schemas/proto/uw/domain/target.proto) --
-// plus a queue_health section (see QueueHealthToJson's doc comment).
+// 拼出紧凑的 JSON 状态串：目标 / 路径量、来源、置信度、数据时龄、离散引导状态、
+// 每个传感器的健康度与降级原因——正好是计划 Task 4 要求的那几项，全部直接取自
+// uw.domain.OperatorAssistState（schemas/proto/uw/domain/target.proto），不另造字段；
+// 外加一节 queue_health（理由见 QueueHealthToJson 的注释）。
+//
+// 手写 JSON 而不引 nlohmann/json 之类的库，是因为这里的输出形状是固定且扁平的，
+// 一个 ostringstream 就够，不值得为它给 application 层加一个第三方依赖。所有字符串
+// 字段都过 JsonEscape，避免 reason_code / class_label 里的引号把 JSON 撑破。
 std::string BuildOnlineAssistStatusJson(const uw::domain::OperatorAssistState& state,
                                         const std::array<uw::domain::HealthReport, 4>& queue_health) {
   std::ostringstream oss;

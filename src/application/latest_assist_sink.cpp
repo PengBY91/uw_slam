@@ -1,3 +1,5 @@
+// LatestAssistSink 的实现：一把 mutex + 一个 optional，写覆盖、读拷贝。
+// 语义与取舍见头文件。
 #include "application/latest_assist_sink.hpp"
 
 namespace uw::application {
